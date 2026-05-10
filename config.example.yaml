@@ -1,0 +1,25 @@
+# Learning-Agent 配置文件示例
+# 复制为 config.yaml 即可生效
+
+# 数据存储目录
+data_dir: "./learning_agent_data"
+
+# 可观测性数据目录
+observability_dir: "./observability"
+
+# LLM Provider 配置
+provider:
+  type: openai
+  model: gpt-4o
+  # api_key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  # 建议通过环境变量 OPENAI_API_KEY 设置，避免将密钥写入文件
+  base_url: https://api.openai.com/v1
+  timeout: 60.0
+  max_retries: 3
+
+# 知识确认设置
+# true = 自动将候选知识晋升到长期记忆（无需手动确认）
+auto_confirm_knowledge: false
+
+# 日志级别: DEBUG | INFO | WARNING | ERROR
+log_level: INFO

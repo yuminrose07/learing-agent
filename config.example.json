@@ -1,0 +1,13 @@
+{
+  "data_dir": "./learning_agent_data",
+  "observability_dir": "./observability",
+  "provider": {
+    "type": "openai",
+    "model": "gpt-4o",
+    "base_url": "https://api.openai.com/v1",
+    "timeout": 60.0,
+    "max_retries": 3
+  },
+  "auto_confirm_knowledge": false,
+  "log_level": "INFO"
+}
