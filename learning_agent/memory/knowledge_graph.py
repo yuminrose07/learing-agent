@@ -1,7 +1,8 @@
 """
-知识图谱：知识节点的 CRUD、边的维护、基础查询。
-当前版本使用内存存储 + 文件序列化。
-后续可扩展为 SQLite 邻接表 + 节点内容存文件。
+Memory 子域中的知识图谱仓储与查询组件。
+
+它服务于 Product/Application 层的 Memory 领域，不承载 Agent Runtime 的瞬态执行状态。
+当前版本使用内存存储 + 文件序列化，后续可替换为更强的存储实现。
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from learning_agent.models import (
+from learning_agent.ai import (
     EdgeType,
     KnowledgeEdge,
     KnowledgeNode,
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeGraph:
     """
     知识图谱管理器。
+
     - 节点存储在内存 dict 中
     - 边存储在独立的 dict 中
     - 支持按标签、类型、掌握度查询

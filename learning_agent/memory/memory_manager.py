@@ -1,8 +1,12 @@
 """
-记忆管理器：四层记忆的分层读写、晋升、降级、淘汰。
+Memory 独立子域的应用服务。
+
+逻辑上属于 Product/Application 层，而不是 Agent Runtime 的内部状态。
+它负责暴露四层记忆、知识图谱与复习调度能力，供系统编排或未来通过显式接口接入 runtime。
+
 L0: Transient Memory（单轮对话）
-L1: Working Memory（当前会话）
-L2: Long-term Memory（跨会话，知识图谱载体）
+L1: Working Memory（当前会话候选知识）
+L2: Long-term Memory（跨会话知识图谱）
 L3: Archive Memory（长期归档，仍参与复习）
 """
 
@@ -14,7 +18,7 @@ from typing import Any, Optional
 
 from learning_agent.memory.knowledge_graph import KnowledgeGraph
 from learning_agent.memory.spaced_repetition import SpacedRepetitionEngine
-from learning_agent.models import (
+from learning_agent.ai import (
     ContextComponent,
     Event,
     KnowledgeNode,
@@ -27,11 +31,14 @@ logger = logging.getLogger(__name__)
 
 class MemoryManager:
     """
-    记忆管理器核心。
-    - 维护四层记忆的接口
+    Product/Application 层的 Memory 领域服务门面。
+
+    - 维护四层记忆接口
     - 管理知识图谱
     - 集成间隔重复引擎
-    - 支持 Relevant Recall（基于当前话题召回相关记忆）
+    - 支持 Relevant Recall
+
+    约束：不把长期记忆状态下沉为 `AgentLoopSession` 的私有字段。
     """
 
     def __init__(
@@ -65,8 +72,22 @@ class MemoryManager:
         self._l1_working[node.id] = node
         logger.debug(f"[MemoryManager] L1 candidate added: {node.id}")
 
+    def get_l1_candidate(self, node_id: str) -> Optional[KnowledgeNode]:
+        return self._l1_working.get(node_id)
+
     def get_l1_candidates(self) -> list[KnowledgeNode]:
         return list(self._l1_working.values())
+
+    def confirm_l1_candidate(
+        self,
+        node_id: str,
+        auto_confirm: bool = False,
+    ) -> Optional[KnowledgeNode]:
+        """确认一个 L1 候选知识，并晋升到 L2。"""
+        candidate = self._l1_working.get(node_id)
+        if candidate is None:
+            return None
+        return self.promote_to_l2(candidate, auto_confirm=auto_confirm)
 
     def clear_l1(self) -> None:
         self._l1_working.clear()

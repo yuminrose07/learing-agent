@@ -1,23 +1,11 @@
 """
-Agent 循环：ReACT 架构，支持多轮工具调用与推理。
+Agent Runtime 层主循环。
 
-参照 pi-mono 设计：
-- 双层循环：外层处理会话生命周期，内层处理 ReACT turn（LLM → Tool → Result → LLM）
-- 丰富的事件系统：agent_start/end, turn_start/end, message_start/update/end, tool_execution_start/end
-- 全局状态快照：每次 turn 结束保存完整上下文状态
-- 消息历史完整保存：user / assistant(含 tool_calls) / tool_result
+本模块只负责单次对话 turn 的运行时执行与 per-session runtime 状态管理：
+- `AgentLoop` 负责 runtime 实例路由、生命周期与只读观测接口
+- `AgentLoopSession` 负责具体 ReACT 执行、状态机、工具、事件与自愈
 
-流式架构：
-用户输入 → Agent Loop 启动 → emit agent_start
-→ ReACT Turn 循环（最多 max_react_turns）：
-  → emit turn_start
-  → 构建上下文（含历史 tool results）→ 触发 Hook
-  → LLM 流式调用 → 逐 chunk yield + emit message_update
-  → 保存 assistant 消息（含 tool_calls）
-  → 处理 tool calls → emit tool_execution_start/end
-  → 保存 tool result 消息
-  → emit turn_end + 保存状态快照
-→ emit agent_end → 持久化
+Memory 在本文件中仅以显式服务依赖的形式注入，不下沉为新的 session 私有状态。
 """
 
 from __future__ import annotations
@@ -30,14 +18,14 @@ import uuid
 from enum import Enum
 from typing import Any, AsyncIterable, Optional
 
-from learning_agent.core.event_bus import EventBus
-from learning_agent.core.hook_system import HookSystem
-from learning_agent.core.observability import ObservabilityCollector
-from learning_agent.core.tool_failure_tracker import ToolFailureTracker
-from learning_agent.core.tool_registry import ToolRegistry
-from learning_agent.core.tool_validator import ToolInputValidator
+from learning_agent.agent.event_bus import EventBus
+from learning_agent.agent.hook_system import HookSystem
+from learning_agent.agent.observability import ObservabilityCollector
+from learning_agent.agent.tool_failure_tracker import ToolFailureTracker
+from learning_agent.agent.tool_registry import ToolRegistry
+from learning_agent.agent.tool_validator import ToolInputValidator
 from learning_agent.memory.memory_manager import MemoryManager
-from learning_agent.models import (
+from learning_agent.ai import (
     AgentEvent,
     AgentEventType,
     AgentStateSnapshot,
@@ -65,8 +53,8 @@ from learning_agent.models import (
     ToolCall,
     TraceSpan,
 )
-from learning_agent.provider.base_provider import BaseProvider
-from learning_agent.session.session_manager import SessionManager
+from learning_agent.ai.base_provider import BaseProvider
+from learning_agent.learning_agent.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -85,18 +73,18 @@ class AgentState(str, Enum):
 
 class AgentLoopSession:
     """
-    单个 Session 的运行时上下文。
+    单个 session 的 Agent Runtime 上下文。
 
     职责：
-    1. 执行完整的 ReACT turn（原来 AgentLoop.run() 的主体逻辑）
-    2. 持有所有 per-session 可变状态
-    3. 保证同 session 的并发安全（通过 asyncio.Lock）
-    4. 状态机管理（IDLE → BUILDING_CONTEXT → CALLING_LLM → ...）
+    1. 执行完整的 ReACT turn
+    2. 持有 per-session 运行时可变状态
+    3. 保证同 session 的并发安全
+    4. 管理状态机、工具执行、重试、降级与观测
 
-    设计对齐 pi-mono Agent 类：
-    - 类似 Agent._state 持有 transcript 相关状态
-    - 类似 Agent.activeRun 守卫单次运行
-    - 通过事件与外部（AgentLoop / EventBus）通信
+    边界：
+    - 不负责 session 生命周期决策
+    - 不负责文件持久化
+    - 不新增 Memory 私有状态字段
     """
 
     def __init__(
@@ -125,6 +113,7 @@ class AgentLoopSession:
         # ── 当前 trace ID（用于 span 隔离）──
         self._current_trace_id: Optional[str] = None
         self._hook_runtime_metadata: dict[str, Any] = {}
+        self._last_turn_count = 0
 
     # ── 共享依赖快捷访问 ──
 
@@ -133,8 +122,14 @@ class AgentLoopSession:
         return self.agent_loop.provider
 
     @property
+    def memory_service(self):
+        """显式 Memory 服务依赖；仅代表产品层子域服务，不代表 runtime 自有状态。"""
+        return self.agent_loop.memory_service
+
+    @property
     def memory(self):
-        return self.agent_loop.memory
+        """兼容旧命名，优先使用 `memory_service` 表达跨层服务依赖。"""
+        return self.memory_service
 
     @property
     def sessions(self):
@@ -143,6 +138,28 @@ class AgentLoopSession:
     @property
     def hooks(self):
         return self.agent_loop.hooks
+
+    def get_runtime_summary(self, *, last_accessed: Optional[float] = None) -> dict[str, Any]:
+        """返回稳定的只读 runtime 摘要，供 AgentLoop 对外暴露。"""
+        trace = self.obs.get_trace_by_session(self.session_id) if self.obs else None
+        spans = self.obs.get_spans_by_session(self.session_id) if trace else []
+
+        return {
+            "session_id": self.session_id,
+            "state": self.state.value,
+            "chat_only_mode": self._chat_only_mode,
+            "chat_only_success_turns": self._chat_only_success_turns,
+            "turn_count": self._last_turn_count,
+            "failure_tracker": self._failure_tracker.get_runtime_summary(self._last_turn_count),
+            "lock_acquired": self.lock.locked(),
+            "last_accessed": last_accessed,
+            "trace": {
+                "trace_id": trace.trace_id,
+                "span_count": len(trace.spans),
+                "active_spans": [span.name for span in spans],
+                "duration_ms": trace.duration_ms,
+            } if trace else None,
+        }
 
     @property
     def events(self):
@@ -315,10 +332,7 @@ class AgentLoopSession:
         user_input: str,
         ask_mode: bool = False,
     ) -> AsyncIterable[ChatChunk]:
-        """
-        执行一轮完整的 ReACT 循环。
-        调用方（AgentLoop.run()）已持有 self.lock，此处无需再获取。
-        """
+        """执行一轮完整的 ReACT 循环。调用方已持有 session 级锁。"""
         trace = None
         root_span = None
         if self.obs:
@@ -328,6 +342,7 @@ class AgentLoopSession:
 
         self._set_state(AgentState.IDLE)
         turn_count = 0
+        self._last_turn_count = 0
         pending_tool_calls: list[str] = []
         error_message: Optional[str] = None
         self._hook_runtime_metadata = {}
@@ -445,6 +460,7 @@ class AgentLoopSession:
             consecutive_tool_failure_turns = 0
             while has_tool_calls and turn_count < self.max_react_turns:
                 turn_count += 1
+                self._last_turn_count = turn_count
                 has_tool_calls = False
 
                 await self._emit_agent_event(
@@ -573,7 +589,9 @@ class AgentLoopSession:
 
                 except Exception as e:
                     logger.exception(f"[AgentLoop] LLM stream error: {e}")
-                    yield ChatChunk(content="\n[System] LLM response stream interrupted. Initiating recovery...\n")
+                    yield ChatChunk(
+                        content="\n[System] LLM response stream interrupted. Initiating recovery...\n"
+                    )
                     if llm_span:
                         llm_span.error = str(e)
                     error_message = str(e)
@@ -1595,21 +1613,15 @@ class AgentLoopSession:
         self._chat_only_mode = False
         self._chat_only_success_turns = 0
         self.state = AgentState.IDLE
+        self._last_turn_count = 0
 
 
 class AgentLoop:
     """
-    Agent 主循环（ReACT 架构）。
+    Agent Runtime 层路由器。
 
-    重构后职责：
-    1. 持有共享依赖（provider, events, hooks, tools 等）
-    2. 管理 per-session 运行时实例的创建和回收
-    3. 提供 run() 入口，内部路由到对应的 AgentLoopSession
-    4. 维护运行时过期机制，防止内存泄漏
-
-    设计对齐 pi-mono AgentSessionRuntime：
-    - 类似 Runtime 持有当前 session 引用（但我们持有多个）
-    - 类似 Runtime 通过工厂/字典管理 session 生命周期
+    它持有运行时共享依赖，按 session 管理 `AgentLoopSession` 实例，并向上层
+    暴露稳定的只读 runtime 摘要。它不是产品层编排器，也不拥有 session 数据真源。
     """
 
     def __init__(
@@ -1625,9 +1637,9 @@ class AgentLoop:
         resilience_config: Optional[ResilienceConfig] = None,
         session_runtime_ttl: int = 3600,
     ):
-        # 共享依赖
+        # Runtime 共享依赖
         self.provider = provider
-        self.memory = memory_manager
+        self.memory_service = memory_manager
         self.sessions = session_manager
         self.hooks = hook_system
         self.events = event_bus
@@ -1665,19 +1677,36 @@ class AgentLoop:
             async for chunk in runtime.run_turn(session, user_input, ask_mode):
                 yield chunk
 
-    def clear_session_runtime(self, session_id: str) -> None:
+    def clear_runtime(self, session_id: str) -> dict[str, Any]:
         """
-        清理指定 session 的运行时状态。
-        由 SessionManager 在删除 session 时回调。
+        清理指定 session 的运行时状态，并返回被清理 runtime 的稳定摘要。
+
+        返回结构仅包含只读摘要，不暴露内部 runtime 对象。
         """
         runtime = self._session_runtimes.pop(session_id, None)
+        cleared_summary = None
         if runtime:
+            cleared_summary = runtime.get_runtime_summary(
+                last_accessed=self._session_last_accessed.get(session_id),
+            )
             runtime.clear()
         self._session_last_accessed.pop(session_id, None)
         if self.obs:
             self.obs.clear_session_traces(session_id)
             self.obs.record_runtime_cleared(session_id)
         logger.info(f"[AgentLoop] Session runtime cleared: {session_id}")
+        return {
+            "session_id": session_id,
+            "had_runtime": runtime is not None,
+            "cleared_runtime": cleared_summary,
+        }
+
+    def clear_session_runtime(self, session_id: str) -> None:
+        """
+        清理指定 session 的运行时状态。
+        由 SessionManager 在删除 session 时回调。
+        """
+        self.clear_runtime(session_id)
 
     def clear_all_runtimes(self) -> None:
         """清理所有运行时（系统启动/关闭时调用）。"""
@@ -1685,6 +1714,35 @@ class AgentLoop:
             runtime.clear()
         self._session_runtimes.clear()
         self._session_last_accessed.clear()
+
+    def get_runtime_summary(self, session_id: str) -> Optional[dict[str, Any]]:
+        """返回单个 session runtime 的只读摘要。"""
+        self._cleanup_expired_runtimes()
+        runtime = self._session_runtimes.get(session_id)
+        if runtime is None:
+            return None
+        return runtime.get_runtime_summary(
+            last_accessed=self._session_last_accessed.get(session_id),
+        )
+
+    def list_runtime_summaries(self) -> list[dict[str, Any]]:
+        """返回所有活跃 runtime 的只读摘要列表。"""
+        self._cleanup_expired_runtimes()
+        return [
+            runtime.get_runtime_summary(
+                last_accessed=self._session_last_accessed.get(session_id),
+            )
+            for session_id, runtime in self._session_runtimes.items()
+        ]
+
+    def get_runtime_overview(self) -> dict[str, Any]:
+        """返回当前运行时的稳定摘要，供上层观测层读取。"""
+        runtimes = self.list_runtime_summaries()
+        return {
+            "active_runtime_count": len(runtimes),
+            "total_session_count": len(self.sessions.list_sessions()),
+            "runtimes": runtimes,
+        }
 
     # ── 内部方法 ──
 

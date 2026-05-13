@@ -1,5 +1,3 @@
-from .openai_provider import OpenAIProvider
-from .base_provider import BaseProvider
-from .resilient_provider import ResilientProvider
+from learning_agent.ai import BaseProvider, OpenAIProvider, ResilientProvider
 
-__all__ = ["OpenAIProvider", "BaseProvider", "ResilientProvider"]
+__all__ = ["BaseProvider", "OpenAIProvider", "ResilientProvider"]

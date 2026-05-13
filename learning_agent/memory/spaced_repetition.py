@@ -1,6 +1,8 @@
 """
-间隔重复引擎：简化版 SM-2 算法。
-后续可通过扩展替换为 FSRS 或自定义算法。
+Memory 子域中的复习调度引擎。
+
+逻辑上属于 Product/Application 层的独立 Memory 子域，负责知识节点复习节奏，
+而不是 Agent Runtime 的对话状态机。
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from learning_agent.models import KnowledgeNode, MasteryLevel, MemoryLevel, ReviewRecord
+from learning_agent.ai import KnowledgeNode, MasteryLevel, MemoryLevel, ReviewRecord
 
 logger = logging.getLogger(__name__)
 

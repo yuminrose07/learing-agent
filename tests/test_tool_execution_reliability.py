@@ -22,12 +22,12 @@ import pytest
 sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.agent.agent_loop import AgentLoop
-from learning_agent.core.event_bus import EventBus
-from learning_agent.core.hook_system import HookSystem
-from learning_agent.core.tool_failure_tracker import ToolFailureTracker
-from learning_agent.core.tool_registry import ToolRegistry
+from learning_agent.agent.event_bus import EventBus
+from learning_agent.agent.hook_system import HookSystem
+from learning_agent.agent.tool_failure_tracker import ToolFailureTracker
+from learning_agent.agent.tool_registry import ToolRegistry
 from learning_agent.memory.memory_manager import MemoryManager
-from learning_agent.models import (
+from learning_agent.ai import (
     AfterToolExecuteResult,
     BeforeAgentRunResult,
     BeforeToolExecuteResult,
@@ -42,9 +42,9 @@ from learning_agent.models import (
     ToolCall,
     ToolDefinition,
 )
-from learning_agent.provider.base_provider import BaseProvider
+from learning_agent.ai.base_provider import BaseProvider
 from learning_agent.agent.agent_loop import AgentLoopSession
-from learning_agent.session.session_manager import SessionManager
+from learning_agent.learning_agent.session_manager import SessionManager
 
 
 def outcome_result(outcome: dict[str, Any]) -> Any:
@@ -682,7 +682,7 @@ class TestAgentLoopHookIntegration:
         async def response_hook(_hook_input):
             return AfterResponseResult(extra_metadata={"tag": "done"})
 
-        from learning_agent.models import OnStreamChunkResult, AfterResponseResult
+        from learning_agent.ai import OnStreamChunkResult, AfterResponseResult
 
         loop.hooks.register(HookName.ON_STREAM_CHUNK, stream_hook)
         loop.hooks.register(HookName.AFTER_RESPONSE, response_hook)

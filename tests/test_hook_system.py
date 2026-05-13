@@ -6,8 +6,8 @@ import pytest
 
 sys.path.insert(0, "/Users/roseannk/my-agent")
 
-from learning_agent.core.hook_system import HookSystem
-from learning_agent.models import (
+from learning_agent.agent.hook_system import HookSystem
+from learning_agent.ai import (
     AfterResponseInput,
     AfterResponseResult,
     AfterToolExecuteInput,
