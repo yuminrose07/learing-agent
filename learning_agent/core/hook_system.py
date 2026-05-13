@@ -1,23 +1,32 @@
-"""
-Hook 系统：扩展介入核心流程的"阀门"
-每个 Hook 点有明确的输入输出契约。
-"""
+"""Typed Hook dispatcher used by the minimal runtime."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Optional
+import time
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from learning_agent.models import HookPoint, HookResult, TraceSpan
+from learning_agent.models import (
+    AfterResponseInput,
+    AfterResponseResult,
+    AfterToolExecuteInput,
+    AfterToolExecuteResult,
+    BeforeAgentRunInput,
+    BeforeAgentRunResult,
+    BeforeToolExecuteInput,
+    BeforeToolExecuteResult,
+    HookDecision,
+    HookName,
+    OnStreamChunkInput,
+    OnStreamChunkResult,
+    TraceSpan,
+)
 
 logger = logging.getLogger(__name__)
 
-HookHandler = Callable[..., Awaitable[Any]]
-
-
-class HookAbortError(Exception):
-    """Hook 通过抛出此异常中断后续处理（如澄清循环）。"""
-    pass
+HookHandler = Callable[[Any], Awaitable[Any]]
+TInput = TypeVar("TInput")
+TResult = TypeVar("TResult")
 
 
 class _HookRegistration:
@@ -33,120 +42,247 @@ class _HookRegistration:
 
 
 class HookSystem:
-    """
-    Hook 系统管理所有扩展点的注册与执行。
-
-    执行规则：
-    - 同个 Hook 点可注册多个处理函数，按优先级排序（数值大的优先）
-    - 处理函数可以返回 HookResult 来修改数据或中断流程
-    - 所有 Hook 异步执行，支持 await
-    """
+    """管理 Hook 注册、排序与 typed 合并。"""
 
     def __init__(self):
-        self._hooks: dict[HookPoint, list[_HookRegistration]] = {}
+        self._hooks: dict[HookName, list[_HookRegistration]] = {}
 
     def register(
         self,
-        point: HookPoint | str,
+        hook_name: HookName | str,
         handler: HookHandler,
         priority: int = 0,
         extension_id: Optional[str] = None,
     ) -> None:
-        """注册一个 Hook 处理函数。"""
-        if isinstance(point, str):
-            point = HookPoint(point)
-        if point not in self._hooks:
-            self._hooks[point] = []
-        self._hooks[point].append(_HookRegistration(handler, priority, extension_id))
-        self._hooks[point].sort(key=lambda r: r.priority, reverse=True)
+        hook = self._normalize_name(hook_name)
+        self._hooks.setdefault(hook, []).append(
+            _HookRegistration(handler, priority, extension_id)
+        )
+        self._hooks[hook].sort(key=lambda r: r.priority, reverse=True)
         logger.debug(
-            f"[HookSystem] Registered '{point.value}' (ext={extension_id}, prio={priority})"
+            "[HookSystem] Registered '%s' (ext=%s, prio=%s)",
+            hook.value,
+            extension_id,
+            priority,
         )
 
     def unregister(
         self,
-        point: HookPoint | str,
+        hook_name: HookName | str,
         handler: HookHandler,
     ) -> None:
-        """注销一个 Hook 处理函数。"""
-        if isinstance(point, str):
-            point = HookPoint(point)
-        if point in self._hooks:
-            self._hooks[point] = [r for r in self._hooks[point] if r.handler != handler]
+        hook = self._normalize_name(hook_name)
+        if hook in self._hooks:
+            self._hooks[hook] = [r for r in self._hooks[hook] if r.handler != handler]
 
-    async def execute(
+    async def run_before_agent_run(
         self,
-        point: HookPoint | str,
-        data: Any,
-        context: dict[str, Any],
+        hook_input: BeforeAgentRunInput,
         trace_span: Optional[TraceSpan] = None,
-    ) -> HookResult:
-        """
-        执行指定 Hook 点的所有注册处理函数。
+    ) -> BeforeAgentRunResult:
+        merged = BeforeAgentRunResult()
+        first_ask_message: Optional[str] = None
+        first_deny_reason: Optional[str] = None
 
-        Args:
-            data: 当前流程数据，可被 Hook 修改
-            context: 上下文信息（session, memory_manager 等）
-            trace_span: 可选的追踪 span，用于记录性能
+        for result in await self._run_handlers(
+            HookName.BEFORE_AGENT_RUN,
+            hook_input,
+            trace_span,
+            BeforeAgentRunResult,
+        ):
+            if result.decision == HookDecision.DENY and first_deny_reason is None:
+                first_deny_reason = result.deny_reason
+            if result.decision == HookDecision.ASK and first_ask_message is None:
+                first_ask_message = result.ask_message
+            merged.runtime_patch.update(result.runtime_patch)
+            merged.warnings.extend(result.warnings)
+            merged.audit_records.extend(result.audit_records)
+            merged.decision = self._merge_decision(merged.decision, result.decision)
 
-        Returns:
-            HookResult: 汇总结果
-        """
-        if isinstance(point, str):
-            point = HookPoint(point)
+        if merged.decision == HookDecision.ASK:
+            merged.ask_message = first_ask_message
+        elif merged.decision == HookDecision.DENY:
+            merged.deny_reason = first_deny_reason
+        return merged
 
-        registrations = self._hooks.get(point, [])
+    async def run_before_tool_execute(
+        self,
+        hook_input: BeforeToolExecuteInput,
+        trace_span: Optional[TraceSpan] = None,
+    ) -> BeforeToolExecuteResult:
+        merged = BeforeToolExecuteResult()
+        first_ask_message: Optional[str] = None
+        first_deny_reason: Optional[str] = None
+
+        for result in await self._run_handlers(
+            HookName.BEFORE_TOOL_EXECUTE,
+            hook_input,
+            trace_span,
+            BeforeToolExecuteResult,
+        ):
+            if result.decision == HookDecision.DENY and first_deny_reason is None:
+                first_deny_reason = result.deny_reason
+            if result.decision == HookDecision.ASK and first_ask_message is None:
+                first_ask_message = result.ask_message
+            merged.patched_arguments.update(result.patched_arguments)
+            merged.annotations.update(result.annotations)
+            merged.warnings.extend(result.warnings)
+            merged.audit_records.extend(result.audit_records)
+            merged.decision = self._merge_decision(merged.decision, result.decision)
+
+        if merged.decision == HookDecision.ASK:
+            merged.ask_message = first_ask_message
+        elif merged.decision == HookDecision.DENY:
+            merged.deny_reason = first_deny_reason
+        return merged
+
+    async def run_after_tool_execute(
+        self,
+        hook_input: AfterToolExecuteInput,
+        trace_span: Optional[TraceSpan] = None,
+    ) -> AfterToolExecuteResult:
+        merged = AfterToolExecuteResult()
+        for result in await self._run_handlers(
+            HookName.AFTER_TOOL_EXECUTE,
+            hook_input,
+            trace_span,
+            AfterToolExecuteResult,
+        ):
+            if result.display_result_override:
+                merged.display_result_override = result.display_result_override
+            merged.extra_metadata.update(result.extra_metadata)
+            merged.warnings.extend(result.warnings)
+            merged.audit_records.extend(result.audit_records)
+        return merged
+
+    async def run_on_stream_chunk(
+        self,
+        hook_input: OnStreamChunkInput,
+        trace_span: Optional[TraceSpan] = None,
+    ) -> OnStreamChunkResult:
+        merged = OnStreamChunkResult()
+        current_input = hook_input
+        for result in await self._run_handlers(
+            HookName.ON_STREAM_CHUNK,
+            hook_input,
+            trace_span,
+            OnStreamChunkResult,
+            chainable=True,
+        ):
+            if result.content_override is not None:
+                merged.content_override = result.content_override
+                current_input = current_input.model_copy(
+                    update={"content": result.content_override}
+                )
+            if result.reasoning_content_override is not None:
+                merged.reasoning_content_override = result.reasoning_content_override
+                current_input = current_input.model_copy(
+                    update={
+                        "reasoning_content": result.reasoning_content_override,
+                    }
+                )
+            merged.stream_tags.update(result.stream_tags)
+            merged.warnings.extend(result.warnings)
+            hook_input = current_input
+        return merged
+
+    async def run_after_response(
+        self,
+        hook_input: AfterResponseInput,
+        trace_span: Optional[TraceSpan] = None,
+    ) -> AfterResponseResult:
+        merged = AfterResponseResult()
+        signals_seen: set[str] = set()
+        for result in await self._run_handlers(
+            HookName.AFTER_RESPONSE,
+            hook_input,
+            trace_span,
+            AfterResponseResult,
+        ):
+            if result.response_override:
+                merged.response_override = result.response_override
+            merged.extra_metadata.update(result.extra_metadata)
+            for signal in result.followup_signals:
+                if signal not in signals_seen:
+                    merged.followup_signals.append(signal)
+                    signals_seen.add(signal)
+            merged.warnings.extend(result.warnings)
+            merged.audit_records.extend(result.audit_records)
+        return merged
+
+    async def _run_handlers(
+        self,
+        hook_name: HookName,
+        hook_input: TInput,
+        trace_span: Optional[TraceSpan],
+        expected_type: type[TResult],
+        chainable: bool = False,
+    ) -> list[TResult]:
+        registrations = self._hooks.get(hook_name, [])
         if not registrations:
-            return HookResult(modified=False, data=data)
+            return []
 
-        current_data = data
-        modified = False
-
+        results: list[TResult] = []
+        current_input = hook_input
         for reg in registrations:
             ext_id = reg.extension_id or "unknown"
-            start_ts = __import__("time").time()
+            start_ts = time.time()
             try:
-                result = await reg.handler(current_data, context)
-
-                if isinstance(result, HookResult):
-                    if result.abort:
-                        logger.info(f"[HookSystem] Hook '{point.value}' aborted by {ext_id}")
-                        if trace_span:
-                            trace_span.tags[f"hook.{point.value}.aborted_by"] = ext_id
-                        return HookResult(
-                            modified=True,
-                            data=result.data or current_data,
-                            abort=True,
-                            abort_reason=result.abort_reason or f"Aborted by {ext_id}",
-                        )
-                    if result.modified:
-                        current_data = result.data
-                        modified = True
-
-            except HookAbortError as e:
-                logger.info(f"[HookSystem] Hook '{point.value}' HookAbortError by {ext_id}: {e}")
+                result = await reg.handler(current_input)
+                if result is None:
+                    continue
+                if not isinstance(result, expected_type):
+                    logger.warning(
+                        "[HookSystem] Hook '%s' returned invalid result from %s: %s",
+                        hook_name.value,
+                        ext_id,
+                        type(result).__name__,
+                    )
+                    continue
+                results.append(result)
+                if chainable and isinstance(current_input, OnStreamChunkInput):
+                    update: dict[str, Any] = {}
+                    if result.content_override is not None:
+                        update["content"] = result.content_override
+                    if result.reasoning_content_override is not None:
+                        update["reasoning_content"] = result.reasoning_content_override
+                    if update:
+                        current_input = current_input.model_copy(update=update)
+            except Exception as exc:
+                logger.exception(
+                    "[HookSystem] Hook '%s' error in %s: %s",
+                    hook_name.value,
+                    ext_id,
+                    exc,
+                )
                 if trace_span:
-                    trace_span.tags[f"hook.{point.value}.aborted_by"] = ext_id
-                    trace_span.tags[f"hook.{point.value}.abort_reason"] = str(e)
-                raise
-
-            except Exception as e:
-                logger.exception(f"[HookSystem] Hook '{point.value}' error in {ext_id}: {e}")
-                if trace_span:
-                    trace_span.tags[f"hook.{point.value}.{ext_id}.error"] = str(e)
-                # 默认策略：Hook 错误不中断核心流程
-                continue
-
+                    trace_span.tags[f"hook.{hook_name.value}.{ext_id}.error"] = str(exc)
             finally:
-                duration_ms = int((__import__("time").time() - start_ts) * 1000)
+                duration_ms = int((time.time() - start_ts) * 1000)
                 if trace_span:
-                    trace_span.tags[f"hook.{point.value}.{ext_id}.duration_ms"] = duration_ms
-
-        return HookResult(modified=modified, data=current_data)
+                    trace_span.tags[
+                        f"hook.{hook_name.value}.{ext_id}.duration_ms"
+                    ] = duration_ms
+        return results
 
     def list_registered(self) -> dict[str, list[str]]:
-        """列出所有已注册的 Hook 点及其扩展来源。"""
-        result = {}
-        for point, regs in self._hooks.items():
-            result[point.value] = [r.extension_id or "unknown" for r in regs]
+        result: dict[str, list[str]] = {}
+        for hook_name, regs in self._hooks.items():
+            result[hook_name.value] = [r.extension_id or "unknown" for r in regs]
         return result
+
+    @staticmethod
+    def _normalize_name(hook_name: HookName | str) -> HookName:
+        return hook_name if isinstance(hook_name, HookName) else HookName(hook_name)
+
+    @staticmethod
+    def _merge_decision(
+        current: HookDecision,
+        candidate: HookDecision,
+    ) -> HookDecision:
+        priority = {
+            HookDecision.CONTINUE: 0,
+            HookDecision.ASK: 1,
+            HookDecision.DENY: 2,
+        }
+        return candidate if priority[candidate] > priority[current] else current

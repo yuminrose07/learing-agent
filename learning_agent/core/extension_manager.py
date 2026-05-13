@@ -8,9 +8,9 @@ import logging
 from typing import Any, Awaitable, Callable, Optional
 
 from learning_agent.core.event_bus import EventBus
-from learning_agent.core.hook_system import HookPoint, HookSystem
+from learning_agent.core.hook_system import HookSystem
+from learning_agent.models import Event, HookName, ToolDefinition
 from learning_agent.core.tool_registry import ToolRegistry
-from learning_agent.models import Event, ToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class ExtensionContext:
 
     def register_hook(
         self,
-        point: HookPoint | str,
+        point: HookName | str,
         handler: Callable[..., Awaitable[Any]],
         priority: int = 0,
     ) -> None:

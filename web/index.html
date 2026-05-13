@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Learning-Agent</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 侧边栏遮罩（移动端） -->
+        <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+        <!-- 侧边栏 -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-top">
+                <button id="btn-new-chat" class="btn-new-chat">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    <span>New chat</span>
+                </button>
+            </div>
+
+            <div class="sidebar-scroll" id="sidebar-scroll">
+                <!-- 会话分组由 JS 动态生成 -->
+            </div>
+
+            <div class="sidebar-bottom">
+                <button id="btn-memory" class="sidebar-action">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                    <span>记忆状态</span>
+                </button>
+                <button id="btn-save" class="sidebar-action">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                    <span>保存状态</span>
+                </button>
+                <button id="btn-obs" class="sidebar-action" onclick="window.open('observability.html', '_blank')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                    <span>观测面板</span>
+                </button>
+                <div class="sidebar-footer-line">
+                    <span id="api-status" class="status-text offline">API 离线</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主区域 -->
+        <main class="main">
+            <!-- 顶部栏 -->
+            <header class="topbar">
+                <button id="btn-menu" class="btn-menu" aria-label="打开菜单">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                </button>
+                <span class="topbar-title" id="topbar-title">Learning-Agent</span>
+                <div class="topbar-spacer"></div>
+            </header>
+
+            <!-- 聊天区域 -->
+            <div class="chat-area" id="chat-area">
+                <!-- 欢迎页 -->
+                <div class="welcome-screen" id="welcome-screen">
+                    <div class="welcome-content">
+                        <div class="welcome-logo">🧠</div>
+                        <h1>Learning-Agent</h1>
+                        <p class="welcome-subtitle">你的个人学习助手</p>
+                        <div class="suggestion-grid">
+                            <div class="suggestion-card" data-text="帮我解释什么是强化学习？">
+                                <div class="suggestion-icon">🎯</div>
+                                <div class="suggestion-text">帮我解释什么是强化学习？</div>
+                            </div>
+                            <div class="suggestion-card" data-text="制定一个 30 天学习 Python 的计划">
+                                <div class="suggestion-icon">📅</div>
+                                <div class="suggestion-text">制定一个 30 天学习 Python 的计划</div>
+                            </div>
+                            <div class="suggestion-card" data-text="总结这篇文章的关键知识点">
+                                <div class="suggestion-icon">📝</div>
+                                <div class="suggestion-text">总结这篇文章的关键知识点</div>
+                            </div>
+                            <div class="suggestion-card" data-text="如何建立长期记忆系统？">
+                                <div class="suggestion-icon">🧩</div>
+                                <div class="suggestion-text">如何建立长期记忆系统？</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 消息容器 -->
+                <div class="messages" id="messages"></div>
+            </div>
+
+            <!-- 模式工具栏（预留扩展位） -->
+            <div class="mode-toolbar" id="mode-toolbar">
+                <button id="btn-ask-mode" class="btn-mode" title="Ask 模式：先对齐意图再回答" aria-label="切换 Ask 模式">
+                    <span class="mode-icon">❓</span>
+                    <span class="mode-label">Ask</span>
+                </button>
+                <!-- 后续可在此添加更多模式按钮 -->
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <textarea id="message-input" rows="1" placeholder="Message Learning-Agent..." disabled></textarea>
+                    <button id="btn-send" class="btn-submit" disabled aria-label="发送">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                </div>
+                <div class="input-hint">
+                    <span id="typing-indicator" class="hidden">Agent 正在思考…</span>
+                    <span class="hint-text">Agent 可能会生成不准确的信息，请核实重要内容。</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 记忆弹窗 -->
+    <div id="memory-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>记忆状态</h2>
+                <button class="btn-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre id="memory-content"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div id="delete-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2>删除会话</h2>
+                <button class="btn-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>确定要删除这个会话吗？此操作无法撤销。</p>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-cancel-delete" class="btn-secondary">取消</button>
+                <button id="btn-confirm-delete" class="btn-danger">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/app.js"></script>
+</body>
+</html>

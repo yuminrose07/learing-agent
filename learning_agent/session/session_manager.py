@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from learning_agent.models import (
     EntryType,
@@ -28,6 +28,24 @@ class SessionManager:
 
     def __init__(self):
         self._sessions: dict[str, LearningSession] = {}
+        self._on_delete_callbacks: list[Callable[[str], None]] = []
+
+    def register_delete_callback(self, callback: Callable[[str], None]) -> None:
+        """注册 session 删除时的回调函数。"""
+        self._on_delete_callbacks.append(callback)
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除指定会话，并触发删除回调。"""
+        if session_id not in self._sessions:
+            return False
+        del self._sessions[session_id]
+        logger.info(f"[SessionManager] Deleted session {session_id}")
+        for cb in self._on_delete_callbacks:
+            try:
+                cb(session_id)
+            except Exception:
+                logger.exception(f"[SessionManager] Delete callback failed for {session_id}")
+        return True
 
     def create_session(
         self,
@@ -146,6 +164,16 @@ class SessionManager:
             logger.info(f"[SessionManager] Archived session {session_id}")
             return True
         return False
+
+    def clear_ask_state(self, session_id: str) -> bool:
+        """清除会话的 Ask 对齐状态。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        from learning_agent.models import AskState
+        session.ask_state = AskState()
+        logger.info(f"[SessionManager] Cleared ask_state for session {session_id}")
+        return True
 
     def compact_session(self, session_id: str) -> bool:
         """

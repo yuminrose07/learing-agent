@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
-from typing import Any, Awaitable, Callable
+import time
+from typing import Any, Awaitable, Callable, Optional
 
 from learning_agent.models import ToolCall, ToolDefinition
 
@@ -68,25 +71,33 @@ class ToolRegistry:
             schemas.append(schema)
         return schemas
 
-    async def execute(self, tool_call: ToolCall) -> Any:
-        """
-        执行工具调用。
-        """
+    async def execute(self, tool_call: ToolCall, timeout: Optional[float] = None) -> Any:
+        """执行工具调用，带超时保护。"""
         handler = self._handlers.get(tool_call.tool_id)
         if not handler:
             raise ValueError(f"Tool '{tool_call.tool_id}' not found")
 
-        import time
         start = time.time()
+
         try:
-            result = await handler(**tool_call.arguments)
+            if inspect.iscoroutinefunction(handler):
+                coro = handler(**tool_call.arguments)
+            else:
+                # 同步函数包装为异步
+                coro = asyncio.to_thread(handler, **tool_call.arguments)
+
+            result = await asyncio.wait_for(coro, timeout=timeout or 60.0)
+
             tool_call.result = result
             tool_call.duration_ms = int((time.time() - start) * 1000)
             return result
-        except Exception as e:
-            tool_call.error = str(e)
+
+        except asyncio.TimeoutError:
+            tool_call.duration_ms = int((time.time() - start) * 1000)
+            raise TimeoutError(
+                f"Tool '{tool_call.tool_id}' execution timed out after "
+                f"{timeout or 60.0}s. The tool handler did not complete within the allowed time."
+            )
+        except Exception:
             tool_call.duration_ms = int((time.time() - start) * 1000)
             raise
-
-
-from typing import Optional

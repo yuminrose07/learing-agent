@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Learning-Agent Observability</title>
+    <link rel="stylesheet" href="static/style.css">
+    <style>
+        :root {
+            --obs-bg: #0d1117;
+            --obs-panel: #161b22;
+            --obs-border: #30363d;
+            --obs-text: #c9d1d9;
+            --obs-muted: #8b949e;
+            --obs-accent: #58a6ff;
+            --obs-accent-hover: #79c0ff;
+            --obs-success: #3fb950;
+            --obs-warning: #d29922;
+            --obs-danger: #f85149;
+        }
+        body {
+            background: var(--obs-bg);
+            color: var(--obs-text);
+            height: 100vh;
+            overflow: hidden;
+        }
+        #obs-app {
+            display: flex;
+            height: 100vh;
+        }
+        .obs-sidebar {
+            width: 220px;
+            min-width: 220px;
+            background: var(--obs-panel);
+            border-right: 1px solid var(--obs-border);
+            display: flex;
+            flex-direction: column;
+            padding: 16px 0;
+        }
+        .obs-sidebar-header {
+            padding: 0 16px 16px;
+            border-bottom: 1px solid var(--obs-border);
+            margin-bottom: 8px;
+        }
+        .obs-sidebar-header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .obs-sidebar-header a {
+            font-size: 0.75rem;
+            color: var(--obs-muted);
+            text-decoration: none;
+            margin-top: 6px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .obs-sidebar-header a:hover {
+            color: var(--obs-accent);
+        }
+        .obs-nav {
+            list-style: none;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .obs-nav li {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            color: var(--obs-muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: 0.15s ease;
+        }
+        .obs-nav li:hover {
+            background: rgba(255,255,255,0.05);
+            color: var(--obs-text);
+        }
+        .obs-nav li.active {
+            background: rgba(88, 166, 255, 0.12);
+            color: var(--obs-accent);
+            font-weight: 500;
+        }
+        .obs-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            overflow: hidden;
+        }
+        .obs-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--obs-border);
+            background: var(--obs-panel);
+        }
+        .obs-toolbar h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        .obs-refresh {
+            padding: 6px 12px;
+            border-radius: 6px;
+            background: var(--obs-border);
+            color: var(--obs-text);
+            font-size: 0.8rem;
+        }
+        .obs-refresh:hover {
+            background: #484f58;
+        }
+        .obs-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .obs-panel {
+            display: none;
+        }
+        .obs-panel.active {
+            display: block;
+        }
+
+        /* Trace cards */
+        .trace-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+        }
+        .trace-card {
+            background: var(--obs-panel);
+            border: 1px solid var(--obs-border);
+            border-radius: 10px;
+            padding: 16px;
+            cursor: pointer;
+            transition: 0.15s ease;
+        }
+        .trace-card:hover {
+            border-color: var(--obs-accent);
+        }
+        .trace-card.selected {
+            border-color: var(--obs-accent);
+            box-shadow: 0 0 0 2px rgba(88,166,255,0.15);
+        }
+        .trace-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+        .trace-id {
+            font-family: "SF Mono", Monaco, monospace;
+            font-size: 0.8rem;
+            color: var(--obs-accent);
+        }
+        .trace-time {
+            font-size: 0.75rem;
+            color: var(--obs-muted);
+        }
+        .trace-meta {
+            display: flex;
+            gap: 12px;
+            font-size: 0.8rem;
+            color: var(--obs-muted);
+        }
+        .trace-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .trace-detail {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--obs-border);
+            display: none;
+        }
+        .trace-detail.open {
+            display: block;
+        }
+
+        /* Span waterfall */
+        .span-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .span-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 6px;
+            font-size: 0.8rem;
+        }
+        .span-name {
+            width: 120px;
+            font-weight: 500;
+            color: var(--obs-text);
+        }
+        .span-bar-wrap {
+            flex: 1;
+            height: 18px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 3px;
+            position: relative;
+            overflow: hidden;
+        }
+        .span-bar {
+            height: 100%;
+            background: var(--obs-accent);
+            border-radius: 3px;
+            opacity: 0.8;
+        }
+        .span-bar.error {
+            background: var(--obs-danger);
+        }
+        .span-duration {
+            width: 80px;
+            text-align: right;
+            color: var(--obs-muted);
+            font-family: "SF Mono", Monaco, monospace;
+        }
+        .span-tags {
+            margin-top: 6px;
+            padding-left: 132px;
+            font-size: 0.75rem;
+            color: var(--obs-muted);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .span-tag {
+            background: rgba(255,255,255,0.05);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        /* Tables */
+        .obs-table-wrap {
+            overflow-x: auto;
+            border: 1px solid var(--obs-border);
+            border-radius: 10px;
+        }
+        .obs-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .obs-table th {
+            text-align: left;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.03);
+            color: var(--obs-muted);
+            font-weight: 500;
+            font-size: 0.8rem;
+            border-bottom: 1px solid var(--obs-border);
+        }
+        .obs-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--obs-border);
+            color: var(--obs-text);
+            vertical-align: top;
+        }
+        .obs-table tr:hover td {
+            background: rgba(255,255,255,0.02);
+        }
+        .obs-table tr:last-child td {
+            border-bottom: none;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-info { background: rgba(88,166,255,0.15); color: var(--obs-accent); }
+        .badge-warn { background: rgba(210,153,34,0.15); color: var(--obs-warning); }
+        .badge-error { background: rgba(248,81,73,0.15); color: var(--obs-danger); }
+        .badge-success { background: rgba(63,185,80,0.15); color: var(--obs-success); }
+
+        /* Metrics */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 16px;
+        }
+        .metric-card {
+            background: var(--obs-panel);
+            border: 1px solid var(--obs-border);
+            border-radius: 10px;
+            padding: 20px;
+        }
+        .metric-label {
+            font-size: 0.8rem;
+            color: var(--obs-muted);
+            margin-bottom: 8px;
+        }
+        .metric-value {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: var(--obs-text);
+        }
+        .metric-sub {
+            font-size: 0.75rem;
+            color: var(--obs-muted);
+            margin-top: 6px;
+        }
+
+        /* JSON preview */
+        .json-preview {
+            background: #0d1117;
+            border: 1px solid var(--obs-border);
+            border-radius: 8px;
+            padding: 14px;
+            font-family: "SF Mono", Monaco, monospace;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            color: var(--obs-muted);
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Flow timeline */
+        .flow-panel {
+            background: var(--obs-bg);
+            border: 1px solid var(--obs-border);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .flow-timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .flow-item {
+            display: flex;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            transition: 0.15s ease;
+        }
+        .flow-item:hover {
+            background: rgba(255,255,255,0.03);
+        }
+        .flow-marker {
+            width: 24px;
+            text-align: center;
+            font-size: 1rem;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .flow-body {
+            flex: 1;
+            min-width: 0;
+        }
+        .flow-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--obs-text);
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .flow-time {
+            font-size: 0.7rem;
+            color: var(--obs-muted);
+            font-weight: 400;
+            font-family: "SF Mono", Monaco, monospace;
+        }
+        .flow-detail-text {
+            font-size: 0.8rem;
+            color: var(--obs-muted);
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .flow-msg-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .flow-msg {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 0.78rem;
+            color: var(--obs-muted);
+            line-height: 1.4;
+        }
+        .flow-tag {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 4px;
+            border: 1px solid;
+            font-size: 0.7rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            flex-shrink: 0;
+        }
+        .flow-json {
+            background: #0d1117;
+            border: 1px solid var(--obs-border);
+            border-radius: 6px;
+            padding: 10px;
+            font-family: "SF Mono", Monaco, monospace;
+            font-size: 0.78rem;
+            line-height: 1.4;
+            color: var(--obs-muted);
+            margin-top: 8px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Empty state */
+        .obs-empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--obs-muted);
+        }
+    </style>
+</head>
+<body>
+    <div id="obs-app">
+        <aside class="obs-sidebar">
+            <div class="obs-sidebar-header">
+                <h1>🔬 Observability</h1>
+                <a href="index.html">← 返回聊天</a>
+            </div>
+            <ul class="obs-nav">
+                <li class="active" data-tab="traces">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                    Traces
+                </li>
+                <li data-tab="events">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+                    Events
+                </li>
+                <li data-tab="metrics">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+                    Metrics
+                </li>
+                <li data-tab="errors">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                    Errors
+                </li>
+                <li data-tab="runtimes">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+                    Runtimes
+                </li>
+                <li data-tab="logs">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    Logs
+                </li>
+            </ul>
+        </aside>
+
+        <main class="obs-main">
+            <div class="obs-toolbar">
+                <h2 id="panel-title">Traces</h2>
+                <button class="obs-refresh" id="btn-refresh">↻ 刷新</button>
+            </div>
+            <div class="obs-content" id="obs-content">
+                <!-- Traces Panel -->
+                <div class="obs-panel active" id="panel-traces">
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                        <span style="font-size: 0.85rem; color: var(--obs-muted);">Session:</span>
+                        <select id="trace-session-filter" style="background: var(--obs-panel); color: var(--obs-text); border: 1px solid var(--obs-border); border-radius: 6px; padding: 4px 10px; font-size: 0.8rem;">
+                            <option value="">全部</option>
+                        </select>
+                    </div>
+                    <div id="traces-list" class="trace-grid"></div>
+                </div>
+
+                <!-- Events Panel -->
+                <div class="obs-panel" id="panel-events">
+                    <div class="obs-table-wrap">
+                        <table class="obs-table">
+                            <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th>类型</th>
+                                    <th>来源</th>
+                                    <th>Session</th>
+                                    <th>级别</th>
+                                </tr>
+                            </thead>
+                            <tbody id="events-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Metrics Panel -->
+                <div class="obs-panel" id="panel-metrics">
+                    <div id="metrics-grid" class="metrics-grid"></div>
+                </div>
+
+                <!-- Errors Panel -->
+                <div class="obs-panel" id="panel-errors">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 0.85rem; color: var(--obs-muted);">过滤:</span>
+                            <select id="error-filter" style="background: var(--obs-panel); color: var(--obs-text); border: 1px solid var(--obs-border); border-radius: 6px; padding: 4px 10px; font-size: 0.8rem;">
+                                <option value="all">全部</option>
+                                <option value="error">仅错误</option>
+                                <option value="warn">仅警告</option>
+                                <option value="tool">工具类</option>
+                                <option value="permission">权限类</option>
+                                <option value="validation">校验类</option>
+                                <option value="llm">LLM类</option>
+                                <option value="system">系统类</option>
+                                <option value="trace">Trace类</option>
+                                <option value="audit">审计类</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <button class="obs-refresh" id="btn-copy-errors" title="复制当前错误列表（供 AI 诊断）">📋 Copy for AI</button>
+                            <span id="error-count" style="font-size: 0.8rem; color: var(--obs-muted);">-</span>
+                        </div>
+                    </div>
+                    <div id="errors-list" class="flow-panel" style="padding: 0; background: transparent; border: none;"></div>
+                </div>
+
+                <!-- Runtimes Panel -->
+                <div class="obs-panel" id="panel-runtimes">
+                    <div class="runtime-summary" style="display: flex; gap: 16px; margin-bottom: 20px;">
+                        <div class="metric-card" style="flex: 1;">
+                            <div class="metric-label">Active Runtimes</div>
+                            <div class="metric-value" id="runtime-count">-</div>
+                        </div>
+                        <div class="metric-card" style="flex: 1;">
+                            <div class="metric-label">Total Sessions</div>
+                            <div class="metric-value" id="session-count">-</div>
+                        </div>
+                    </div>
+                    <div id="runtimes-container" class="obs-table-wrap">
+                        <div class="obs-empty">Loading runtimes...</div>
+                    </div>
+                </div>
+
+                <!-- Logs Panel -->
+                <div class="obs-panel" id="panel-logs">
+                    <h3 style="margin-bottom: 12px; font-size: 0.9rem; color: var(--obs-muted);">Trace Errors</h3>
+                    <div class="obs-table-wrap" style="margin-bottom: 24px;">
+                        <table class="obs-table">
+                            <thead>
+                                <tr>
+                                    <th>Trace</th>
+                                    <th>Span</th>
+                                    <th>错误信息</th>
+                                    <th>时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="logs-errors-tbody"></tbody>
+                        </table>
+                    </div>
+                    <h3 style="margin-bottom: 12px; font-size: 0.9rem; color: var(--obs-muted);">Event Logs</h3>
+                    <div class="obs-table-wrap">
+                        <table class="obs-table">
+                            <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th>级别</th>
+                                    <th>类型</th>
+                                    <th>来源</th>
+                                    <th>Session</th>
+                                </tr>
+                            </thead>
+                            <tbody id="logs-events-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="static/observability.js"></script>
+</body>
+</html>

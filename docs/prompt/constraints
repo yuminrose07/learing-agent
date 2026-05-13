@@ -1,0 +1,86 @@
+# Constraint Framework
+
+## 目标
+
+- 本文档定义高级约束模块的组织方式、接口规范、加载顺序和维护策略。
+- 它是约束管理框架说明，不是日常默认加载的核心规则。
+- 只有在需要设计、扩展、审查约束体系本身时，才加载本文件。
+
+## 目录约定
+
+```text
+AGENTS.md
+docs/prompt/
+  constraints
+  audit
+  <future-memory>
+  <future-performance>
+  <future-security>
+```
+
+- `docs/prompt/` 是高级约束源目录。
+- 项目根目录下的 `AGENTS.<module>.md` 是软链接入口，用于暴露稳定的加载点。
+- 当前入口建议：
+  - `AGENTS.constraints.md -> docs/prompt/constraints`
+  - `AGENTS.audit.md -> docs/prompt/audit`
+
+## 模块接口规范
+
+每个约束模块都必须声明以下字段：
+
+- `module_id`：模块唯一标识，如 `constraint.audit`
+- `version`：模块版本，采用语义化版本
+- `purpose`：模块目标与覆盖范围
+- `load_when`：触发条件，说明何时需要加载
+- `inputs`：使用前必须提供的上下文
+- `outputs`：预期输出结构或检查清单
+- `depends_on`：硬依赖模块
+- `load_after`：推荐加载顺序
+- `conflicts_with`：互斥模块或互斥模式
+- `fallback`：信息不足或依赖缺失时的降级行为
+
+模块正文只包含自身规则和流程，不重复 `AGENTS.md` 的核心规则。
+
+## 加载顺序
+
+建议按以下顺序加载：
+
+1. 先加载 `AGENTS.md`
+2. 根据任务类型识别候选模块
+3. 按 `depends_on` 与 `load_after` 解析依赖
+4. 先加载通用模块，再加载专项模块
+5. 只加载当前任务真正需要的模块
+
+约束要求：
+
+- 不允许循环依赖
+- 模块不得覆盖核心规则，只能补充或收紧
+- 高风险模块应晚于通用模块加载，例如安全模块晚于普通流程模块
+
+## 模块发现与懒加载
+
+- 默认只暴露 `AGENTS.md`
+- 当任务命中触发条件时，再显式加载对应 `AGENTS.<module>.md`
+- 未触发模块不进入上下文，减少噪音和 token 占用
+- 新模块只要满足接口规范，就可以接入发现流程
+
+## 注册表
+
+| module_id | 入口 | 源文件 | 触发场景 | 依赖 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| `constraint.audit` | `AGENTS.audit.md` | `docs/prompt/audit` | 诊断、迭代前审视、修 Bug 前排查 | `core` | active |
+
+## 版本策略
+
+- 版本采用语义化版本：`major.minor.patch`
+- `major`：输出契约或使用方式发生不兼容变化
+- `minor`：新增能力但兼容旧接口
+- `patch`：措辞修正、结构微调或不改变契约的优化
+- 软链接入口默认指向当前稳定版本对应的源文件
+
+## 维护规范
+
+- 只有“跨任务复用、篇幅较长、属于专项流程模板”的内容，才适合注册为模块
+- 临时任务说明和一次性上下文不进入框架
+- 核心规则变化时，必须同步检查已注册模块
+- 新模块注册前，先确认接口字段完整、依赖明确、入口有效

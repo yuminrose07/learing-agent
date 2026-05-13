@@ -1,238 +1,237 @@
-"""
-内置扩展：系统核心功能通过扩展系统实现，保持核心最小化。
-当前版本包含占位实现，展示扩展系统的使用方式。
-"""
+"""内置扩展集合。"""
 
 from __future__ import annotations
 
 import logging
 
 from learning_agent.core.extension_manager import Extension, ExtensionContext
-from learning_agent.core.hook_system import HookPoint
-from learning_agent.models import Event, ToolDefinition
+from learning_agent.extensions.code_tools import create_code_tools_extension
+from learning_agent.extensions.security_audit import create_security_audit_extension
+from learning_agent.extensions.tool_guard import create_tool_guard_extension
+from learning_agent.models import (
+    AfterResponseInput,
+    AfterResponseResult,
+    AfterToolExecuteInput,
+    AfterToolExecuteResult,
+    BeforeAgentRunInput,
+    BeforeAgentRunResult,
+    Event,
+    HookName,
+    OnStreamChunkInput,
+    OnStreamChunkResult,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def create_builtin_extensions() -> list[Extension]:
-    """创建所有内置扩展的列表。"""
+def create_builtin_extensions(config: dict | None = None) -> list[Extension]:
+    """创建默认启用的最小运行时扩展集合。"""
     return [
         _create_observability_extension(),
+        _create_fulltrace_extension(),
         _create_output_prompting_extension(),
-        _create_knowledge_extraction_extension(),
-        _create_review_extension(),
-        _create_material_text_extension(),
+        create_code_tools_extension(),
+        create_tool_guard_extension(config),
+        create_security_audit_extension(config),
     ]
 
 
 def _create_observability_extension() -> Extension:
-    """
-    core-observability：可观测性收集扩展。
-    订阅所有事件，记录指标和日志。
-    """
     ext = Extension(
         id="core-observability",
         name="Observability Collector",
-        version="0.1.0",
+        version="0.2.0",
         type="builtin",
     )
 
     async def activate(ctx: ExtensionContext) -> None:
         ctx.subscribe_event("*", _on_any_event)
-        ctx.register_hook(
-            HookPoint.BEFORE_LLM_CALL,
-            _hook_before_llm,
-            priority=100,
-        )
-        ctx.register_hook(
-            HookPoint.AFTER_RESPONSE,
-            _hook_after_response,
-            priority=100,
-        )
+        ctx.register_hook(HookName.BEFORE_AGENT_RUN, _hook_before_agent_run, priority=100)
+        ctx.register_hook(HookName.AFTER_RESPONSE, _hook_after_response, priority=100)
 
     ext.on_activate(activate)
     return ext
 
 
 async def _on_any_event(event: Event) -> None:
-    logger.debug(f"[core-observability] Event: {event.type} from {event.source}")
+    logger.debug("[core-observability] Event: %s from %s", event.type, event.source)
 
 
-async def _hook_before_llm(data, context):
-    logger.debug(f"[core-observability] Hook beforeLLMCall: {len(data)} messages")
+async def _hook_before_agent_run(hook_input: BeforeAgentRunInput) -> BeforeAgentRunResult:
+    logger.debug(
+        "[core-observability] Hook before_agent_run: %s tools=%s",
+        hook_input.context.session_id,
+        len(hook_input.tools_summary),
+    )
+    return BeforeAgentRunResult()
 
 
-async def _hook_after_response(data, context):
-    logger.debug(f"[core-observability] Hook afterResponse: {len(data)} chars")
+async def _hook_after_response(hook_input: AfterResponseInput) -> AfterResponseResult:
+    logger.debug(
+        "[core-observability] Hook after_response: %s chars",
+        len(hook_input.response_text),
+    )
+    return AfterResponseResult()
 
 
 def _create_output_prompting_extension() -> Extension:
-    """
-    core-output-prompting：输出倒逼扩展。
-    当检测到用户连续多轮被动接收时，追加输出要求。
-    """
     ext = Extension(
         id="core-output-prompting",
         name="Output Prompting",
-        version="0.1.0",
+        version="0.2.0",
         type="builtin",
     )
 
     async def activate(ctx: ExtensionContext) -> None:
-        ctx.register_hook(
-            HookPoint.AFTER_RESPONSE,
-            _hook_output_prompting,
-            priority=50,
-        )
+        ctx.register_hook(HookName.AFTER_RESPONSE, _hook_output_prompting, priority=50)
 
     ext.on_activate(activate)
     return ext
 
 
-async def _hook_output_prompting(response_content: str, context: dict):
-    """
-    简化版输出倒逼：每隔一定轮数提醒用户主动输出。
-    实际实现应分析会话历史判断用户是否被动。
-    """
-    session = context.get("session")
-    if session:
-        history = [e for e in session.entries if e.role and e.role.value == "user"]
-        if len(history) > 0 and len(history) % 5 == 0:
-            # 每 5 轮用户消息提醒一次
-            modified = response_content + (
-                "\n\n💡 **输出倒逼**: 你已经接收了一段时间的内容。"
-                "请尝试用自己的话总结一下刚才学到的要点，这将大大加深记忆。"
-            )
-            from learning_agent.models import HookResult
-            return HookResult(modified=True, data=modified)
-    from learning_agent.models import HookResult
-    return HookResult(modified=False, data=response_content)
+async def _hook_output_prompting(hook_input: AfterResponseInput) -> AfterResponseResult:
+    history_count = hook_input.response_metadata.get("user_message_count", 0)
+    if history_count > 0 and history_count % 5 == 0:
+        modified = hook_input.response_text + (
+            "\n\n提示：你已经连续接收了一段内容，"
+            "可以试着用自己的话总结刚才的关键点。"
+        )
+        return AfterResponseResult(response_override=modified)
+    return AfterResponseResult()
 
 
-def _create_knowledge_extraction_extension() -> Extension:
-    """
-    core-knowledge-extraction：知识提取扩展。
-    在响应后自动提取候选知识节点到 L1。
-    """
-    ext = Extension(
-        id="core-knowledge-extraction",
-        name="Knowledge Extraction",
-        version="0.1.0",
-        type="builtin",
+_fulltrace_flows: dict[str, list[dict]] = {}
+_fulltrace_stream_started: set[str] = set()
+
+
+def _fulltrace_add_step(session_id: str, phase: str, detail: dict) -> None:
+    from datetime import datetime, timezone
+
+    _fulltrace_flows.setdefault(session_id, []).append(
+        {
+            "phase": phase,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "detail": detail,
+        }
     )
 
-    async def activate(ctx: ExtensionContext) -> None:
-        ctx.subscribe_event("agent.responseDone", _on_response_done)
-        ctx.register_tool(
-            ToolDefinition(
-                id="create_knowledge_node",
-                name="create_knowledge_node",
-                description="Create a knowledge node from the current context",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string", "description": "The knowledge content"},
-                        "tags": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "required": ["content"],
-                },
-            ),
-            _tool_create_knowledge_node,
-        )
 
-    ext.on_activate(activate)
-    return ext
-
-
-async def _on_response_done(event: Event) -> None:
-    logger.debug(f"[core-knowledge-extraction] Response done in session {event.session_id}")
-
-
-async def _tool_create_knowledge_node(content: str, tags: list[str] = None, **kwargs):
-    from learning_agent.models import KnowledgeNode
-    node = KnowledgeNode(content=content, tags=tags or [])
-    return {"node_id": node.id, "content": node.content}
-
-
-def _create_review_extension() -> Extension:
-    """
-    core-review：间隔重复调度扩展。
-    在知识确认后安排复习，处理复习结果。
-    """
-    ext = Extension(
-        id="core-review",
-        name="Spaced Repetition Scheduler",
-        version="0.1.0",
-        type="builtin",
-    )
-
-    async def activate(ctx: ExtensionContext) -> None:
-        ctx.subscribe_event("knowledge.confirmed", _on_knowledge_confirmed)
-        ctx.register_tool(
-            ToolDefinition(
-                id="schedule_review",
-                name="schedule_review",
-                description="Schedule a review for a knowledge node",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "node_id": {"type": "string"},
-                        "interval_days": {"type": "integer"},
-                    },
-                    "required": ["node_id"],
-                },
-            ),
-            _tool_schedule_review,
-        )
-
-    ext.on_activate(activate)
-    return ext
-
-
-async def _on_knowledge_confirmed(event: Event) -> None:
-    logger.info(f"[core-review] Knowledge confirmed, scheduling review: {event.payload}")
-
-
-async def _tool_schedule_review(node_id: str, interval_days: int = 1, **kwargs):
-    return {"node_id": node_id, "scheduled": True, "interval_days": interval_days}
-
-
-def _create_material_text_extension() -> Extension:
-    """
-    core-material-text：文本材料解析扩展。
-    提供基础文本材料的读取工具。
-    """
-    ext = Extension(
-        id="core-material-text",
-        name="Text Material Parser",
-        version="0.1.0",
-        type="builtin",
-    )
-
-    async def activate(ctx: ExtensionContext) -> None:
-        ctx.register_tool(
-            ToolDefinition(
-                id="read_material",
-                name="read_material",
-                description="Read a text material by path or ID",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                    },
-                    "required": ["path"],
-                },
-            ),
-            _tool_read_material,
-        )
-
-    ext.on_activate(activate)
-    return ext
-
-
-async def _tool_read_material(path: str, **kwargs):
+def _fulltrace_persist(session_id: str) -> None:
+    import json
     import os
-    if not os.path.exists(path):
-        return {"error": f"Material not found: {path}"}
-    with open(path, "r", encoding="utf-8") as f:
-        return {"content": f.read()}
+
+    steps = _fulltrace_flows.get(session_id, [])
+    if not steps:
+        return
+    path = os.path.join(".observability", f"flow_{session_id}.json")
+    os.makedirs(".observability", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"session_id": session_id, "steps": steps},
+            f,
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
+
+
+def _fulltrace_load_existing() -> None:
+    import json
+    from pathlib import Path
+
+    for f in Path(".observability").glob("flow_*.json"):
+        try:
+            sid = f.stem.replace("flow_", "")
+            with open(f, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            _fulltrace_flows[sid] = data.get("steps", [])
+        except Exception:
+            continue
+
+
+def _create_fulltrace_extension() -> Extension:
+    ext = Extension(
+        id="core-fulltrace",
+        name="Full Trace Collector",
+        version="0.2.0",
+        type="builtin",
+    )
+
+    async def activate(ctx: ExtensionContext) -> None:
+        _fulltrace_load_existing()
+        ctx.register_hook(HookName.BEFORE_AGENT_RUN, _fulltrace_hook_before_agent_run, priority=90)
+        ctx.register_hook(HookName.ON_STREAM_CHUNK, _fulltrace_hook_stream_chunk, priority=90)
+        ctx.register_hook(HookName.AFTER_TOOL_EXECUTE, _fulltrace_hook_after_tool_execute, priority=90)
+        ctx.register_hook(HookName.AFTER_RESPONSE, _fulltrace_hook_after_response, priority=90)
+
+    ext.on_activate(activate)
+    return ext
+
+
+async def _fulltrace_hook_before_agent_run(
+    hook_input: BeforeAgentRunInput,
+) -> BeforeAgentRunResult:
+    sid = hook_input.context.session_id
+    _fulltrace_add_step(
+        sid,
+        "before_agent_run",
+        {
+            "user_input": hook_input.user_input[:1000],
+            "tool_count": len(hook_input.tools_summary),
+            "provider": hook_input.provider_summary,
+        },
+    )
+    return BeforeAgentRunResult()
+
+
+async def _fulltrace_hook_stream_chunk(
+    hook_input: OnStreamChunkInput,
+) -> OnStreamChunkResult:
+    sid = hook_input.context.session_id
+    if sid not in _fulltrace_stream_started:
+        _fulltrace_stream_started.add(sid)
+        _fulltrace_add_step(
+            sid,
+            "llm_stream_start",
+            {"first_chunk": hook_input.content[:300]},
+        )
+    if hook_input.finish_reason:
+        _fulltrace_stream_started.discard(sid)
+        _fulltrace_add_step(
+            sid,
+            "llm_stream_end",
+            {"finish_reason": hook_input.finish_reason},
+        )
+    return OnStreamChunkResult()
+
+
+async def _fulltrace_hook_after_tool_execute(
+    hook_input: AfterToolExecuteInput,
+) -> AfterToolExecuteResult:
+    sid = hook_input.context.session_id
+    _fulltrace_add_step(
+        sid,
+        "tool_result",
+        {
+            "tool_name": hook_input.tool_name,
+            "success": hook_input.success,
+            "duration_ms": hook_input.duration_ms,
+            "retry_count": hook_input.retry_count,
+            "error": hook_input.error,
+        },
+    )
+    return AfterToolExecuteResult()
+
+
+async def _fulltrace_hook_after_response(
+    hook_input: AfterResponseInput,
+) -> AfterResponseResult:
+    sid = hook_input.context.session_id
+    _fulltrace_add_step(
+        sid,
+        "final_response",
+        {"content": hook_input.response_text[:2000]},
+    )
+    _fulltrace_persist(sid)
+    _fulltrace_stream_started.discard(sid)
+    return AfterResponseResult()

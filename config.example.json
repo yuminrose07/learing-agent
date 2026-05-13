@@ -3,11 +3,21 @@
   "observability_dir": "./observability",
   "provider": {
     "type": "openai",
-    "model": "gpt-4o",
-    "base_url": "https://api.openai.com/v1",
+    "model": "kimi-2.6",
+    "base_url": "https://api.moonshot.cn/v1",
     "timeout": 60.0,
     "max_retries": 3
   },
   "auto_confirm_knowledge": false,
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "tool_guard": {
+    "bash_mode": "default",
+    "bash_allowlist": [],
+    "bash_denylist": [],
+    "rules": {
+      "allow": [],
+      "deny": [],
+      "ask": []
+    }
+  }
 }

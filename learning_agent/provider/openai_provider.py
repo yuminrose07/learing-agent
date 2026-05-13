@@ -46,15 +46,24 @@ class OpenAIProvider(BaseProvider):
                 msg["tool_calls"] = m.tool_calls
             if m.tool_call_id:
                 msg["tool_call_id"] = m.tool_call_id
+            if m.reasoning_content is not None:
+                msg["reasoning_content"] = m.reasoning_content
             result.append(msg)
         return result
 
+    def _resolve_temperature(self, model: str, temperature: float) -> float:
+        """Moonshot kimi-k2.x 系列模型强制 temperature=1.0。"""
+        if "kimi-k2" in model:
+            return 1.0
+        return temperature
+
     async def stream_chat(self, params: ChatParams) -> AsyncIterable[ChatChunk]:
         """流式聊天，返回 AsyncIterable[ChatChunk]。"""
+        model = params.model or self.config.model
         request = {
-            "model": params.model or self.config.model,
+            "model": model,
             "messages": self._convert_messages(params.messages),
-            "temperature": params.temperature,
+            "temperature": self._resolve_temperature(model, params.temperature),
             "stream": True,
         }
         if params.max_tokens:
@@ -80,32 +89,51 @@ class OpenAIProvider(BaseProvider):
                 if not choice:
                     continue
                 delta = choice.delta
-                tool_call = None
+
+                # yield content chunk（如果有文本或推理内容）
+                if delta.content or getattr(delta, "reasoning_content", None):
+                    yield ChatChunk(
+                        content=delta.content or "",
+                        finish_reason=choice.finish_reason,
+                        reasoning_content=getattr(delta, "reasoning_content", None) or None,
+                    )
+
+                # yield 每个 tool call chunk（支持并行 tool calls）
                 if delta.tool_calls:
-                    tc = delta.tool_calls[0]
-                    tool_call = {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name if tc.function else None,
-                            "arguments": tc.function.arguments if tc.function else "",
-                        },
-                    }
-                yield ChatChunk(
-                    content=delta.content or "",
-                    tool_call=tool_call,
-                    finish_reason=choice.finish_reason,
-                )
+                    for tc in delta.tool_calls:
+                        yield ChatChunk(
+                            content="",
+                            tool_call={
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name if tc.function else None,
+                                    "arguments": tc.function.arguments if tc.function else "",
+                                },
+                            },
+                            tool_call_index=tc.index,
+                            finish_reason=choice.finish_reason,
+                            reasoning_content=getattr(delta, "reasoning_content", None) or None,
+                        )
+
+                # 如果既没有内容也没有 tool_calls，但可能有 finish_reason，也 yield 一个空 chunk
+                if not delta.content and not getattr(delta, "reasoning_content", None) and not delta.tool_calls:
+                    yield ChatChunk(
+                        content="",
+                        finish_reason=choice.finish_reason,
+                        reasoning_content=getattr(delta, "reasoning_content", None) or None,
+                    )
         except Exception as e:
             logger.exception(f"[OpenAIProvider] Stream error: {e}")
             raise ProviderError(f"OpenAI stream failed: {e}") from e
 
     async def chat(self, params: ChatParams) -> ChatChunk:
         """非流式调用。"""
+        model = params.model or self.config.model
         request = {
-            "model": params.model or self.config.model,
+            "model": model,
             "messages": self._convert_messages(params.messages),
-            "temperature": params.temperature,
+            "temperature": self._resolve_temperature(model, params.temperature),
             "stream": False,
         }
         if params.max_tokens:
@@ -141,6 +169,7 @@ class OpenAIProvider(BaseProvider):
                 content=message.content or "",
                 tool_call=tool_call,
                 finish_reason=choice.finish_reason,
+                reasoning_content=getattr(message, "reasoning_content", None) or None,
             )
         except Exception as e:
             logger.exception(f"[OpenAIProvider] Chat error: {e}")
@@ -154,6 +183,10 @@ class OpenAIProvider(BaseProvider):
 
     def get_max_context_length(self) -> int:
         return 128000
+
+    @property
+    def default_model(self) -> str:
+        return self.config.model
 
 
 class ProviderError(Exception):

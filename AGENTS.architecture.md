@@ -1,0 +1,1 @@
+/Users/roseannk/my-agent/docs/prompt/architecture

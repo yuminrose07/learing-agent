@@ -37,3 +37,8 @@ class BaseProvider(ABC):
     @abstractmethod
     def get_max_context_length(self) -> int:
         pass
+
+    @property
+    def default_model(self) -> str:
+        """返回默认模型名称，供上层调用方使用。"""
+        return ""

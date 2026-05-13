@@ -21,6 +21,8 @@ import os
 import pathlib
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
 from learning_agent.models import ProviderConfig
 
 
@@ -29,7 +31,14 @@ class Config:
     系统配置，支持环境变量 + 配置文件混合读取。
     """
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, dotenv_path: Optional[str] = None):
+        # 0. 加载 .env 文件（不会覆盖已存在的环境变量）
+        if dotenv_path:
+            load_dotenv(dotenv_path=dotenv_path, override=False)
+        else:
+            # 自动查找当前目录或上级目录的 .env
+            load_dotenv(override=False)
+
         # 1. 加载配置文件（低优先级）
         file_values = self._load_config_file(config_path)
 
@@ -51,8 +60,8 @@ class Config:
         provider_from_file = file_values.get("provider", {})
         self.provider_config = ProviderConfig(
             api_key=os.getenv("OPENAI_API_KEY") or provider_from_file.get("api_key"),
-            base_url=os.getenv("OPENAI_BASE_URL") or provider_from_file.get("base_url"),
-            model=os.getenv("LA_MODEL") or provider_from_file.get("model", "gpt-4o"),
+            base_url=os.getenv("OPENAI_BASE_URL") or provider_from_file.get("base_url", "https://api.moonshot.cn/v1"),
+            model=os.getenv("LA_MODEL") or provider_from_file.get("model", "kimi-2.6"),
             timeout=float(
                 os.getenv("LA_TIMEOUT") or provider_from_file.get("timeout", "60.0")
             ),
@@ -63,6 +72,20 @@ class Config:
 
         # 可选：支持多 Provider 切换（预留）
         self.provider_type = provider_from_file.get("type", "openai")
+
+        # Tool Guard 配置
+        tool_guard_from_file = file_values.get("tool_guard", {})
+        rules_from_file = tool_guard_from_file.get("rules", {})
+        self.tool_guard = {
+            "bash_mode": os.getenv("LA_BASH_MODE") or tool_guard_from_file.get("bash_mode", "default"),
+            "bash_allowlist": tool_guard_from_file.get("bash_allowlist", []),
+            "bash_denylist": tool_guard_from_file.get("bash_denylist", []),
+            "rules": {
+                "allow": rules_from_file.get("allow", []),
+                "deny": rules_from_file.get("deny", []),
+                "ask": rules_from_file.get("ask", []),
+            },
+        }
 
     def _load_config_file(self, config_path: Optional[str]) -> dict[str, Any]:
         """尝试加载配置文件，返回解析后的字典。"""
@@ -168,4 +191,5 @@ class Config:
             },
             "auto_confirm_knowledge": self.auto_confirm_knowledge,
             "log_level": self.log_level,
+            "tool_guard": self.tool_guard,
         }

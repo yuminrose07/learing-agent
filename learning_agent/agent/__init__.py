@@ -1,3 +1,3 @@
-from .agent_loop import AgentLoop
+from .agent_loop import AgentLoop, AgentLoopSession
 
-__all__ = ["AgentLoop"]
+__all__ = ["AgentLoop", "AgentLoopSession"]

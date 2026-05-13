@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, AsyncIterable, Callable, Coroutine, Optional
+from typing import Any, AsyncIterable, Callable, Coroutine, Optional, Type
 
 from pydantic import BaseModel, Field
 
@@ -174,6 +174,13 @@ class SessionEntry(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AskState(BaseModel):
+    """Ask 对齐模式状态。"""
+    status: str = "idle"          # idle | aligning
+    confirmed_input: str = ""     # 对齐后最终确认的问题描述（Agent最后一次输出）
 
 
 class LearningSession(BaseModel):
@@ -187,6 +194,7 @@ class LearningSession(BaseModel):
     last_accessed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     extracted_knowledge_ids: list[str] = Field(default_factory=list)
     entries: list[SessionEntry] = Field(default_factory=list)
+    ask_state: AskState = Field(default_factory=AskState)
 
 
 # ───────────────────────────────
@@ -222,37 +230,142 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+    input_model: Optional[Type[BaseModel]] = None              # 【新增】显式 Pydantic 模型
     handler: Optional[Callable[..., Coroutine[Any, Any, Any]]] = Field(default=None, exclude=True)
 
 
 class ToolCall(BaseModel):
     tool_id: str
+    call_id: Optional[str] = None   # OpenAI tool call id
     arguments: dict[str, Any] = Field(default_factory=dict)
     result: Optional[Any] = None
     error: Optional[str] = None
     duration_ms: Optional[int] = None
 
 
-class HookPoint(str, Enum):
-    BEFORE_INTENT_PARSE = "agent.beforeIntentParse"
-    AFTER_INTENT_PARSE = "agent.afterIntentParse"
-    BEFORE_CONTEXT_BUILD = "agent.beforeContextBuild"
-    BEFORE_LLM_CALL = "agent.beforeLLMCall"
-    ON_STREAM_CHUNK = "agent.onStreamChunk"
-    AFTER_RESPONSE = "agent.afterResponse"
-    ON_TOOL_CALL = "agent.onToolCall"
-    AFTER_TOOL_RESULT = "agent.afterToolResult"
-    BEFORE_MEMORY_STORE = "memory.beforeStore"
-    AFTER_MEMORY_RECALL = "memory.afterRecall"
-    ON_SESSION_FORK = "session.onFork"
-    ON_SESSION_END = "session.onEnd"
+class ToolResultsBatch(BaseModel):
+    """BEFORE_TOOL_RESULTS_PERSIST Hook 的入参数据结构。"""
+    tool_calls: list[ToolCall]           # 声明的工具调用列表（按索引有序）
+    results: list[tuple[ToolCall, Any, bool]]  # 执行结果
 
 
-class HookResult(BaseModel):
-    modified: bool = False
-    data: Any = None
-    abort: bool = False
-    abort_reason: Optional[str] = None
+class HookName(str, Enum):
+    BEFORE_AGENT_RUN = "before_agent_run"
+    BEFORE_TOOL_EXECUTE = "before_tool_execute"
+    AFTER_TOOL_EXECUTE = "after_tool_execute"
+    ON_STREAM_CHUNK = "on_stream_chunk"
+    AFTER_RESPONSE = "after_response"
+
+
+class HookDecision(str, Enum):
+    CONTINUE = "continue"
+    ASK = "ask"
+    DENY = "deny"
+
+
+class HookWarning(BaseModel):
+    code: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class HookAuditRecord(BaseModel):
+    category: str
+    action: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class HookContext(BaseModel):
+    session_id: str
+    trace_id: Optional[str] = None
+    turn_id: Optional[int] = None
+    agent_state: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BeforeAgentRunInput(BaseModel):
+    user_input: str
+    config_snapshot: dict[str, Any] = Field(default_factory=dict)
+    provider_summary: dict[str, Any] = Field(default_factory=dict)
+    tools_summary: list[dict[str, Any]] = Field(default_factory=list)
+    context: HookContext
+
+
+class BeforeAgentRunResult(BaseModel):
+    decision: HookDecision = HookDecision.CONTINUE
+    ask_message: Optional[str] = None
+    deny_reason: Optional[str] = None
+    runtime_patch: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[HookWarning] = Field(default_factory=list)
+    audit_records: list[HookAuditRecord] = Field(default_factory=list)
+
+
+class BeforeToolExecuteInput(BaseModel):
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    tool_schema: dict[str, Any] = Field(default_factory=dict)
+    context: HookContext
+
+
+class BeforeToolExecuteResult(BaseModel):
+    decision: HookDecision = HookDecision.CONTINUE
+    ask_message: Optional[str] = None
+    deny_reason: Optional[str] = None
+    patched_arguments: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[HookWarning] = Field(default_factory=list)
+    audit_records: list[HookAuditRecord] = Field(default_factory=list)
+
+
+class AfterToolExecuteInput(BaseModel):
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    success: bool
+    result: Any = None
+    error: Optional[str] = None
+    duration_ms: int = 0
+    retry_count: int = 0
+    annotations: dict[str, Any] = Field(default_factory=dict)
+    context: HookContext
+
+
+class AfterToolExecuteResult(BaseModel):
+    display_result_override: Optional[str] = None
+    extra_metadata: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[HookWarning] = Field(default_factory=list)
+    audit_records: list[HookAuditRecord] = Field(default_factory=list)
+
+
+class OnStreamChunkInput(BaseModel):
+    chunk_index: int
+    content: str = ""
+    reasoning_content: str = ""
+    finish_reason: Optional[str] = None
+    context: HookContext
+
+
+class OnStreamChunkResult(BaseModel):
+    content_override: Optional[str] = None
+    reasoning_content_override: Optional[str] = None
+    stream_tags: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[HookWarning] = Field(default_factory=list)
+
+
+class AfterResponseInput(BaseModel):
+    response_text: str
+    tool_calls_present: bool = False
+    response_metadata: dict[str, Any] = Field(default_factory=dict)
+    context: HookContext
+
+
+class AfterResponseResult(BaseModel):
+    response_override: Optional[str] = None
+    extra_metadata: dict[str, Any] = Field(default_factory=dict)
+    followup_signals: list[str] = Field(default_factory=list)
+    warnings: list[HookWarning] = Field(default_factory=list)
+    audit_records: list[HookAuditRecord] = Field(default_factory=list)
 
 
 class Event(BaseModel):
@@ -275,6 +388,7 @@ class ChatMessage(BaseModel):
     name: Optional[str] = None
     tool_calls: Optional[list[dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
+    reasoning_content: Optional[str] = None
 
 
 class ChatParams(BaseModel):
@@ -289,7 +403,9 @@ class ChatParams(BaseModel):
 class ChatChunk(BaseModel):
     content: str = ""
     tool_call: Optional[dict[str, Any]] = None
+    tool_call_index: Optional[int] = None
     finish_reason: Optional[str] = None
+    reasoning_content: Optional[str] = None
 
 
 class ProviderConfig(BaseModel):
@@ -362,8 +478,159 @@ class IntentResult(BaseModel):
     clarification_question: Optional[str] = None
 
 
+# ───────────────────────────────
+# 权限决策（借鉴 Claude Code 设计）
+# ───────────────────────────────
+
+class PermissionBehavior(str, Enum):
+    ALLOW = "allow"
+    ASK = "ask"
+    DENY = "deny"
+
+
+class PermissionDecisionReason(BaseModel):
+    type: str  # rule | mode | hook | safety_check | path_check | default
+    detail: Optional[str] = None
+    rule: Optional[dict[str, Any]] = None
+
+
+class PermissionDecision(BaseModel):
+    behavior: PermissionBehavior
+    message: str = ""
+    decision_reason: Optional[PermissionDecisionReason] = None
+    suggestions: Optional[list[dict[str, Any]]] = None
+
+
+class PermissionRule(BaseModel):
+    tool_name: str
+    rule_content: Optional[str] = None
+    behavior: PermissionBehavior = PermissionBehavior.ASK
+
+
+class FileOperationType(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    CREATE = "create"
+
+
 class ContextComponent(BaseModel):
     type: str
     tokens: int = 0
     content: Any = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ───────────────────────────────
+# Agent 事件（参照 pi-mono 设计）
+# ───────────────────────────────
+
+class AgentEventType(str, Enum):
+    AGENT_START = "agent_start"
+    AGENT_END = "agent_end"
+    TURN_START = "turn_start"
+    TURN_END = "turn_end"
+    MESSAGE_START = "message_start"
+    MESSAGE_UPDATE = "message_update"
+    MESSAGE_END = "message_end"
+    TOOL_EXECUTION_START = "tool_execution_start"
+    TOOL_EXECUTION_END = "tool_execution_end"
+
+
+class AgentEvent(BaseModel):
+    type: AgentEventType
+    payload: dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    session_id: Optional[str] = None
+
+
+# ───────────────────────────────
+# Agent 全局状态快照（参照 pi-mono 设计）
+# ───────────────────────────────
+
+class ResilienceConfig(BaseModel):
+    """韧性配置：重试、兜底与工具输入校验。"""
+    # Provider 层
+    provider_fallback_chain: list[str] = Field(default_factory=list)
+    provider_retry_max_attempts: int = 3
+    provider_retry_backoff_base: float = 2.0
+    provider_retry_max_delay: float = 30.0
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_window_seconds: int = 60
+    circuit_breaker_recovery_timeout: int = 30
+
+    # Agent Loop 层
+    turn_retry_max_attempts: int = 2
+    auto_compress_on_context_overflow: bool = True
+    react_turns_before_chat_fallback: int = 2
+
+    # Tool 层
+    tool_validation_enabled: bool = True
+    tool_max_validation_history_groups: int = 3   # 同一工具 error 保留组数
+    tool_failure_window_turns: int = 5            # 滑动窗口 turn 数
+    tool_failure_threshold: int = 3               # 窗口内失败次数阈值
+    tool_default_timeout: int = 60
+
+    # 【新增】工具执行重试配置
+    max_tool_retries: int = 1                     # 工具执行失败后的重试次数（0 = 不重试）
+    tool_retry_base_delay: float = 1.0            # 工具重试基础延迟（秒），指数退避
+    tool_retry_max_delay: float = 5.0             # 工具重试最大延迟（秒）
+
+    # 【新增】Chat-Only 自动恢复
+    chat_only_recovery_turns: int = 3             # 连续多少个无工具调用的成功 turn 后退出 chat-only 模式（0 = 永不自动恢复）
+
+
+class AgentStateSnapshot(BaseModel):
+    """Agent 在某一时刻的完整状态快照，用于持久化和回放。"""
+    snapshot_id: str = Field(default_factory=lambda: f"snap-{uuid.uuid4().hex[:8]}")
+    session_id: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    system_prompt: str = ""
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    turn_count: int = 0
+    pending_tool_calls: list[str] = Field(default_factory=list)
+    error_message: Optional[str] = None
+
+
+# ───────────────────────────────
+# 韧性层错误分类
+# ───────────────────────────────
+
+class ResilienceError(Exception):
+    """韧性层错误基类。"""
+    pass
+
+
+class RetryableError(ResilienceError):
+    """可重试：网络抖动、限流、超时、服务端不可用。"""
+    pass
+
+
+class ContextLengthError(RetryableError):
+    """上下文过长：可重试 + 需触发上下文压缩。"""
+    pass
+
+
+class ValidationError(ResilienceError):
+    """参数校验失败：不重试，回流给 LLM 自纠正。"""
+    pass
+
+
+class ToolBannedError(ResilienceError):
+    """工具被临时禁用：不重试，回流给 LLM 决策。"""
+    pass
+
+
+class AuthError(ResilienceError):
+    """认证/授权错误：不可重试。"""
+    pass
+
+
+class InvalidRequestError(ResilienceError):
+    """请求格式错误：不可重试。"""
+    pass
+
+
+class ServiceUnavailable(ResilienceError):
+    """服务端不可用：可重试 + 可触发熔断。"""
+    pass

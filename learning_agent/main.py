@@ -81,7 +81,7 @@ class LearningAgentSystem:
         await self._load_state()
 
         # 注册内置扩展
-        for ext in create_builtin_extensions():
+        for ext in create_builtin_extensions(config=self.config.to_dict()):
             self.extension_manager.register(ext)
 
         # 激活所有扩展
@@ -99,7 +99,10 @@ class LearningAgentSystem:
             event_bus=self.event_bus,
             tool_registry=self.tool_registry,
             observability=self.observability,
+            max_react_turns=10,
         )
+        # 订阅状态快照事件，实现运行时持久化
+        self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
 
         logger.info("[System] Initialization complete.")
 
@@ -130,6 +133,18 @@ class LearningAgentSystem:
             self.file_store.save_session(sid, session.model_dump())
         logger.info("[System] State saved.")
 
+    async def _on_state_snapshot(self, event: Event) -> None:
+        """响应状态快照事件，持久化当前会话。"""
+        snapshot = event.payload
+        session_id = snapshot.get("session_id")
+        if session_id and session_id in self.session_manager._sessions:
+            session = self.session_manager._sessions[session_id]
+            try:
+                self.file_store.save_session(session_id, session.model_dump())
+                logger.debug(f"[System] Snapshot saved for session {session_id}")
+            except Exception as e:
+                logger.exception(f"[System] Failed to save snapshot: {e}")
+
     # ─── 用户交互接口 ───
 
     async def create_objective(self, title: str, description: Optional[str] = None) -> LearningObjective:
@@ -155,7 +170,7 @@ class LearningAgentSystem:
         )
         return session.id
 
-    async def chat(self, user_input: str) -> None:
+    async def chat(self, user_input: str, ask_mode: bool = False) -> None:
         """
         执行一轮对话，流式输出到 stdout。
         """
@@ -163,11 +178,14 @@ class LearningAgentSystem:
             await self.start_session()
 
         session = self._current_session
-        print(f"\n[You] {user_input}\n")
+        if ask_mode:
+            print(f"\n[You (Ask)] {user_input}\n")
+        else:
+            print(f"\n[You] {user_input}\n")
         print("[Assistant] ", end="", flush=True)
 
         try:
-            async for chunk in self.agent_loop.run(session, user_input):
+            async for chunk in self.agent_loop.run(session, user_input, ask_mode=ask_mode):
                 print(chunk.content, end="", flush=True)
             print()  # 换行
         except Exception as e:
@@ -236,6 +254,23 @@ async def interactive_cli(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Print loaded configuration and exit.",
     )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Start the web API server instead of interactive CLI.",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host to bind the web server (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind the web server (default: 8000).",
+    )
     args = parser.parse_args(argv)
 
     config = Config(config_path=args.config)
@@ -288,6 +323,7 @@ Commands:
   /fork [entry_id]      Fork session at current or specified entry
   /confirm <node_id>    Confirm a knowledge candidate to L2
   /save                 Save state manually
+  /ask <message>        Send message in Ask mode (alignment first)
   /help                 Show this help message
 """
                 )
@@ -307,6 +343,12 @@ Commands:
             elif cmd == "/save":
                 await system._save_state()
                 print("State saved.")
+            elif cmd == "/ask":
+                ask_input = user_input[len("/ask "):].strip()
+                if not ask_input:
+                    print("Usage: /ask <your question>")
+                else:
+                    await system.chat(ask_input, ask_mode=True)
             else:
                 print(f"Unknown command: {cmd}")
             continue
@@ -318,4 +360,25 @@ Commands:
 
 
 if __name__ == "__main__":
-    asyncio.run(interactive_cli(sys.argv[1:]))
+    # 提前解析参数，web 模式需要在 asyncio.run 之外启动，避免嵌套事件循环
+    _parser = argparse.ArgumentParser(description="Learning-Agent CLI")
+    _parser.add_argument("--config", "-c", type=str, default=None)
+    _parser.add_argument("--show-config", action="store_true")
+    _parser.add_argument("--web", action="store_true")
+    _parser.add_argument("--host", type=str, default="127.0.0.1")
+    _parser.add_argument("--port", type=int, default=8000)
+    _args = _parser.parse_args()
+
+    if _args.web:
+        import os
+        import uvicorn
+        if _args.config:
+            os.environ["LA_CONFIG_PATH"] = _args.config
+        uvicorn.run(
+            "learning_agent.web_server:app",
+            host=_args.host,
+            port=_args.port,
+            reload=False,
+        )
+    else:
+        asyncio.run(interactive_cli(sys.argv[1:]))
