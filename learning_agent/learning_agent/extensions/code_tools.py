@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,15 @@ from pydantic import BaseModel, Field
 
 from learning_agent.learning_agent.extension_manager import Extension, ExtensionContext
 from learning_agent.ai import ToolDefinition
+from learning_agent.learning_agent.extensions.truncate_utils import (
+    BASH_MAX_BYTES,
+    BASH_MAX_LINES,
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINES,
+    format_size,
+    truncate_head,
+    truncate_tail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,16 +130,55 @@ async def _tool_read_file(path: str, offset: int = 1, limit: int = 0, **kwargs: 
 
     total_lines = len(lines)
     start = max(0, offset - 1)
-    end = total_lines if limit <= 0 else start + limit
+    end = total_lines if limit <= 0 else min(total_lines, start + limit)
     selected = lines[start:end]
+    selected_content = "".join(selected)
+    truncation = truncate_head(
+        selected_content,
+        max_lines=DEFAULT_MAX_LINES,
+        max_bytes=DEFAULT_MAX_BYTES,
+    )
+    content = truncation.content
+    next_offset = None
+    relative_path = str(target.relative_to(Path.cwd()))
 
-    content = "".join(selected)
+    if truncation.first_line_exceeds_limit and selected:
+        line_no = start + 1
+        line_size = format_size(len(selected[0].encode("utf-8")))
+        content = (
+            f"[Line {line_no} is {line_size}, exceeds {format_size(DEFAULT_MAX_BYTES)} limit. "
+            f"Use bash: sed -n '{line_no}p' {shlex.quote(relative_path)} | head -c {DEFAULT_MAX_BYTES}]"
+        )
+    elif truncation.truncated and truncation.output_lines > 0:
+        next_offset = start + truncation.output_lines + 1
+        shown_start = start + 1
+        shown_end = start + truncation.output_lines
+        if truncation.truncated_by == "bytes":
+            notice = (
+                f"[Showing lines {shown_start}-{shown_end} of {total_lines} "
+                f"({format_size(DEFAULT_MAX_BYTES)} limit). Use offset={next_offset} to continue.]"
+            )
+        else:
+            notice = (
+                f"[Showing lines {shown_start}-{shown_end} of {total_lines}. "
+                f"Use offset={next_offset} to continue.]"
+            )
+        content = f"{content}\n\n{notice}" if content else notice
+    elif limit > 0 and end < total_lines:
+        next_offset = end + 1
+        remaining = total_lines - end
+        notice = f"[{remaining} more lines. Use offset={next_offset} to continue.]"
+        content = f"{selected_content}\n\n{notice}" if selected_content else notice
+
     return {
-        "path": str(target.relative_to(Path.cwd())),
+        "path": relative_path,
         "content": content,
         "total_lines": total_lines,
-        "shown_lines": len(selected),
+        "shown_lines": truncation.output_lines if truncation.truncated else len(selected),
         "offset": start + 1,
+        "truncated": truncation.truncated,
+        "truncated_by": truncation.truncated_by,
+        "next_offset": next_offset,
     }
 
 
@@ -213,13 +261,42 @@ async def _tool_bash(command: str, timeout: int = 60, description: str = "", **k
         )
         stdout = stdout_data.decode("utf-8", errors="replace")
         stderr = stderr_data.decode("utf-8", errors="replace")
+        combined = "\n".join(part for part in (stdout, stderr) if part).strip()
+        truncation = truncate_tail(
+            combined,
+            max_lines=BASH_MAX_LINES,
+            max_bytes=BASH_MAX_BYTES,
+        )
+        output = truncation.content
+
+        if truncation.truncated:
+            start_line = max(1, truncation.total_lines - truncation.output_lines + 1)
+            end_line = truncation.total_lines
+            if truncation.last_line_partial:
+                notice = (
+                    f"[Showing last {format_size(truncation.output_bytes)} of line {end_line}. "
+                    "Use file operations to inspect full output.]"
+                )
+            elif truncation.truncated_by == "lines":
+                notice = (
+                    f"[Showing lines {start_line}-{end_line} of {truncation.total_lines}. "
+                    "Use file operations to inspect full output.]"
+                )
+            else:
+                notice = (
+                    f"[Showing lines {start_line}-{end_line} of {truncation.total_lines} "
+                    f"({format_size(BASH_MAX_BYTES)} limit). Use file operations to inspect full output.]"
+                )
+            output = f"{output}\n\n{notice}" if output else notice
 
         return {
             "command": command,
             "returncode": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
+            "stdout": output,
+            "stderr": "",
             "description": description,
+            "truncated": truncation.truncated,
+            "truncated_by": truncation.truncated_by,
         }
     except asyncio.TimeoutError:
         try:
@@ -253,7 +330,12 @@ def create_code_tools_extension() -> Extension:
             ToolDefinition(
                 id="read_file",
                 name="read_file",
-                description="Read the contents of a text file. Supports line-range slicing via offset and limit.",
+                description=(
+                    "Read the contents of a text file. Supports line-range slicing via offset and limit. "
+                    f"Output is truncated to {DEFAULT_MAX_LINES} lines or {format_size(DEFAULT_MAX_BYTES)} "
+                    "(whichever is hit first). Use offset/limit for large files. "
+                    "When you need the full file, continue with offset until complete."
+                ),
                 parameters={
                     "type": "object",
                     "properties": {
@@ -310,9 +392,12 @@ def create_code_tools_extension() -> Extension:
             ToolDefinition(
                 id="bash",
                 name="bash",
-                description="Execute a shell command. "
-                            "⚠️ Actual execution is guarded by the tool_guard extension; "
-                            "dangerous commands may be blocked depending on system policy.",
+                description=(
+                    "Execute a shell command. Output keeps the tail and is truncated to "
+                    f"{BASH_MAX_LINES} lines or {format_size(BASH_MAX_BYTES)} (whichever is hit first). "
+                    "⚠️ Actual execution is guarded by the tool_guard extension; dangerous commands may "
+                    "be blocked depending on system policy."
+                ),
                 parameters={
                     "type": "object",
                     "properties": {

@@ -77,7 +77,7 @@ class Config:
         tool_guard_from_file = file_values.get("tool_guard", {})
         rules_from_file = tool_guard_from_file.get("rules", {})
         self.tool_guard = {
-            "bash_mode": os.getenv("LA_BASH_MODE") or tool_guard_from_file.get("bash_mode", "default"),
+            "bash_mode": os.getenv("LA_BASH_MODE") or tool_guard_from_file.get("bash_mode", "disabled"),
             "bash_allowlist": tool_guard_from_file.get("bash_allowlist", []),
             "bash_denylist": tool_guard_from_file.get("bash_denylist", []),
             "rules": {

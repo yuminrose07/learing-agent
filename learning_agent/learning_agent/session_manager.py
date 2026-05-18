@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from learning_agent.ai import (
+    AgentMode,
+    AskState,
     EntryType,
+    Event,
     LearningSession,
     MessageRole,
     SessionEntry,
@@ -26,9 +30,10 @@ class SessionManager:
     当前版本在内存中维护会话，通过 Persistence Layer 持久化。
     """
 
-    def __init__(self):
+    def __init__(self, event_bus: Any = None):
         self._sessions: dict[str, LearningSession] = {}
         self._on_delete_callbacks: list[Callable[[str], None]] = []
+        self._event_bus = event_bus
 
     def register_delete_callback(self, callback: Callable[[str], None]) -> None:
         """注册 session 删除时的回调函数。"""
@@ -92,7 +97,26 @@ class SessionManager:
             return None
         session.title = title
         session.last_accessed_at = datetime.now(timezone.utc)
+        self._emit_event(
+            "session.scalarChanged",
+            {"session_id": session_id, "path": "title", "value": title},
+        )
         return session
+
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self._event_bus is not None:
+            try:
+                asyncio.create_task(
+                    self._event_bus.publish(
+                        Event(
+                            type=event_type,
+                            payload=payload,
+                            source="session_manager",
+                        )
+                    )
+                )
+            except Exception:
+                logger.exception("[SessionManager] Failed to emit event %s", event_type)
 
     def append_message(
         self,
@@ -122,7 +146,66 @@ class SessionManager:
         session.current_leaf_id = entry.id
         session.last_accessed_at = datetime.now(timezone.utc)
         logger.debug(f"[SessionManager] Appended entry {entry.id} to session {session_id}")
+        self._emit_event(
+            "session.entryAppended",
+            {"session_id": session_id, "entry": entry.model_dump()},
+        )
         return entry
+
+    def patch_entry(
+        self,
+        session_id: str,
+        entry_id: str,
+        path: str,
+        value: Any,
+    ) -> bool:
+        """修改已有 entry 的字段，用于运行时紧急截断等场景。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+
+        entry = next((e for e in session.entries if e.id == entry_id), None)
+        if entry is None:
+            return False
+
+        parts = path.split(".")
+        current: Any = entry
+        for part in parts[:-1]:
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (ValueError, IndexError):
+                    return False
+            else:
+                current = getattr(current, part, None)
+            if current is None:
+                return False
+
+        last = parts[-1]
+        if isinstance(current, dict):
+            current[last] = value
+        elif isinstance(current, list):
+            try:
+                current[int(last)] = value
+            except (ValueError, IndexError):
+                return False
+        else:
+            setattr(current, last, value)
+
+        logger.debug(
+            "[SessionManager] Patched entry %s.%s = %s (session=%s)",
+            entry_id,
+            path,
+            repr(value)[:100],
+            session_id,
+        )
+        self._emit_event(
+            "session.entryPatched",
+            {"session_id": session_id, "entry_id": entry_id, "path": path, "value": value},
+        )
+        return True
 
     def fork_at(
         self,
@@ -147,6 +230,10 @@ class SessionManager:
         session.current_leaf_id = fork_entry.id
         session.last_accessed_at = datetime.now(timezone.utc)
         logger.info(f"[SessionManager] Forked at {entry_id} -> new leaf {fork_entry.id}")
+        self._emit_event(
+            "session.entryAppended",
+            {"session_id": session_id, "entry": fork_entry.model_dump()},
+        )
         return fork_entry
 
     def get_path_to_leaf(self, session_id: str, leaf_id: Optional[str] = None) -> list[SessionEntry]:
@@ -190,10 +277,50 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if not session:
             return False
-        from learning_agent.ai import AskState
         session.ask_state = AskState()
         logger.info(f"[SessionManager] Cleared ask_state for session {session_id}")
+        self._emit_event(
+            "session.scalarChanged",
+            {"session_id": session_id, "path": "ask_state", "value": session.ask_state.model_dump()},
+        )
         return True
+
+    def switch_session_mode(
+        self,
+        session_id: str,
+        mode: AgentMode,
+        *,
+        clear_ask_state: bool = True,
+    ) -> LearningSession:
+        """切换会话模式，并在需要时清理 Ask 临时状态。"""
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+
+        from_mode = session.mode
+        if from_mode == mode:
+            return session
+
+        if clear_ask_state and from_mode == AgentMode.ASK and mode != AgentMode.ASK:
+            session.ask_state = AskState()
+
+        session.mode = mode
+        session.mode_metadata["last_mode_switch"] = {
+            "from": from_mode.value,
+            "to": mode.value,
+        }
+        session.last_accessed_at = datetime.now(timezone.utc)
+        logger.info(
+            "[SessionManager] Switched session %s mode: %s -> %s",
+            session_id,
+            from_mode.value,
+            mode.value,
+        )
+        self._emit_event(
+            "session.scalarChanged",
+            {"session_id": session_id, "path": "mode", "value": mode.value},
+        )
+        return session
 
     def compact_session(self, session_id: str) -> bool:
         """
@@ -206,6 +333,10 @@ class SessionManager:
         # TODO: 实现真正的 compaction 逻辑
         session.status = SessionStatus.COMPACTED
         logger.info(f"[SessionManager] Compacted session {session_id}")
+        self._emit_event(
+            "session.scalarChanged",
+            {"session_id": session_id, "path": "status", "value": SessionStatus.COMPACTED.value},
+        )
         return True
 
     def to_dict(self) -> dict:

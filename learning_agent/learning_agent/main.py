@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 import sys
@@ -21,10 +22,11 @@ from learning_agent.agent.event_bus import EventBus
 from learning_agent.learning_agent.extension_manager import ExtensionManager
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.agent.observability import ObservabilityCollector
-from learning_agent.agent.tool_registry import ToolRegistry
 from learning_agent.learning_agent.extensions.built_in import create_builtin_extensions
+from learning_agent.learning_agent.tool_registry import ToolRegistry
 from learning_agent.memory.memory_manager import MemoryManager
 from learning_agent.ai import (
+    AgentMode,
     ChatChunk,
     Event,
     KnowledgeNode,
@@ -34,6 +36,12 @@ from learning_agent.ai import (
 )
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
+from learning_agent.learning_agent.mode_service import (
+    PreparedSessionTurn,
+    build_turn_profile,
+    is_confirmation_message,
+    resolve_persona,
+)
 from learning_agent.learning_agent.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -66,12 +74,13 @@ class LearningAgentSystem:
             self.tool_registry,
         )
         self.memory_manager = MemoryManager()
-        self.session_manager = SessionManager()
+        self.session_manager = SessionManager(event_bus=self.event_bus)
         self.provider: Optional[OpenAIProvider] = None
         self.agent_loop: Optional[AgentLoop] = None
 
         self._current_session = None
         self._current_objective = None
+        self._compaction_turn_counts: dict[str, int] = {}
 
     def _setup_logging(self) -> None:
         logging.basicConfig(
@@ -106,18 +115,27 @@ class LearningAgentSystem:
         # 订阅可观测性事件
         self.event_bus.subscribe("*", self.observability.on_event)
 
+        # 订阅 session delta 事件，实现追加持久化
+        self.event_bus.subscribe("session.entryAppended", self._on_entry_appended)
+        self.event_bus.subscribe("session.entryPatched", self._on_entry_patched)
+        self.event_bus.subscribe("session.scalarChanged", self._on_scalar_changed)
+
         # Layer 3: Agent Runtime
+        # 创建工具执行服务（Product 层实现）
+        from learning_agent.learning_agent.tool_execution_service import ToolExecutionServiceImpl
+        tool_execution_service = ToolExecutionServiceImpl(self.tool_registry)
+        
         self.agent_loop = AgentLoop(
             provider=self.provider,
-            memory_manager=self.memory_manager,
-            session_manager=self.session_manager,
+            memory_service=self.memory_manager,
+            session_store=self.session_manager,
             hook_system=self.hook_system,
             event_bus=self.event_bus,
-            tool_registry=self.tool_registry,
+            tool_execution_service=tool_execution_service,
             observability=self.observability,
             max_react_turns=10,
         )
-        # 订阅状态快照事件，实现运行时持久化
+        # 订阅状态快照事件，用于定期 compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
 
         logger.info("[System] Initialization complete.")
@@ -130,35 +148,142 @@ class LearningAgentSystem:
         logger.info("[System] Shutdown complete.")
 
     async def _load_state(self) -> None:
-        """加载产品层持久化状态，不恢复运行时私有状态。"""
+        """加载产品层持久化状态，replay delta 恢复完整会话。"""
         kg_data = self.file_store.load_knowledge_graph()
         if kg_data:
             self.memory_manager.kg.from_dict(kg_data)
             logger.info(f"[System] Loaded {len(self.memory_manager.kg._nodes)} knowledge nodes")
 
         for sid in self.file_store.list_sessions():
-            data = self.file_store.load_session(sid)
-            if data:
-                self.session_manager.add_session(LearningSession(**data))
+            session = self._load_session_with_deltas(sid)
+            if session:
+                self.session_manager.add_session(session)
+
+    def _load_session_with_deltas(self, session_id: str) -> Optional[LearningSession]:
+        """加载 snapshot 并按序 replay JSONL delta。"""
+        snapshot = self.file_store.load_session(session_id)
+        if not snapshot:
+            return None
+
+        session = LearningSession(**snapshot)
+
+        for delta in self.file_store.read_session_deltas(session_id):
+            op = delta.get("op")
+            if op == "append":
+                from learning_agent.ai import SessionEntry
+                session.entries.append(SessionEntry(**delta["entry"]))
+            elif op == "patch":
+                entry_id = delta["entry_id"]
+                entry = next((e for e in session.entries if e.id == entry_id), None)
+                if entry is not None:
+                    path = delta["path"]
+                    value = delta["value"]
+                    parts = path.split(".")
+                    current: Any = entry
+                    for part in parts[:-1]:
+                        if isinstance(current, dict):
+                            current = current.get(part)
+                        elif isinstance(current, list):
+                            current = current[int(part)]
+                        else:
+                            current = getattr(current, part, None)
+                        if current is None:
+                            break
+                    if current is not None:
+                        last = parts[-1]
+                        if isinstance(current, dict):
+                            current[last] = value
+                        elif isinstance(current, list):
+                            current[int(last)] = value
+                        else:
+                            setattr(current, last, value)
+            elif op == "scalar":
+                path = delta["path"]
+                value = delta["value"]
+                if hasattr(session, path):
+                    setattr(session, path, value)
+                elif "." in path:
+                    obj_name, attr_name = path.split(".", 1)
+                    obj = getattr(session, obj_name, None)
+                    if obj is not None and isinstance(obj, dict):
+                        obj[attr_name] = value
+
+        # 重建 current_leaf_id
+        message_entries = [e for e in session.entries if e.type == "message"]
+        if message_entries:
+            session.current_leaf_id = message_entries[-1].id
+
+        return session
 
     async def _save_state(self) -> None:
-        """保存产品层状态，由基础设施层负责具体文件落盘。"""
+        """全量 compaction：保存所有 session 的 snapshot 并清空 delta。"""
         self.file_store.save_knowledge_graph(self.memory_manager.kg.to_dict())
         for session in self.session_manager.list_sessions():
-            self.file_store.save_session(session.id, session.model_dump())
-        logger.info("[System] State saved.")
+            self.file_store.compact_session(session.id, session.model_dump())
+        logger.info("[System] State compacted and saved.")
 
     async def _on_state_snapshot(self, event: Event) -> None:
-        """消费运行时快照事件，并编排会话持久化。"""
+        """消费运行时快照事件，定期触发 compaction。"""
         snapshot = event.payload
         session_id = snapshot.get("session_id")
-        session = self.get_session(session_id) if session_id else None
-        if session is not None:
-            try:
-                self.file_store.save_session(session_id, session.model_dump())
-                logger.debug(f"[System] Snapshot saved for session {session_id}")
-            except Exception as e:
-                logger.exception(f"[System] Failed to save snapshot: {e}")
+        turn_count = snapshot.get("turn_count", 0)
+        if not session_id:
+            return
+
+        # 每 20 轮或进程启动后首次到达时触发 compaction
+        last = self._compaction_turn_counts.get(session_id, 0)
+        if turn_count > 0 and (turn_count - last) >= 20:
+            session = self.get_session(session_id)
+            if session is not None:
+                try:
+                    self.file_store.compact_session(session_id, session.model_dump())
+                    self._compaction_turn_counts[session_id] = turn_count
+                    logger.info(f"[System] Compacted session {session_id} at turn {turn_count}")
+                except Exception as e:
+                    logger.exception(f"[System] Failed to compact session: {e}")
+
+    async def _on_entry_appended(self, event: Event) -> None:
+        """追加写入 entry delta。"""
+        payload = event.payload
+        session_id = payload["session_id"]
+        delta = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "op": "append",
+            "entry": payload["entry"],
+        }
+        try:
+            self.file_store.append_session_delta(session_id, delta)
+        except Exception as e:
+            logger.exception(f"[System] Failed to append entry delta: {e}")
+
+    async def _on_entry_patched(self, event: Event) -> None:
+        """追加写入 entry patch delta。"""
+        payload = event.payload
+        delta = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "op": "patch",
+            "entry_id": payload["entry_id"],
+            "path": payload["path"],
+            "value": payload["value"],
+        }
+        try:
+            self.file_store.append_session_delta(payload["session_id"], delta)
+        except Exception as e:
+            logger.exception(f"[System] Failed to append patch delta: {e}")
+
+    async def _on_scalar_changed(self, event: Event) -> None:
+        """追加写入标量变更 delta。"""
+        payload = event.payload
+        delta = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "op": "scalar",
+            "path": payload["path"],
+            "value": payload["value"],
+        }
+        try:
+            self.file_store.append_session_delta(payload["session_id"], delta)
+        except Exception as e:
+            logger.exception(f"[System] Failed to append scalar delta: {e}")
 
     # ─── Product/Application facade ───
 
@@ -214,11 +339,10 @@ class LearningAgentSystem:
         if session is not None or not load_if_missing:
             return session
 
-        data = self.file_store.load_session(session_id)
-        if not data:
+        session = self._load_session_with_deltas(session_id)
+        if session is None:
             return None
 
-        session = LearningSession(**data)
         self.session_manager.add_session(session)
         return session
 
@@ -230,18 +354,28 @@ class LearningAgentSystem:
         session_id: str,
         title: Optional[str],
     ) -> Optional[LearningSession]:
-        session = self.session_manager.update_session_title(session_id, title)
-        if session is None:
-            return None
-        self.save_session(session_id)
-        return session
+        return self.session_manager.update_session_title(session_id, title)
 
     def save_session(self, session_id: str) -> bool:
+        """写全量 snapshot（用于初始创建，事件驱动不经过此处）。"""
         session = self.get_session(session_id)
         if session is None:
             return False
         self.file_store.save_session(session_id, session.model_dump())
         return True
+
+    def update_session_mode(
+        self,
+        session_id: str,
+        mode: AgentMode,
+        *,
+        clear_ask_state: bool = True,
+    ) -> LearningSession:
+        return self.session_manager.switch_session_mode(
+            session_id,
+            mode,
+            clear_ask_state=clear_ask_state,
+        )
 
     async def save_state(self) -> None:
         await self._save_state()
@@ -257,9 +391,9 @@ class LearningAgentSystem:
             return False
 
         self.file_store.delete(f"sessions/{session_id}.json")
+        self.file_store.delete(f"sessions/{session_id}.jsonl")
         if self._current_session and self._current_session.id == session_id:
             self._current_session = None
-        await self.save_state()
         return True
 
     def get_session_runtime_summary(self, session_id: str) -> Optional[dict[str, Any]]:
@@ -277,13 +411,17 @@ class LearningAgentSystem:
             self.agent_loop.clear_all_runtimes()
 
     def get_runtime_overview(self) -> dict[str, Any]:
-        if self.agent_loop is None:
-            return {
-                "active_runtime_count": 0,
-                "total_session_count": len(self.list_sessions()),
-                "runtimes": [],
-            }
-        return self.agent_loop.get_runtime_overview()
+        runtimes = []
+        if self.agent_loop is not None:
+            runtimes = self.agent_loop.list_runtime_summaries()
+        for runtime in runtimes:
+            session = self.get_session(runtime["session_id"])
+            runtime["mode"] = session.mode.value if session else AgentMode.CHAT.value
+        return {
+            "active_runtime_count": len(runtimes),
+            "total_session_count": len(self.list_sessions()),
+            "runtimes": runtimes,
+        }
 
     async def confirm_knowledge_candidate(
         self,
@@ -304,11 +442,102 @@ class LearningAgentSystem:
         self.file_store.save_knowledge_graph(self.memory_manager.kg.to_dict())
         return promoted
 
+    def _prepare_session_turn(
+        self,
+        session: LearningSession,
+        user_input: str,
+        requested_mode: AgentMode,
+    ) -> tuple[LearningSession, PreparedSessionTurn]:
+        """
+        在 Product/Application 层收口模式语义，生成 Runtime 可执行的 turn 计划。
+        Runtime 不直接判断 Ask 确认、模式切换或 ask_state 推进。
+        """
+        if (
+            session.mode == AgentMode.ASK
+            and session.ask_state.status == "aligning"
+            and requested_mode == AgentMode.ASK
+            and is_confirmation_message(user_input)
+        ):
+            target_mode = AgentMode(session.mode_metadata.get("post_ask_target", AgentMode.CHAT.value))
+            confirmed_input = session.ask_state.confirmed_input or user_input
+            session.ask_state.status = "idle"
+            session.ask_state.confirmed_input = ""
+            if target_mode != session.mode:
+                session = self.update_session_mode(
+                    session.id,
+                    target_mode,
+                    clear_ask_state=False,
+                )
+            profile = build_turn_profile(
+                target_mode,
+                persona_key=self._resolve_session_persona_key(session, target_mode),
+            )
+            return session, PreparedSessionTurn(
+                effective_mode=target_mode,
+                runtime_input=confirmed_input,
+                profile=profile,
+                stream_metadata=dict(profile.assistant_message_metadata),
+            )
+
+        if session.mode != requested_mode:
+            session = self.update_session_mode(session.id, requested_mode)
+
+        if requested_mode == AgentMode.ASK:
+            session.ask_state.status = "aligning"
+            profile = build_turn_profile(
+                AgentMode.ASK,
+                user_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
+                assistant_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
+            )
+            return session, PreparedSessionTurn(
+                effective_mode=AgentMode.ASK,
+                runtime_input=user_input,
+                profile=profile,
+                stream_metadata=dict(profile.assistant_message_metadata),
+                capture_response_as_confirmed_input=True,
+            )
+
+        profile = build_turn_profile(
+            requested_mode,
+            persona_key=self._resolve_session_persona_key(session, requested_mode),
+        )
+        return session, PreparedSessionTurn(
+            effective_mode=requested_mode,
+            runtime_input=user_input,
+            profile=profile,
+            stream_metadata=dict(profile.assistant_message_metadata),
+        )
+
+    def _resolve_session_persona_key(
+        self,
+        session: LearningSession,
+        mode: AgentMode,
+    ) -> str | None:
+        if mode != AgentMode.CHAT:
+            return None
+
+        persona_key = session.mode_metadata.get("chat_persona_key")
+        if isinstance(persona_key, str) and persona_key:
+            return persona_key
+
+        persona = resolve_persona(AgentMode.CHAT)
+        session.mode_metadata["chat_persona_key"] = persona.key
+        return persona.key
+
+    def _finalize_prepared_turn(
+        self,
+        session: LearningSession,
+        prepared_turn: PreparedSessionTurn,
+        response_text: str,
+    ) -> None:
+        if prepared_turn.capture_response_as_confirmed_input:
+            session.ask_state.confirmed_input = response_text
+
     async def stream_session_chat(
         self,
         session_id: str,
         user_input: str,
-        ask_mode: bool = False,
+        mode: AgentMode = AgentMode.CHAT,
     ) -> AsyncGenerator[ChatChunk, None]:
         """将产品级聊天请求路由到指定 session runtime。"""
         if self.agent_loop is None:
@@ -318,47 +547,41 @@ class LearningAgentSystem:
         if session is None:
             raise ValueError(f"Session {session_id} not found")
 
+        session, prepared_turn = self._prepare_session_turn(session, user_input, mode)
+        response_parts: list[str] = []
+        completed = False
+
         try:
-            async for chunk in self.agent_loop.run(session, user_input, ask_mode=ask_mode):
-                yield chunk
+            async for chunk in self.agent_loop.run(
+                session,
+                prepared_turn.runtime_input,
+                profile=prepared_turn.profile,
+            ):
+                if chunk.content:
+                    response_parts.append(chunk.content)
+                yield chunk.model_copy(update={"metadata": dict(prepared_turn.stream_metadata)})
+            completed = True
         finally:
             try:
-                self.save_session(session_id)
+                if completed:
+                    self._finalize_prepared_turn(
+                        session,
+                        prepared_turn,
+                        "".join(response_parts),
+                    )
             except Exception:
-                logger.exception(f"[System] Failed to save session {session_id}")
+                logger.exception(f"[System] Failed to finalize turn for session {session_id}")
 
     async def collect_session_chat(
         self,
         session_id: str,
         user_input: str,
-        ask_mode: bool = False,
+        mode: AgentMode = AgentMode.CHAT,
     ) -> str:
         content_parts = []
-        async for chunk in self.stream_session_chat(session_id, user_input, ask_mode=ask_mode):
+        async for chunk in self.stream_session_chat(session_id, user_input, mode=mode):
             content_parts.append(chunk.content)
         return "".join(content_parts)
-
-    def fork_session_entry(
-        self,
-        session_id: str,
-        entry_id: Optional[str] = None,
-        *,
-        fork_content: Optional[str] = None,
-    ) -> Optional[SessionEntry]:
-        session = self.get_session(session_id)
-        if session is None:
-            return None
-
-        fork = self.session_manager.fork_at(
-            session_id,
-            entry_id or session.current_leaf_id,
-            fork_content=fork_content or "Forked branch",
-        )
-        if fork is None:
-            return None
-
-        self.save_session(session_id)
-        return fork
 
     async def start_session(self, objective_id: Optional[str] = None) -> str:
         session = self.create_session(
@@ -376,7 +599,7 @@ class LearningAgentSystem:
         )
         return session.id
 
-    async def chat(self, user_input: str, ask_mode: bool = False) -> None:
+    async def chat(self, user_input: str, mode: AgentMode = AgentMode.CHAT) -> None:
         """
         执行一轮对话，流式输出到 stdout。
         """
@@ -384,30 +607,19 @@ class LearningAgentSystem:
             await self.start_session()
 
         session = self._current_session
-        if ask_mode:
+        if mode == AgentMode.ASK:
             print(f"\n[You (Ask)] {user_input}\n")
         else:
             print(f"\n[You] {user_input}\n")
         print("[Assistant] ", end="", flush=True)
 
         try:
-            async for chunk in self.stream_session_chat(session.id, user_input, ask_mode=ask_mode):
+            async for chunk in self.stream_session_chat(session.id, user_input, mode=mode):
                 print(chunk.content, end="", flush=True)
             print()  # 换行
         except Exception as e:
             logger.exception(f"[System] Chat error: {e}")
             print(f"\n[Error] {e}")
-
-    async def fork_session(self, entry_id: Optional[str] = None) -> str:
-        """在当前会话的指定节点分叉。"""
-        if not self._current_session:
-            raise ValueError("No active session")
-        fork = self.fork_session_entry(
-            self._current_session.id,
-            entry_id,
-            fork_content="User initiated fork",
-        )
-        return fork.id if fork else ""
 
     async def show_memory(self) -> None:
         """展示当前记忆状态。"""
@@ -518,7 +730,6 @@ Commands:
   /quit, /exit          Exit the application
   /memory               Show memory status
   /metrics              Show observability metrics
-  /fork [entry_id]      Fork session at current or specified entry
   /confirm <node_id>    Confirm a knowledge candidate to L2
   /save                 Save state manually
   /ask <message>        Send message in Ask mode (alignment first)
@@ -529,10 +740,6 @@ Commands:
                 await system.show_memory()
             elif cmd == "/metrics":
                 await system.show_metrics()
-            elif cmd == "/fork":
-                entry_id = parts[1] if len(parts) > 1 else None
-                new_id = await system.fork_session(entry_id)
-                print(f"Forked at: {new_id}")
             elif cmd == "/confirm":
                 if len(parts) < 2:
                     print("Usage: /confirm <node_id>")
@@ -546,7 +753,7 @@ Commands:
                 if not ask_input:
                     print("Usage: /ask <your question>")
                 else:
-                    await system.chat(ask_input, ask_mode=True)
+                    await system.chat(ask_input, mode=AgentMode.ASK)
             else:
                 print(f"Unknown command: {cmd}")
             continue

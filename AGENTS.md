@@ -24,9 +24,74 @@
 
 ***
 
-## 三、架构边界
+## 三、严格分层
 
-- `AGENTS.md` 不展开架构细节，只保留核心规则。
+### 3.1 总原则
+
+- 项目按四层收敛：`Interface`、`Product/Application`、`Agent Runtime`、`Infrastructure`。
+- 每层只做本层决策，不替上层偷做业务编排，也不把下层实现细节向上泄漏。
+- 新能力接入前，先判断“谁拥有状态、谁负责编排、谁只负责执行”，再落代码。
+- 运行时只消费已经收口好的执行输入，不拥有产品语义。
+
+### 3.2 各层职责
+
+- `Interface`
+  - 负责 CLI / Web / API / SSE / 前端交互适配。
+  - 负责请求解析、参数校验、协议转换、输出格式化。
+  - 不负责会话模式流转、不持有 runtime 私有状态、不实现核心业务决策。
+
+- `Product/Application`
+  - 负责产品级编排与领域状态，包括 session 生命周期、mode、mode metadata、ask 对齐流程、memory 子域编排、runtime 清理编排。
+  - 负责把产品语义收口为 runtime 可执行输入，例如构造 turn profile、决定是否进入对齐轮或正常执行轮。
+  - 负责持久化触发、跨子域协作、对外暴露稳定 facade。
+  - 不实现 ReACT 主循环，不持有单 session 的 runtime 私有锁、流式状态机和工具执行细节。
+
+- `Agent Runtime`
+  - 负责单个 session / 单轮 turn 的执行，包括状态机、上下文组装、LLM 调用、工具调度、重试、降级、自愈、事件与追踪。
+  - 只依赖最小协议或 ports，不直接绑定 `SessionManager`、`MemoryManager` 这类 Product 具体实现。
+  - 可以持有 runtime 私有可变状态，例如锁、trace 关联、failure tracker、chat-only 降级状态。
+  - 不负责 session 生命周期决策，不负责 mode 切换策略，不判断 Ask / Study 等产品语义，不维护确认词规则，不编排长期 memory 策略。
+
+- `Infrastructure`
+  - 负责文件存储、数据库、外部 Provider、网络 IO、第三方 SDK 适配等基础设施实现。
+  - 只提供能力，不拥有产品策略，不决定流程流转。
+  - 不直接编排 session、mode、runtime 状态。
+
+### 3.3 状态归属
+
+- 会话持久化状态属于 `Product/Application`，例如：`session.mode`、`mode_metadata`、`ask_state`、objective 关联。
+- 单轮执行态和运行时私有状态属于 `Agent Runtime`，例如：锁、当前状态机节点、trace/span 关联、失败计数、降级状态。
+- Provider 连接、文件落盘、外部资源句柄属于 `Infrastructure`。
+- UI 临时展示态属于 `Interface`，不得替代服务端真实会话状态。
+
+### 3.4 依赖方向
+
+- 允许依赖方向：`Interface -> Product/Application -> Agent Runtime -> Infrastructure ports/adapters`。
+- `Product/Application` 可以编排 `Runtime` 与领域服务，但不应反向依赖 `Interface`。
+- `Agent Runtime` 只能依赖抽象协议、ports、通用数据结构，禁止反向依赖 Product 具体编排器。
+- `Infrastructure` 不反向依赖上层业务语义；若需要回调，必须通过显式接口或事件。
+
+### 3.5 禁止越界
+
+- 禁止在 `Agent Runtime` 中直接实现产品流程编排。
+  - 例如：根据确认词决定 Ask 是否结束、决定 `Ask -> Chat` / `Ask -> Study`、切换 session mode。
+- 禁止在 `Interface` 中维护服务端真实状态。
+  - 例如：前端本地 mode 成为权威状态，覆盖服务端 session.mode。
+- 禁止把未来属于领域层的能力硬塞进 runtime。
+  - 若能力尚未完成，先在正确层定义边界与 No-op / Stub，再逐步补实现。
+- 禁止 `Infrastructure` 携带业务分支。
+  - 例如：Provider / FileStore 根据产品 mode 改写业务策略。
+
+### 3.6 判定规则
+
+- 如果某段代码回答的是“产品想怎么运行”，它属于 `Product/Application`。
+- 如果某段代码回答的是“这一轮具体怎么执行”，它属于 `Agent Runtime`。
+- 如果某段代码回答的是“协议怎么进出系统”，它属于 `Interface`。
+- 如果某段代码回答的是“能力如何与外部系统交互”，它属于 `Infrastructure`。
+
+### 3.7 文档使用
+
+- `AGENTS.md` 作为默认入口，定义稳定的分层职责与边界。
 - 需要了解 Core / Extensions 的职责边界、判断标准和 Hook 规则时，加载 `AGENTS.architecture.md`。
 
 ***

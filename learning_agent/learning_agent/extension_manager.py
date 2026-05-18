@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Optional
 from learning_agent.agent.event_bus import EventBus
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.ai import Event, HookName, ToolDefinition
-from learning_agent.agent.tool_registry import ToolRegistry
+from learning_agent.learning_agent.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 

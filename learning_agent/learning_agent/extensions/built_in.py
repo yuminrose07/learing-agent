@@ -6,6 +6,7 @@ import logging
 
 from learning_agent.learning_agent.extension_manager import Extension, ExtensionContext
 from learning_agent.learning_agent.extensions.code_tools import create_code_tools_extension
+from learning_agent.learning_agent.extensions.grep_tools import create_grep_tools_extension
 from learning_agent.learning_agent.extensions.security_audit import create_security_audit_extension
 from learning_agent.learning_agent.extensions.tool_guard import create_tool_guard_extension
 from learning_agent.ai import (
@@ -31,6 +32,7 @@ def create_builtin_extensions(config: dict | None = None) -> list[Extension]:
         _create_fulltrace_extension(),
         _create_output_prompting_extension(),
         create_code_tools_extension(),
+        create_grep_tools_extension(),
         create_tool_guard_extension(config),
         create_security_audit_extension(config),
     ]
@@ -172,6 +174,7 @@ async def _fulltrace_hook_before_agent_run(
     hook_input: BeforeAgentRunInput,
 ) -> BeforeAgentRunResult:
     sid = hook_input.context.session_id
+    mode = hook_input.context.metadata.get("mode", "chat")
     _fulltrace_add_step(
         sid,
         "before_agent_run",
@@ -179,6 +182,7 @@ async def _fulltrace_hook_before_agent_run(
             "user_input": hook_input.user_input[:1000],
             "tool_count": len(hook_input.tools_summary),
             "provider": hook_input.provider_summary,
+            "mode": mode,
         },
     )
     return BeforeAgentRunResult()
