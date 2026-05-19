@@ -1,7 +1,7 @@
 # 技术设计文档：Web 前后端适配方案
 
 > **目标**：配合 AgentLoopSession 架构重构，确保 Web 前后端正确支持多 Session 生命周期管理
-> **范围**：`learning_agent/web_server.py`、`web/` 目录（前端）
+> **范围**：`learning_agent/web/web_server.py`、`web/` 目录（前端）
 > **文档日期**：2026-05-12
 
 ---
@@ -70,7 +70,7 @@
 
 ### 2.2 调整 1：删除 Session 时清理运行时（必须）
 
-**文件**：`learning_agent/web_server.py:303-311`
+**文件**：`learning_agent/web/web_server.py:274-282`
 
 **当前代码**：
 ```python
@@ -116,7 +116,7 @@ pi-mono 在切换 session 前调用 `teardownCurrent()` → `session.dispose()`�
 
 ### 2.3 调整 2：系统启动/关闭时清理（推荐）
 
-**文件**：`learning_agent/web_server.py:79-88`
+**文件**：`learning_agent/web/web_server.py:80-96`
 
 **当前代码**：
 ```python
@@ -481,10 +481,10 @@ sequenceDiagram
 
 | 文件 | 行号 | 修改内容 | 优先级 |
 |------|------|---------|--------|
-| `learning_agent/web_server.py` | 303-311 | `delete_session()` 增加 `system.agent_loop.clear_session_runtime(session_id)` | P0 |
-| `learning_agent/web_server.py` | 79-88 | `lifespan()` 增加启动/关闭时的 `clear_all_runtimes()` | P1 |
-| `learning_agent/web_server.py` | 520+ | 新增 `GET /observability/runtimes` | P2 |
-| `learning_agent/web_server.py` | 520+ | 新增 `POST /sessions/{id}/reset-runtime` | P2 |
+| `learning_agent/web/web_server.py` | 274-282 | `delete_session()` 增加 `system.agent_loop.clear_session_runtime(session_id)` | P0 |
+| `learning_agent/web/web_server.py` | 80-96 | `lifespan()` 增加启动/关闭时的 `clear_all_runtimes()` | P1 |
+| `learning_agent/web/web_server.py` | 484+ | 新增 `GET /observability/runtimes` | P2 |
+| `learning_agent/web/web_server.py` | 491+ | 新增 `POST /sessions/{id}/reset-runtime` | P2 |
 | `learning_agent/session/session_manager.py` | 删除方法 | 增加 `agent_loop.clear_session_runtime()` 回调（如果 CLI 端也删除 session） | P1 |
 
 ### 5.2 前端修改

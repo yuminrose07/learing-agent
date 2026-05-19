@@ -60,8 +60,8 @@ Infra Layer
 
 对应代码：
 
-- `learning_agent/main.py`
-- `learning_agent/web_server.py`
+- `learning_agent/learning_agent/main.py`（CLI 入口 + `LearningAgentSystem`）
+- `learning_agent/web/web_server.py`（Web API）
 - `web/`
 
 职责：
@@ -80,13 +80,13 @@ Infra Layer
 
 当前现状说明：
 
-- `web_server.py` 中存在少量直接访问 `system.session_manager._sessions`、`system.memory_manager._l1_working` 的代码，这是当前实现中的便利性写法，不应作为后续扩展方向。
+- `learning_agent/web/web_server.py` 中曾存在少量直接访问（已收敛） `system.session_manager._sessions`、`system.memory_manager._l1_working` 的代码，这是当前实现中的便利性写法，不应作为后续扩展方向。
 
 ### 2.2 Composition Layer
 
 对应代码：
 
-- `learning_agent/main.py` 中的 `LearningAgentSystem`
+- `learning_agent/learning_agent/main.py` 中的 `LearningAgentSystem`
 
 职责：
 
@@ -188,12 +188,12 @@ Infra Layer
 
 对应代码：
 
-- `learning_agent/core/event_bus.py`
-- `learning_agent/core/hook_system.py`
-- `learning_agent/core/extension_manager.py`
-- `learning_agent/core/tool_registry.py`
-- `learning_agent/core/observability.py`
-- `learning_agent/extensions/built_in.py`
+- `learning_agent/agent/event_bus.py`
+- `learning_agent/agent/hook_system.py`
+- `learning_agent/learning_agent/extension_manager.py`
+- `learning_agent/learning_agent/tool_registry.py`
+- `learning_agent/agent/observability.py`
+- `learning_agent/learning_agent/extensions/built_in.py`
 
 职责：
 
@@ -231,7 +231,9 @@ Infra Layer
 ### ToolRegistry
 
 - 统一维护工具定义和处理器。
-- 供 `AgentLoopSession` 在工具执行阶段调用。
+- 当前物理位置位于 `learning_agent/learning_agent/tool_registry.py`。
+- 当前真实边界中，`ToolRegistry` 主要作为 Product 层内部工具基础设施被组合使用。
+- `AgentLoopSession` 不再直接依赖 `ToolRegistry`，而是依赖 `ToolExecutionService` 这类最小能力端口。
 
 ### Observability
 
@@ -296,7 +298,7 @@ Infra Layer
 
 - `learning_agent/provider/`
 - `learning_agent/persistence/file_store.py`
-- `learning_agent/models/models.py`
+- `learning_agent/ai/models.py`
 
 ### Provider
 

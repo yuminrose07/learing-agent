@@ -106,8 +106,8 @@ Provider / FileStore / Models
 
 对应代码：
 
-- `learning_agent/main.py` 中的 CLI 交互入口
-- `learning_agent/web_server.py`
+- `learning_agent/learning_agent/main.py` 中的 CLI 交互入口
+- `learning_agent/web/web_server.py`（Web API）
 - `web/`
 
 职责：
@@ -132,10 +132,10 @@ Provider / FileStore / Models
 
 对应代码：
 
-- `learning_agent/main.py` 中的 `LearningAgentSystem`
+- `learning_agent/learning_agent/main.py` 中的 `LearningAgentSystem`
 - `learning_agent/session/session_manager.py`
 - `learning_agent/memory/memory_manager.py`
-- `learning_agent/core/extension_manager.py`
+- `learning_agent/learning_agent/extension_manager.py`
 - `learning_agent/extensions/` 的启停装配入口
 
 这是四层方案里最关键的一层。
@@ -195,10 +195,10 @@ Provider / FileStore / Models
 对应代码：
 
 - `learning_agent/agent/agent_loop.py`
-- `learning_agent/core/hook_system.py`
-- `learning_agent/core/event_bus.py`
-- `learning_agent/core/tool_registry.py`
-- `learning_agent/core/observability.py`
+- `learning_agent/agent/hook_system.py`
+- `learning_agent/agent/event_bus.py`
+- `learning_agent/learning_agent/tool_registry.py`
+- `learning_agent/agent/observability.py`
 
 这层负责一次对话 turn 真正怎么跑。
 
@@ -256,7 +256,7 @@ Provider / FileStore / Models
 
 - `learning_agent/provider/`
 - `learning_agent/persistence/file_store.py`
-- `learning_agent/models/models.py`
+- `learning_agent/ai/models.py`
 
 职责：
 

@@ -1,6 +1,6 @@
 # 实施总结：工具执行可靠性修复
 
-> 依据技术文档：`docs/design/tool-execution-reliability-fix.md`
+> 依据技术文档：`docs/design/design-tool-execution-reliability-fix.md`
 > 日期：2026-05-12
 
 ---
@@ -20,9 +20,9 @@
 
 | # | 文件 | 改动说明 |
 |---|------|---------|
-| 1 | `learning_agent/models/models.py` | `ResilienceConfig` 新增 4 个字段：`max_tool_retries`、`tool_retry_base_delay`、`tool_retry_max_delay`、`chat_only_recovery_turns` |
-| 2 | `learning_agent/core/tool_failure_tracker.py` | `record_failure` 增加 `reason` 参数；`is_banned` 只统计 `execution_error`；新增 `get_all_failures_in_window`；`get_failures_in_window` 只统计 `execution_error` |
-| 3 | `learning_agent/core/tool_registry.py` | `execute()` 增加 `timeout` 参数；使用 `asyncio.wait_for` 实现超时；同步 handler 通过 `asyncio.to_thread` 包装；超时后抛出 `TimeoutError`；替换 `asyncio.iscoroutinefunction` 为 `inspect.iscoroutinefunction`（Python 3.14 兼容） |
+| 1 | `learning_agent/ai/models.py` | `ResilienceConfig` 新增 4 个字段：`max_tool_retries`、`tool_retry_base_delay`、`tool_retry_max_delay`、`chat_only_recovery_turns` |
+| 2 | `learning_agent/agent/tool_failure_tracker.py` | `record_failure` 增加 `reason` 参数；`is_banned` 只统计 `execution_error`；新增 `get_all_failures_in_window`；`get_failures_in_window` 只统计 `execution_error` |
+| 3 | `learning_agent/learning_agent/tool_registry.py` | `execute()` 增加 `timeout` 参数；使用 `asyncio.wait_for` 实现超时；同步 handler 通过 `asyncio.to_thread` 包装；超时后抛出 `TimeoutError`；替换 `asyncio.iscoroutinefunction` 为 `inspect.iscoroutinefunction`（Python 3.14 兼容） |
 | 4 | `learning_agent/agent/agent_loop.py` | 新增 `_is_retryable_tool_error()` 方法；`_execute_tool_calls` Step 5 增加重试循环（指数退避）；各失败分支传入正确的 `reason`；`run()` 增加 Chat-Only 自动恢复逻辑；`__init__` 初始化 `_chat_only_success_turns = 0`；`agent.toolBanned` 事件扩展 `failure_types` |
 | 5 | `tests/test_tool_execution_reliability.py` | 新增 21 个测试用例，覆盖全部 6 个验证场景 |
 | 6 | `docs/output/implementation-summary-tool-execution-reliability.md` | 本文档 |

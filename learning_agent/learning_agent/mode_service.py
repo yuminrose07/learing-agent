@@ -27,7 +27,7 @@ class ModeProfile(BaseModel):
     memory_write: bool = False
     context_budget: str = "normal"
     response_style: str = "direct"
-    micro_compact_enabled: bool = True
+    micro_compact_enabled: bool = False
     full_compact_enabled: bool = True
     full_compact_threshold: float = 0.85
     recent_token_budget: int = 16000
@@ -53,7 +53,7 @@ class TurnExecutionProfile(BaseModel):
     memory_read: bool = False
     memory_write: bool = False
     response_style: str = "direct"
-    micro_compact_enabled: bool = True
+    micro_compact_enabled: bool = False
     full_compact_enabled: bool = True
     full_compact_threshold: float = 0.85
     recent_token_budget: int = 16000
@@ -78,7 +78,7 @@ CHAT_PROFILE = ModeProfile(
     tools_enabled=["read_file", "grep", "write_file", "edit_file"],
     context_budget="light",
     response_style="direct",
-    micro_compact_enabled=True,
+    micro_compact_enabled=False,
     full_compact_enabled=True,
     recent_token_budget=16000,
 )
@@ -90,7 +90,7 @@ ASK_PROFILE = ModeProfile(
     tools_enabled=[],
     context_budget="light",
     response_style="align",
-    micro_compact_enabled=True,
+    micro_compact_enabled=False,
     full_compact_enabled=False,
     recent_token_budget=12000,
 )
@@ -103,7 +103,7 @@ STUDY_PROFILE = ModeProfile(
     memory_write=True,
     context_budget="heavy",
     response_style="tutor",
-    micro_compact_enabled=True,
+    micro_compact_enabled=False,
     full_compact_enabled=True,
     recent_token_budget=24000,
 )

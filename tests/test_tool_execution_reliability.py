@@ -25,7 +25,6 @@ from learning_agent.agent.agent_loop import AgentLoop
 from learning_agent.agent.event_bus import EventBus
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.agent.tool_failure_tracker import ToolFailureTracker
-from learning_agent.agent.tool_registry import ToolRegistry
 from learning_agent.memory.memory_manager import MemoryManager
 from learning_agent.ai import (
     AfterToolExecuteResult,
@@ -44,6 +43,7 @@ from learning_agent.ai import (
 )
 from learning_agent.ai.base_provider import BaseProvider
 from learning_agent.agent.agent_loop import AgentLoopSession
+from learning_agent.learning_agent.tool_registry import ToolRegistry
 from learning_agent.learning_agent.session_manager import SessionManager
 
 
@@ -136,13 +136,17 @@ def make_agent_loop(
     hook_system: HookSystem,
     tool_registry: ToolRegistry,
 ) -> AgentLoop:
+    # 创建工具执行服务（Product 层实现）
+    from learning_agent.learning_agent.tool_execution_service import ToolExecutionServiceImpl
+    tool_execution_service = ToolExecutionServiceImpl(tool_registry)
+    
     return AgentLoop(
         provider=provider,
-        memory_manager=memory_manager,
-        session_manager=session_manager,
+        memory_service=memory_manager,
+        session_store=session_manager,
         hook_system=hook_system,
         event_bus=event_bus,
-        tool_registry=tool_registry,
+        tool_execution_service=tool_execution_service,
         observability=None,
         max_react_turns=5,
         resilience_config=resilience_config,
@@ -290,6 +294,36 @@ class TestToolRegistry:
 # ───────────────────────────────────────────────────────────────
 
 class TestAgentLoopRetryableError:
+    def test_accepts_minimal_session_store_protocol(self):
+        class MinimalSessionStore:
+            def append_message(self, session_id, role, content, parent_id=None, metadata=None):
+                return None
+
+            def get_message_history(self, session_id, leaf_id=None):
+                return []
+
+        class MinimalToolExecutionService:
+            async def execute_tool_call(self, tool_call, timeout=None):
+                raise NotImplementedError("Test stub")
+            
+            def get_tool_definition(self, tool_id):
+                return None
+
+        loop = AgentLoop(
+            provider=FakeProvider(),
+            memory_service=None,
+            session_store=MinimalSessionStore(),
+            hook_system=HookSystem(),
+            event_bus=EventBus(),
+            tool_execution_service=MinimalToolExecutionService(),
+            observability=None,
+        )
+
+        assert loop.get_runtime_overview() == {
+            "active_runtime_count": 0,
+            "runtimes": [],
+        }
+
     def test_retryable_exceptions(self):
         loop = make_agent_loop(
             FakeProvider(),
@@ -569,12 +603,12 @@ class TestAgentLoopChatOnlyRecovery:
             provider, resilience_config, event_bus, session_manager,
             memory_manager, hook_system, tool_registry,
         )
-        return loop, session, provider, event_bus, session_manager
+        return loop, session, provider, event_bus, tool_registry
 
     @pytest.mark.asyncio
     async def test_chat_only_auto_recovery(self, recovery_setup):
         """场景 D：降级到 chat-only 后，连续 3 个无工具 turn 自动恢复。"""
-        loop, session, provider, bus, sm = recovery_setup
+        loop, session, provider, bus, registry = recovery_setup
 
         # 直接模拟降级状态（避免复杂的 ReACT 多 turn 交互）
         runtime = loop._get_or_create_runtime(session.id)
@@ -598,7 +632,7 @@ class TestAgentLoopChatOnlyRecovery:
     @pytest.mark.asyncio
     async def test_chat_only_no_recovery_when_tool_calls_present(self, recovery_setup):
         """Chat-only 模式下如果 LLM 仍然请求工具，不算恢复 turn。"""
-        loop, session, provider, bus, sm = recovery_setup
+        loop, session, provider, bus, registry = recovery_setup
 
         runtime = loop._get_or_create_runtime(session.id)
         runtime._chat_only_mode = True
@@ -607,7 +641,7 @@ class TestAgentLoopChatOnlyRecovery:
         # 注册一个工具（虽然 chat-only 模式下不会真正执行，但 LLM 请求了 tool call）
         async def dummy_tool():
             return "ok"
-        loop.tools.register(
+        registry.register(
             ToolDefinition(id="dummy", name="dummy", description=""),
             dummy_tool,
         )
@@ -797,20 +831,25 @@ class TestAgentLoopSessionIsolation:
         assert elapsed < 0.55, f"Expected parallel execution (<0.55s), got {elapsed}s"
 
     @pytest.mark.asyncio
-    async def test_runtime_cleanup_on_delete(self, isolation_setup):
-        """验证 session 删除时运行时被清理。"""
+    async def test_runtime_cleanup_requires_explicit_clear(self, isolation_setup):
+        """验证 Product 层需显式清理运行时，而不是依赖 SessionManager 回调。"""
         loop, sm = isolation_setup
         session = sm.create_session()
 
         # 创建运行时
-        runtime = loop._get_or_create_runtime(session.id)
+        loop._get_or_create_runtime(session.id)
         assert session.id in loop._session_runtimes
         assert session.id in loop._session_last_accessed
 
         # 删除 session
         sm.delete_session(session.id)
 
-        # 运行时应该被清理
+        # SessionManager 删除不会隐式清理 runtime
+        assert session.id in loop._session_runtimes
+        assert session.id in loop._session_last_accessed
+
+        # 由 Product 层显式清理
+        loop.clear_session_runtime(session.id)
         assert session.id not in loop._session_runtimes
         assert session.id not in loop._session_last_accessed
 

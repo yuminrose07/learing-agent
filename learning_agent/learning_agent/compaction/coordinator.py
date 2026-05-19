@@ -83,6 +83,9 @@ class CompactionCoordinator:
         plan.full_compact_scope = result.scope
         plan.compact_anchor_entry_id = result.compact_anchor_entry_id
         plan.cut_point_entry_id = result.cut_point_entry_id
+        if result.source_event_start_seq is not None and result.source_event_end_seq is not None:
+            plan.source_event_range = (result.source_event_start_seq, result.source_event_end_seq)
+        plan.next_jsonl_cursor = result.source_event_end_seq
         plan.summary_block = render_summary_block(result)
         return plan
 
@@ -128,6 +131,11 @@ class CompactionCoordinator:
                 preserved_entry_ids=[entry.id for entry in preserved_entries],
                 estimated_tokens_after=estimated_tokens_after,
             )
+            result.retained_event_ids = [
+                str(entry.metadata.get("source_event_id"))
+                for entry in preserved_entries
+                if entry.metadata.get("source_event_id")
+            ]
             self.persist_compact_success(session.id, result, recent_token_budget=profile.recent_token_budget)
             return result
         except Exception:
@@ -154,6 +162,12 @@ class CompactionCoordinator:
         metadata.consecutive_failures = 0
         metadata.last_summary_file = summary_path
         metadata.last_summary_hash = hashlib.sha256(result.summary_text.encode("utf-8")).hexdigest()
+        metadata.source_event_start_seq = result.source_event_start_seq
+        metadata.source_event_end_seq = result.source_event_end_seq
+        metadata.source_event_ids = list(result.source_event_ids)
+        metadata.retained_event_ids = list(result.retained_event_ids)
+        metadata.next_jsonl_cursor = result.source_event_end_seq
+        metadata.template_version = result.template_version
         metadata.last_recent_token_budget = recent_token_budget
         metadata.last_compacted_at = time.time()
         self.session_manager.set_compact_metadata(session_id, metadata)

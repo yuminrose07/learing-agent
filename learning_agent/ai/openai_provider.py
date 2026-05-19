@@ -8,7 +8,13 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterable, Optional
 
-from learning_agent.ai.models import ChatChunk, ChatMessage, ChatParams, ProviderConfig
+from learning_agent.ai.models import (
+    ChatChunk,
+    ChatMessage,
+    ChatParams,
+    ProviderConfig,
+    ProviderUsage,
+)
 from learning_agent.ai.base_provider import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -57,6 +63,21 @@ class OpenAIProvider(BaseProvider):
             return 1.0
         return temperature
 
+    @staticmethod
+    def _extract_usage(raw_usage: Any) -> ProviderUsage | None:
+        if raw_usage is None:
+            return None
+        prompt_tokens = getattr(raw_usage, "prompt_tokens", None)
+        completion_tokens = getattr(raw_usage, "completion_tokens", None)
+        total_tokens = getattr(raw_usage, "total_tokens", None)
+        if prompt_tokens is None and completion_tokens is None and total_tokens is None:
+            return None
+        return ProviderUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+
     async def stream_chat(self, params: ChatParams) -> AsyncIterable[ChatChunk]:
         """流式聊天，返回 AsyncIterable[ChatChunk]。"""
         model = params.model or self.config.model
@@ -65,6 +86,7 @@ class OpenAIProvider(BaseProvider):
             "messages": self._convert_messages(params.messages),
             "temperature": self._resolve_temperature(model, params.temperature),
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if params.max_tokens:
             request["max_tokens"] = params.max_tokens
@@ -85,6 +107,13 @@ class OpenAIProvider(BaseProvider):
         try:
             stream = await self.client.chat.completions.create(**request)
             async for chunk in stream:
+                provider_usage = self._extract_usage(getattr(chunk, "usage", None))
+                if provider_usage is not None:
+                    yield ChatChunk(
+                        content="",
+                        metadata={"provider_usage": provider_usage.model_dump()},
+                    )
+
                 choice = chunk.choices[0] if chunk.choices else None
                 if not choice:
                     continue
@@ -96,6 +125,11 @@ class OpenAIProvider(BaseProvider):
                         content=delta.content or "",
                         finish_reason=choice.finish_reason,
                         reasoning_content=getattr(delta, "reasoning_content", None) or None,
+                        metadata=(
+                            {"provider_usage": provider_usage.model_dump()}
+                            if provider_usage is not None
+                            else {}
+                        ),
                     )
 
                 # yield 每个 tool call chunk（支持并行 tool calls）
@@ -114,6 +148,11 @@ class OpenAIProvider(BaseProvider):
                             tool_call_index=tc.index,
                             finish_reason=choice.finish_reason,
                             reasoning_content=getattr(delta, "reasoning_content", None) or None,
+                            metadata=(
+                                {"provider_usage": provider_usage.model_dump()}
+                                if provider_usage is not None
+                                else {}
+                            ),
                         )
 
                 # 如果既没有内容也没有 tool_calls，但可能有 finish_reason，也 yield 一个空 chunk
@@ -122,6 +161,11 @@ class OpenAIProvider(BaseProvider):
                         content="",
                         finish_reason=choice.finish_reason,
                         reasoning_content=getattr(delta, "reasoning_content", None) or None,
+                        metadata=(
+                            {"provider_usage": provider_usage.model_dump()}
+                            if provider_usage is not None
+                            else {}
+                        ),
                     )
         except Exception as e:
             logger.exception(f"[OpenAIProvider] Stream error: {e}")
@@ -170,6 +214,11 @@ class OpenAIProvider(BaseProvider):
                 tool_call=tool_call,
                 finish_reason=choice.finish_reason,
                 reasoning_content=getattr(message, "reasoning_content", None) or None,
+                metadata=(
+                    {"provider_usage": provider_usage.model_dump()}
+                    if (provider_usage := self._extract_usage(getattr(resp, "usage", None))) is not None
+                    else {}
+                ),
             )
         except Exception as e:
             logger.exception(f"[OpenAIProvider] Chat error: {e}")

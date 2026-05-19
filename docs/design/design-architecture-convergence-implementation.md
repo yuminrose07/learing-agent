@@ -59,8 +59,8 @@ packages/ai     ────────────→   Infrastructure Layer
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │ Layer 1: Interface Layer                                    │
-│   CLI (learning_agent/main.py)                              │
-│   Web API (learning_agent/web_server.py)                    │
+│   CLI (learning_agent/learning_agent/main.py)               │
+│   Web API (learning_agent/web/web_server.py)                │
 │   Web Static (web/)                                         │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 2: Product / Application Layer                        │
@@ -109,8 +109,8 @@ Infrastructure Layer
 
 ### 3.1 对应代码
 
-- `learning_agent/main.py` 中的 CLI 交互入口与命令解析
-- `learning_agent/web_server.py` 中的 FastAPI 路由与 SSE 流式响应
+- `learning_agent/learning_agent/main.py` 中的 CLI 交互入口与命令解析
+- `learning_agent/web/web_server.py` 中的 FastAPI 路由与 SSE 流式响应
 - `web/` 目录下的静态前端资源
 
 ### 3.2 核心职责
@@ -155,10 +155,10 @@ Infrastructure Layer
 
 ### 4.1 对应代码
 
-- `learning_agent/main.py` 中的 `LearningAgentSystem`
+- `learning_agent/learning_agent/main.py` 中的 `LearningAgentSystem`
 - `learning_agent/session/session_manager.py`
 - `learning_agent/memory/memory_manager.py`
-- `learning_agent/core/extension_manager.py`
+- `learning_agent/learning_agent/extension_manager.py`
 - `learning_agent/extensions/` 的启停装配入口
 
 ### 4.2 核心职责
@@ -277,10 +277,10 @@ Infrastructure Layer
 ### 5.1 对应代码
 
 - `learning_agent/agent/agent_loop.py` 中的 `AgentLoop` 和 `AgentLoopSession`
-- `learning_agent/core/hook_system.py`
-- `learning_agent/core/event_bus.py`
-- `learning_agent/core/tool_registry.py`
-- `learning_agent/core/observability.py`
+- `learning_agent/agent/hook_system.py`
+- `learning_agent/agent/event_bus.py`
+- `learning_agent/learning_agent/tool_registry.py`
+- `learning_agent/agent/observability.py`
 
 ### 5.2 核心职责
 
@@ -393,7 +393,7 @@ Infrastructure Layer
 
 - `learning_agent/provider/`（`base_provider.py`、`openai_provider.py`、`resilient_provider.py`）
 - `learning_agent/persistence/file_store.py`
-- `learning_agent/models/models.py`
+- `learning_agent/ai/models.py`
 
 ### 6.2 核心职责
 
@@ -546,8 +546,10 @@ Agent Runtime
 ```text
 learning_agent/
 ├── __init__.py
-├── main.py                    ← Layer 2 (LearningAgentSystem) + Layer 1 (CLI 入口)
-├── web_server.py              ← Layer 1 (Web API)
+├── learning_agent/
+│   ├── main.py                ← Layer 2 (LearningAgentSystem) + Layer 1 (CLI 入口)
+├── web/
+│   └── web_server.py          ← Layer 1 (Web API)
 ├── config.py                  ← 配置（跨层）
 │
 ├── agent/
@@ -619,10 +621,10 @@ learning_agent/
 
 | 优先级 | 任务 | 涉及文件 | 验收标准 |
 |--------|------|---------|---------|
-| P0 | 封装 `_sessions` 访问 | `web_server.py`、`main.py` | Web/CLI 不再直接访问 `system.session_manager._sessions` |
-| P0 | 封装 `_l1_working` 访问 | `web_server.py`、`main.py` | Web/CLI 不再直接访问 `system.memory_manager._l1_working` |
-| P1 | 封装 runtime 状态查询 | `web_server.py` | `/observability/runtimes` 通过 `AgentLoop` 暴露的只读接口获取 |
-| P1 | 明确 `LearningAgentSystem` 对外 API | `main.py` | 所有外部调用都通过 `LearningAgentSystem` 的公开方法 |
+| P0 | 封装 `_sessions` 访问 | `learning_agent/web/web_server.py`、`learning_agent/learning_agent/main.py` | Web/CLI 不再直接访问 `system.session_manager._sessions` |
+| P0 | 封装 `_l1_working` 访问 | `learning_agent/web/web_server.py`、`learning_agent/learning_agent/main.py` | Web/CLI 不再直接访问 `system.memory_manager._l1_working` |
+| P1 | 封装 runtime 状态查询 | `learning_agent/web/web_server.py` | `/observability/runtimes` 通过 `AgentLoop` 暴露的只读接口获取 |
+| P1 | 明确 `LearningAgentSystem` 对外 API | `learning_agent/learning_agent/main.py` | 所有外部调用都通过 `LearningAgentSystem` 的公开方法 |
 
 **参考实现模式**：
 

@@ -1,7 +1,33 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import Any, Optional
+
+
+class CompactMode(str, Enum):
+    FULL = "full"
+    INCREMENTAL = "incremental"
+    REBASE = "rebase"
+
+
+class CompactScope(str, Enum):
+    SESSION = "session"
+    FROM = "from"
+    UP_TO = "up_to"
+
+
+@dataclass
+class JsonlCursor:
+    session_id: str
+    after_seq: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "JsonlCursor":
+        return cls(**data)
 
 
 @dataclass
@@ -32,6 +58,12 @@ class CompactMetadata:
     compact_anchor_entry_id: Optional[str] = None
     last_cut_point_entry_id: Optional[str] = None
     last_compact_scope: Optional[str] = None
+    source_event_start_seq: Optional[int] = None
+    source_event_end_seq: Optional[int] = None
+    source_event_ids: list[str] = field(default_factory=list)
+    retained_event_ids: list[str] = field(default_factory=list)
+    next_jsonl_cursor: Optional[int] = None
+    template_version: str = "session-event-log-v1"
     incremental_count_since_rebase: int = 0
     consecutive_failures: int = 0
     last_summary_file: Optional[str] = None
@@ -44,13 +76,17 @@ class CompactMetadata:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CompactMetadata":
-        return cls(**data)
+        allowed = cls.__dataclass_fields__.keys()
+        return cls(**{key: value for key, value in data.items() if key in allowed})
 
 
 @dataclass
 class CompactSourceUnit:
     unit_id: str
     entry_ids: list[str] = field(default_factory=list)
+    event_ids: list[str] = field(default_factory=list)
+    source_event_start_seq: Optional[int] = None
+    source_event_end_seq: Optional[int] = None
     transcript: str = ""
     estimated_tokens: int = 0
     started_at: Optional[str] = None
@@ -78,6 +114,9 @@ class FullCompactInput:
     compact_anchor_entry_id: Optional[str]
     cut_point_entry_id: str
     recent_token_budget: int
+    source_event_start_seq: Optional[int] = None
+    source_event_end_seq: Optional[int] = None
+    source_event_ids: list[str] = field(default_factory=list)
     source_units: list[CompactSourceUnit] = field(default_factory=list)
     existing_summary: Optional[str] = None
     sm_state: Optional[SessionMemoryState] = None
@@ -89,6 +128,9 @@ class FullCompactInput:
             "compact_anchor_entry_id": self.compact_anchor_entry_id,
             "cut_point_entry_id": self.cut_point_entry_id,
             "recent_token_budget": self.recent_token_budget,
+            "source_event_start_seq": self.source_event_start_seq,
+            "source_event_end_seq": self.source_event_end_seq,
+            "source_event_ids": list(self.source_event_ids),
             "source_units": [unit.to_dict() for unit in self.source_units],
             "existing_summary": self.existing_summary,
             "sm_state": self.sm_state.to_dict() if self.sm_state else None,
@@ -103,6 +145,11 @@ class FullCompactResult:
     compact_anchor_entry_id: Optional[str]
     cut_point_entry_id: str
     next_anchor_entry_id: Optional[str]
+    source_event_start_seq: Optional[int] = None
+    source_event_end_seq: Optional[int] = None
+    source_event_ids: list[str] = field(default_factory=list)
+    retained_event_ids: list[str] = field(default_factory=list)
+    template_version: str = "session-event-log-v1"
     preserved_entry_ids: list[str] = field(default_factory=list)
     trace_summary: CompactTraceSummary = field(default_factory=CompactTraceSummary)
     estimated_tokens_after: int = 0
@@ -115,6 +162,11 @@ class FullCompactResult:
             "compact_anchor_entry_id": self.compact_anchor_entry_id,
             "cut_point_entry_id": self.cut_point_entry_id,
             "next_anchor_entry_id": self.next_anchor_entry_id,
+            "source_event_start_seq": self.source_event_start_seq,
+            "source_event_end_seq": self.source_event_end_seq,
+            "source_event_ids": list(self.source_event_ids),
+            "retained_event_ids": list(self.retained_event_ids),
+            "template_version": self.template_version,
             "preserved_entry_ids": list(self.preserved_entry_ids),
             "trace_summary": self.trace_summary.to_dict(),
             "estimated_tokens_after": self.estimated_tokens_after,
@@ -123,11 +175,13 @@ class FullCompactResult:
 
 @dataclass
 class CompactionPlan:
-    use_micro_compact: bool = True
+    use_micro_compact: bool = False
     use_full_compact: bool = False
     full_compact_scope: Optional[str] = None
     compact_anchor_entry_id: Optional[str] = None
     cut_point_entry_id: Optional[str] = None
+    source_event_range: tuple[int, int] | None = None
+    next_jsonl_cursor: int | None = None
     recent_token_budget: int = 0
     summary_block: Optional[str] = None
 

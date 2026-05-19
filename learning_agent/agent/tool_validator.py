@@ -16,7 +16,6 @@ from typing import Any, Optional
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 
 from learning_agent.ai import ToolCall
-from learning_agent.agent.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +28,15 @@ class ValidationErrorDetail(BaseModel):
 class ToolInputValidator:
     """工具输入参数校验器，不侵入业务逻辑。"""
 
-    def __init__(self, tool_registry: ToolRegistry):
-        self._registry = tool_registry
+    def __init__(self, tool_definition_provider: Any):
+        """
+        初始化工具输入校验器。
+
+        Args:
+            tool_definition_provider: 提供工具定义的对象，必须实现
+                get_tool_definition(tool_id) -> Optional[ToolDefinition] 方法
+        """
+        self._registry = tool_definition_provider
         self._jsonschema_validators: dict[str, Any] = {}
 
     async def validate(self, tool_call: ToolCall) -> Optional[list[ValidationErrorDetail]]:
@@ -39,7 +45,7 @@ class ToolInputValidator:
         返回 None 表示通过；返回列表表示失败详情。
         """
         # 1. 工具名存在性
-        tool_def = self._registry.get(tool_call.tool_id)
+        tool_def = self._registry.get_tool_definition(tool_call.tool_id)
         if tool_def is None:
             return [ValidationErrorDetail(param="tool_id", issue=f"No such tool available: {tool_call.tool_id}")]
 

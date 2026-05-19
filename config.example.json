@@ -11,7 +11,7 @@
   "auto_confirm_knowledge": false,
   "log_level": "INFO",
   "tool_guard": {
-    "bash_mode": "default",
+    "bash_mode": "disabled",
     "bash_allowlist": [],
     "bash_denylist": [],
     "rules": {

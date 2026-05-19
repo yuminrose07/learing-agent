@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from learning_agent.agent.agent_loop import AgentLoop
@@ -43,6 +43,8 @@ from learning_agent.learning_agent.mode_service import (
     is_confirmation_message,
     resolve_persona,
 )
+from learning_agent.learning_agent.session_event_store import SessionEventStore
+from learning_agent.learning_agent.session_migration import migrate_all_sessions
 from learning_agent.learning_agent.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ class LearningAgentSystem:
 
         # Layer 4: Infrastructure
         self.file_store = FileStore(self.config.data_dir)
+        self.session_event_store = SessionEventStore(self.file_store)
         # Layer 3: Agent Runtime cross-cutting support
         self.event_bus = EventBus()
         self.hook_system = HookSystem()
@@ -75,7 +78,11 @@ class LearningAgentSystem:
             self.tool_registry,
         )
         self.memory_manager = MemoryManager()
-        self.session_manager = SessionManager(event_bus=self.event_bus, file_store=self.file_store)
+        self.session_manager = SessionManager(
+            event_bus=self.event_bus,
+            file_store=self.file_store,
+            event_store=self.session_event_store,
+        )
         self.provider: Optional[OpenAIProvider] = None
         self.agent_loop: Optional[AgentLoop] = None
         self.compaction_coordinator: Optional[CompactionCoordinator] = None
@@ -117,11 +124,6 @@ class LearningAgentSystem:
         # 订阅可观测性事件
         self.event_bus.subscribe("*", self.observability.on_event)
 
-        # 订阅 session delta 事件，实现追加持久化
-        self.event_bus.subscribe("session.entryAppended", self._on_entry_appended)
-        self.event_bus.subscribe("session.entryPatched", self._on_entry_patched)
-        self.event_bus.subscribe("session.scalarChanged", self._on_scalar_changed)
-
         # Layer 3: Agent Runtime
         # 创建工具执行服务（Product 层实现）
         from learning_agent.learning_agent.tool_execution_service import ToolExecutionServiceImpl
@@ -141,7 +143,7 @@ class LearningAgentSystem:
             self.session_manager,
             max_context_tokens=self.provider.get_max_context_length(),
         )
-        # 订阅状态快照事件，用于定期 compaction
+        # 状态快照只用于观测，不再触发持久化层 snapshot/delta compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
 
         logger.info("[System] Initialization complete.")
@@ -154,142 +156,54 @@ class LearningAgentSystem:
         logger.info("[System] Shutdown complete.")
 
     async def _load_state(self) -> None:
-        """加载产品层持久化状态，replay delta 恢复完整会话。"""
+        """加载产品层持久化状态，从 session event log replay 会话。"""
         kg_data = self.file_store.load_knowledge_graph()
         if kg_data:
             self.memory_manager.kg.from_dict(kg_data)
             logger.info(f"[System] Loaded {len(self.memory_manager.kg._nodes)} knowledge nodes")
 
+        migration_report = migrate_all_sessions(self.file_store)
+        if migration_report.migrated:
+            logger.info("[System] Migrated legacy sessions: %s", ", ".join(migration_report.migrated))
+        if migration_report.failed:
+            logger.warning("[System] Legacy session migration failures: %s", migration_report.failed)
+
         for sid in self.file_store.list_sessions():
-            session = self._load_session_with_deltas(sid)
-            if session:
-                self.session_manager.add_session(session)
-
-    def _load_session_with_deltas(self, session_id: str) -> Optional[LearningSession]:
-        """加载 snapshot 并按序 replay JSONL delta。"""
-        snapshot = self.file_store.load_session(session_id)
-        if not snapshot:
-            return None
-
-        session = LearningSession(**snapshot)
-
-        for delta in self.file_store.read_session_deltas(session_id):
-            op = delta.get("op")
-            if op == "append":
-                from learning_agent.ai import SessionEntry
-                session.entries.append(SessionEntry(**delta["entry"]))
-            elif op == "patch":
-                entry_id = delta["entry_id"]
-                entry = next((e for e in session.entries if e.id == entry_id), None)
-                if entry is not None:
-                    path = delta["path"]
-                    value = delta["value"]
-                    parts = path.split(".")
-                    current: Any = entry
-                    for part in parts[:-1]:
-                        if isinstance(current, dict):
-                            current = current.get(part)
-                        elif isinstance(current, list):
-                            current = current[int(part)]
-                        else:
-                            current = getattr(current, part, None)
-                        if current is None:
-                            break
-                    if current is not None:
-                        last = parts[-1]
-                        if isinstance(current, dict):
-                            current[last] = value
-                        elif isinstance(current, list):
-                            current[int(last)] = value
-                        else:
-                            setattr(current, last, value)
-            elif op == "scalar":
-                path = delta["path"]
-                value = delta["value"]
-                if hasattr(session, path):
-                    setattr(session, path, value)
-                elif "." in path:
-                    obj_name, attr_name = path.split(".", 1)
-                    obj = getattr(session, obj_name, None)
-                    if obj is not None and isinstance(obj, dict):
-                        obj[attr_name] = value
-
-        # 重建 current_leaf_id
-        message_entries = [e for e in session.entries if e.type == "message"]
-        if message_entries:
-            session.current_leaf_id = message_entries[-1].id
-
-        return session
+            events = self.session_event_store.read_events(sid)
+            if not events:
+                continue
+            snapshot = self.session_manager.get_agent_snapshot(sid)
+            if snapshot.corrupt_events:
+                logger.warning("[System] Session event log has corrupt events: %s", snapshot.corrupt_events)
+            self.session_manager.add_snapshot(snapshot)
 
     async def _save_state(self) -> None:
-        """全量 compaction：保存所有 session 的 snapshot 并清空 delta。"""
+        """保存非 session-event-log 的产品状态。Session 事实源已实时 append。"""
         self.file_store.save_knowledge_graph(self.memory_manager.kg.to_dict())
-        for session in self.session_manager.list_sessions():
-            self.file_store.compact_session(session.id, session.model_dump())
-        logger.info("[System] State compacted and saved.")
+        logger.info("[System] Durable state saved. Session event logs are append-only.")
 
     async def _on_state_snapshot(self, event: Event) -> None:
-        """消费运行时快照事件，定期触发 compaction。"""
+        """运行时快照进入 observability，不再触发持久化层 compact。"""
         snapshot = event.payload
         session_id = snapshot.get("session_id")
         turn_count = snapshot.get("turn_count", 0)
-        if not session_id:
-            return
-
-        # 每 20 轮或进程启动后首次到达时触发 compaction
-        last = self._compaction_turn_counts.get(session_id, 0)
-        if turn_count > 0 and (turn_count - last) >= 20:
-            session = self.get_session(session_id)
-            if session is not None:
-                try:
-                    self.file_store.compact_session(session_id, session.model_dump())
-                    self._compaction_turn_counts[session_id] = turn_count
-                    logger.info(f"[System] Compacted session {session_id} at turn {turn_count}")
-                except Exception as e:
-                    logger.exception(f"[System] Failed to compact session: {e}")
+        if session_id:
+            self._compaction_turn_counts[session_id] = max(
+                self._compaction_turn_counts.get(session_id, 0),
+                turn_count,
+            )
 
     async def _on_entry_appended(self, event: Event) -> None:
-        """追加写入 entry delta。"""
-        payload = event.payload
-        session_id = payload["session_id"]
-        delta = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "op": "append",
-            "entry": payload["entry"],
-        }
-        try:
-            self.file_store.append_session_delta(session_id, delta)
-        except Exception as e:
-            logger.exception(f"[System] Failed to append entry delta: {e}")
+        """Legacy no-op: session persistence now happens in SessionManager event log writes."""
+        del event
 
     async def _on_entry_patched(self, event: Event) -> None:
-        """追加写入 entry patch delta。"""
-        payload = event.payload
-        delta = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "op": "patch",
-            "entry_id": payload["entry_id"],
-            "path": payload["path"],
-            "value": payload["value"],
-        }
-        try:
-            self.file_store.append_session_delta(payload["session_id"], delta)
-        except Exception as e:
-            logger.exception(f"[System] Failed to append patch delta: {e}")
+        """Legacy no-op: session persistence now happens in SessionManager event log writes."""
+        del event
 
     async def _on_scalar_changed(self, event: Event) -> None:
-        """追加写入标量变更 delta。"""
-        payload = event.payload
-        delta = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "op": "scalar",
-            "path": payload["path"],
-            "value": payload["value"],
-        }
-        try:
-            self.file_store.append_session_delta(payload["session_id"], delta)
-        except Exception as e:
-            logger.exception(f"[System] Failed to append scalar delta: {e}")
+        """Legacy no-op: scalar persistence now happens in SessionManager event log writes."""
+        del event
 
     # ─── Product/Application facade ───
 
@@ -326,11 +240,24 @@ class LearningAgentSystem:
         )
         if set_current:
             self._current_session = session
-        self.save_session(session.id)
         return session
 
     def list_sessions(self) -> list[LearningSession]:
         return self.session_manager.list_sessions()
+
+    def get_ui_messages(self, session_id: str) -> list[dict[str, Any]]:
+        if self.get_session(session_id) is None:
+            return []
+        return [
+            {
+                "id": message.id,
+                "role": message.role,
+                "content": message.content,
+                "status": message.status,
+                "metadata": message.metadata,
+            }
+            for message in self.session_manager.build_ui_messages(session_id)
+        ]
 
     def get_session(
         self,
@@ -345,12 +272,12 @@ class LearningAgentSystem:
         if session is not None or not load_if_missing:
             return session
 
-        session = self._load_session_with_deltas(session_id)
-        if session is None:
+        events = self.session_event_store.read_events(session_id)
+        if not events:
             return None
 
-        self.session_manager.add_session(session)
-        return session
+        snapshot = self.session_manager.get_agent_snapshot(session_id)
+        return self.session_manager.add_snapshot(snapshot)
 
     def has_session(self, session_id: str) -> bool:
         return self.get_session(session_id) is not None
@@ -363,12 +290,8 @@ class LearningAgentSystem:
         return self.session_manager.update_session_title(session_id, title)
 
     def save_session(self, session_id: str) -> bool:
-        """写全量 snapshot（用于初始创建，事件驱动不经过此处）。"""
-        session = self.get_session(session_id)
-        if session is None:
-            return False
-        self.file_store.save_session(session_id, session.model_dump())
-        return True
+        """兼容入口。Session 主事实源实时写入 event log，不再保存 snapshot。"""
+        return self.get_session(session_id) is not None
 
     def update_session_mode(
         self,
@@ -398,12 +321,28 @@ class LearningAgentSystem:
 
         self.file_store.delete(f"sessions/{session_id}.json")
         self.file_store.delete(f"sessions/{session_id}.jsonl")
+        self.file_store.delete(f"sessions/{session_id}.events.jsonl")
         self.file_store.delete(f"memory/session_state/{session_id}.json")
         self.file_store.delete(f"memory/compact/{session_id}.meta.json")
         self.file_store.delete(f"memory/compact/{session_id}.summary.txt")
+        self._delete_session_observability_files(session_id)
         if self._current_session and self._current_session.id == session_id:
             self._current_session = None
         return True
+
+    def _delete_session_observability_files(self, session_id: str) -> None:
+        obs_dir = Path(self.observability.data_dir)
+        for pattern in (f"flow_{session_id}.json", f"*{session_id}*.tmp", f"*{session_id}*.cache"):
+            for path in obs_dir.glob(pattern):
+                if path.is_file():
+                    path.unlink()
+        for trace_file in list(obs_dir.glob("trace_*.json")) + list(obs_dir.glob("snap_*.json")):
+            try:
+                data = json.loads(trace_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if data.get("session_id") == session_id or data.get("state", {}).get("session_id") == session_id:
+                trace_file.unlink()
 
     def get_session_runtime_summary(self, session_id: str) -> Optional[dict[str, Any]]:
         if self.agent_loop is None:
@@ -471,6 +410,8 @@ class LearningAgentSystem:
             confirmed_input = session.ask_state.confirmed_input or user_input
             session.ask_state.status = "idle"
             session.ask_state.confirmed_input = ""
+            if hasattr(self, "session_manager"):
+                self.session_manager.persist_ask_state(session.id)
             if target_mode != session.mode:
                 session = self.update_session_mode(
                     session.id,
@@ -500,6 +441,8 @@ class LearningAgentSystem:
 
         if requested_mode == AgentMode.ASK:
             session.ask_state.status = "aligning"
+            if hasattr(self, "session_manager"):
+                self.session_manager.persist_ask_state(session.id)
             profile = build_turn_profile(
                 AgentMode.ASK,
                 user_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
@@ -573,6 +516,8 @@ class LearningAgentSystem:
 
         persona = resolve_persona(AgentMode.CHAT)
         session.mode_metadata["chat_persona_key"] = persona.key
+        if hasattr(self, "session_manager"):
+            self.session_manager.persist_mode_metadata(session.id)
         return persona.key
 
     def _finalize_prepared_turn(
@@ -583,6 +528,8 @@ class LearningAgentSystem:
     ) -> None:
         if prepared_turn.capture_response_as_confirmed_input:
             session.ask_state.confirmed_input = response_text
+            if hasattr(self, "session_manager"):
+                self.session_manager.persist_ask_state(session.id)
 
     async def stream_session_chat(
         self,
@@ -625,7 +572,6 @@ class LearningAgentSystem:
                         prepared_turn,
                         "".join(response_parts),
                     )
-                    self.save_session(session.id)
             except Exception:
                 logger.exception(f"[System] Failed to finalize turn for session {session_id}")
 

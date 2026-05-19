@@ -1,6 +1,8 @@
 """
-会话管理器：树形会话的 CRUD、分支、导航、压缩。
-会话不是线性对话，而是一棵探索树。
+会话管理器：Product/Application 层 session 状态 facade。
+
+新写入路径采用线性消息序列，并通过 session event log 持久化。
+旧树形字段仅保留为兼容数据，不再作为主路径语义。
 """
 
 from __future__ import annotations
@@ -23,26 +25,42 @@ from learning_agent.ai import (
 )
 from learning_agent.learning_agent.compaction.models import (
     CompactMetadata,
+    CompactionPlan,
     FullCompactResult,
     SessionMemoryState,
 )
+from learning_agent.learning_agent.mode_service import TurnExecutionProfile
+from learning_agent.learning_agent.session_event_store import SessionEventStore
+from learning_agent.learning_agent.session_events import SessionEventType
+from learning_agent.learning_agent.session_projection import (
+    AgentSnapshot,
+    project_legacy_session,
+    replay_events,
+)
+from learning_agent.learning_agent.views import LLMInputView, UIViewMessage, build_llm_input_view, build_ui_messages
 
 logger = logging.getLogger(__name__)
 
 
 class SessionManager:
     """
-    管理会话树的创建、追加、fork、导航。
-    当前版本在内存中维护会话，通过 Persistence Layer 持久化。
+    管理线性 session 消息与产品状态。
+    当前版本在内存中维护派生状态，通过 session event log 持久化事实。
     """
 
-    def __init__(self, event_bus: Any = None, file_store: FileStore | None = None):
+    def __init__(
+        self,
+        event_bus: Any = None,
+        file_store: FileStore | None = None,
+        event_store: SessionEventStore | None = None,
+    ):
         self._sessions: dict[str, LearningSession] = {}
         self._session_memory_states: dict[str, SessionMemoryState] = {}
         self._compact_metadata: dict[str, CompactMetadata] = {}
         self._on_delete_callbacks: list[Callable[[str], None]] = []
         self._event_bus = event_bus
         self._file_store = file_store
+        self._event_store = event_store or (SessionEventStore(file_store) if file_store else None)
 
     def register_delete_callback(self, callback: Callable[[str], None]) -> None:
         """注册 session 删除时的回调函数。"""
@@ -68,20 +86,13 @@ class SessionManager:
         objective_id: Optional[str] = None,
         title: Optional[str] = None,
     ) -> LearningSession:
-        """创建新会话，生成根节点。"""
-        root = SessionEntry(
-            id=f"entry-root-{__import__('uuid').uuid4().hex[:6]}",
-            parent_id=None,
-            type=EntryType.MESSAGE,
-            role=MessageRole.SYSTEM,
-            content="Session started.",
-        )
+        """创建新会话。新模型不再写入 root/fork 节点。"""
         session = LearningSession(
             objective_id=objective_id,
             title=title or "New Session",
-            root_entry_id=root.id,
-            current_leaf_id=root.id,
-            entries=[root],
+            root_entry_id=None,
+            current_leaf_id=None,
+            entries=[],
         )
         self._sessions[session.id] = session
         self._session_memory_states[session.id] = SessionMemoryState(
@@ -89,6 +100,21 @@ class SessionManager:
             mode=session.mode.value,
         )
         self._compact_metadata[session.id] = CompactMetadata(session_id=session.id)
+        self._append_session_event(
+            session.id,
+            SessionEventType.SESSION_CREATED,
+            {
+                "objective_id": session.objective_id,
+                "title": session.title,
+                "mode": session.mode.value,
+                "status": session.status.value,
+                "mode_metadata": dict(session.mode_metadata),
+                "ask_state": session.ask_state.model_dump(mode="json"),
+                "created_at": session.created_at.isoformat(),
+                "last_accessed_at": session.last_accessed_at.isoformat(),
+            },
+            visibility="system",
+        )
         self._persist_session_memory_state(session.id)
         self._persist_compact_metadata(session.id)
         logger.info(f"[SessionManager] Created session {session.id} (obj={objective_id})")
@@ -99,6 +125,13 @@ class SessionManager:
         self._sessions[session.id] = session
         self._session_memory_states[session.id] = self._load_or_create_session_memory_state(session)
         self._compact_metadata[session.id] = self._load_or_create_compact_metadata(session.id)
+        return session
+
+    def add_snapshot(self, snapshot: AgentSnapshot) -> LearningSession:
+        session = snapshot.to_learning_session()
+        self._sessions[session.id] = session
+        self._session_memory_states[session.id] = self._load_or_create_session_memory_state(session)
+        self._compact_metadata[session.id] = snapshot.compact_metadata or self._load_or_create_compact_metadata(session.id)
         return session
 
     def get_session(self, session_id: str) -> Optional[LearningSession]:
@@ -113,6 +146,32 @@ class SessionManager:
     def set_session_memory_state(self, session_id: str, state: SessionMemoryState) -> None:
         self._session_memory_states[session_id] = state
         self._persist_session_memory_state(session_id)
+
+    def persist_ask_state(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_ASK_STATE_UPDATED,
+            {"ask_state": session.ask_state.model_dump(mode="json")},
+            visibility="system",
+        )
+
+    def persist_mode_metadata(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_MODE_CHANGED,
+            {
+                "from": session.mode.value,
+                "to": session.mode.value,
+                "mode_metadata": dict(session.mode_metadata),
+            },
+            visibility="system",
+        )
 
     def get_compact_metadata(self, session_id: str) -> CompactMetadata | None:
         return self._compact_metadata.get(session_id)
@@ -169,6 +228,12 @@ class SessionManager:
             return None
         session.title = title
         session.last_accessed_at = datetime.now(timezone.utc)
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_TITLE_UPDATED,
+            {"title": title},
+            visibility="system",
+        )
         self._emit_event(
             "session.scalarChanged",
             {"session_id": session_id, "path": "title", "value": title},
@@ -190,6 +255,41 @@ class SessionManager:
             except Exception:
                 logger.exception("[SessionManager] Failed to emit event %s", event_type)
 
+    def _append_session_event(
+        self,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        visibility: str = "agent",
+    ) -> None:
+        if self._event_store is None:
+            return
+        try:
+            self._event_store.append_event(
+                session_id=session_id,
+                type=event_type,
+                payload=payload,
+                visibility=visibility,
+            )
+        except Exception:
+            logger.exception(
+                "[SessionManager] Failed to append session event %s (session=%s)",
+                event_type,
+                session_id,
+            )
+
+    def _event_type_for_entry(self, entry: SessionEntry) -> str:
+        if entry.role == MessageRole.USER:
+            return SessionEventType.MESSAGE_USER_APPENDED
+        if entry.role == MessageRole.TOOL:
+            return (
+                SessionEventType.TOOL_CALL_FAILED
+                if entry.metadata.get("is_error")
+                else SessionEventType.TOOL_CALL_COMPLETED
+            )
+        return SessionEventType.MESSAGE_END
+
     def append_message(
         self,
         session_id: str,
@@ -197,27 +297,36 @@ class SessionManager:
         content: str,
         parent_id: Optional[str] = None,
         metadata: Optional[dict] = None,
+        tool_calls: Optional[list[Any]] = None,
+        tool_results: Optional[list[dict[str, Any]]] = None,
     ) -> Optional[SessionEntry]:
         """
-        追加消息到会话树。
-        如果不指定 parent_id，默认追加到 current_leaf。
+        追加消息到线性会话序列。
+        `parent_id` 仅作为 legacy 参数保留，新写入不会依赖它。
         """
         session = self._sessions.get(session_id)
         if not session:
             return None
 
-        parent = parent_id or session.current_leaf_id
         entry = SessionEntry(
-            parent_id=parent,
+            parent_id=None,
             type=EntryType.MESSAGE,
             role=role,
             content=content,
             metadata=metadata or {},
+            tool_calls=tool_calls or [],
+            tool_results=tool_results or [],
         )
         session.entries.append(entry)
         session.current_leaf_id = entry.id
         session.last_accessed_at = datetime.now(timezone.utc)
         logger.debug(f"[SessionManager] Appended entry {entry.id} to session {session_id}")
+        self._append_session_event(
+            session_id,
+            self._event_type_for_entry(entry),
+            {"entry": entry.model_dump(mode="json")},
+            visibility="agent",
+        )
         self._emit_event(
             "session.entryAppended",
             {"session_id": session_id, "entry": entry.model_dump()},
@@ -273,6 +382,12 @@ class SessionManager:
             repr(value)[:100],
             session_id,
         )
+        self._append_session_event(
+            session_id,
+            SessionEventType.MESSAGE_PATCH,
+            {"entry_id": entry_id, "path": path, "value": value},
+            visibility="agent",
+        )
         self._emit_event(
             "session.entryPatched",
             {"session_id": session_id, "entry_id": entry_id, "path": path, "value": value},
@@ -285,31 +400,13 @@ class SessionManager:
         entry_id: str,
         fork_content: Optional[str] = None,
     ) -> Optional[SessionEntry]:
-        """
-        在指定节点创建分支。
-        插入一个 fork_point 标记节点，然后新消息可以挂在这个标记下。
-        """
-        session = self._sessions.get(session_id)
-        if not session:
-            return None
+        """新模型不再支持新建 fork 分支。"""
+        del entry_id, fork_content
+        logger.warning("[SessionManager] fork_at is unsupported in linear event-log sessions: %s", session_id)
+        return None
 
-        fork_entry = SessionEntry(
-            parent_id=entry_id,
-            type=EntryType.FORK_POINT,
-            content=fork_content or "Forked branch",
-        )
-        session.entries.append(fork_entry)
-        session.current_leaf_id = fork_entry.id
-        session.last_accessed_at = datetime.now(timezone.utc)
-        logger.info(f"[SessionManager] Forked at {entry_id} -> new leaf {fork_entry.id}")
-        self._emit_event(
-            "session.entryAppended",
-            {"session_id": session_id, "entry": fork_entry.model_dump()},
-        )
-        return fork_entry
-
-    def get_path_to_leaf(self, session_id: str, leaf_id: Optional[str] = None) -> list[SessionEntry]:
-        """获取从根到指定叶子的完整路径。"""
+    def legacy_get_path_to_leaf(self, session_id: str, leaf_id: Optional[str] = None) -> list[SessionEntry]:
+        """Legacy-only: 获取旧树形 session 从根到叶子的路径。"""
         session = self._sessions.get(session_id)
         if not session:
             return []
@@ -326,9 +423,10 @@ class SessionManager:
         return path
 
     def get_message_history(self, session_id: str, leaf_id: Optional[str] = None) -> list[SessionEntry]:
-        """获取当前分支的消息历史（过滤掉 fork_point 等非消息节点）。"""
-        path = self.get_path_to_leaf(session_id, leaf_id)
-        return [e for e in path if e.type == EntryType.MESSAGE and e.role is not None]
+        """获取线性消息历史。`leaf_id` 仅保留兼容，不参与主路径。"""
+        del leaf_id
+        snapshot = self.get_agent_snapshot(session_id)
+        return [entry.model_copy(deep=True) for entry in snapshot.messages]
 
     def iter_message_entries(self, session_id: str, leaf_id: str | None = None) -> list[SessionEntry]:
         return self.get_message_history(session_id, leaf_id)
@@ -341,6 +439,81 @@ class SessionManager:
             if entry.id == entry_id:
                 return history[index + 1 :]
         return history
+
+    def get_agent_snapshot(self, session_id: str) -> AgentSnapshot:
+        if self._event_store is not None:
+            events = self._event_store.read_events(session_id)
+            if events:
+                return replay_events(events, session_id=session_id)
+
+        session = self._sessions.get(session_id)
+        if session is None:
+            return AgentSnapshot(session_id=session_id, compact_metadata=CompactMetadata(session_id=session_id))
+        snapshot = project_legacy_session(session)
+        snapshot.compact_metadata = self._compact_metadata.get(session_id) or snapshot.compact_metadata
+        return snapshot
+
+    def build_llm_input_view(
+        self,
+        session_id: str,
+        profile: TurnExecutionProfile,
+        compaction_plan: CompactionPlan | None = None,
+    ) -> LLMInputView:
+        return build_llm_input_view(
+            self.get_agent_snapshot(session_id),
+            profile,
+            compaction_plan=compaction_plan,
+        )
+
+    def build_ui_messages(self, session_id: str) -> list[UIViewMessage]:
+        return build_ui_messages(self.get_agent_snapshot(session_id))
+
+    def find_truncatable_tool_entry(
+        self,
+        session_id: str,
+        min_chars: int,
+    ) -> Optional[SessionEntry]:
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        longest_tool_entry: Optional[SessionEntry] = None
+        longest_tool_length = 0
+        for entry in session.entries:
+            if entry.role != MessageRole.TOOL:
+                continue
+            if entry.metadata.get("emergency_truncated"):
+                continue
+            content_length = len(entry.content or "")
+            if content_length > min_chars and content_length > longest_tool_length:
+                longest_tool_entry = entry
+                longest_tool_length = content_length
+        return longest_tool_entry
+
+    def record_message_stream_failed(
+        self,
+        session_id: str,
+        reason: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self._append_session_event(
+            session_id,
+            SessionEventType.MESSAGE_STREAM_FAILED,
+            {"reason": reason, "metadata": metadata or {}},
+            visibility="agent",
+        )
+
+    def record_message_interrupted(
+        self,
+        session_id: str,
+        reason: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self._append_session_event(
+            session_id,
+            SessionEventType.MESSAGE_INTERRUPTED,
+            {"reason": reason, "metadata": metadata or {}},
+            visibility="agent",
+        )
 
     def list_sessions(self, objective_id: Optional[str] = None) -> list[LearningSession]:
         sessions = list(self._sessions.values())
@@ -363,6 +536,12 @@ class SessionManager:
             return False
         session.ask_state = AskState()
         logger.info(f"[SessionManager] Cleared ask_state for session {session_id}")
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_ASK_STATE_UPDATED,
+            {"ask_state": session.ask_state.model_dump(mode="json")},
+            visibility="system",
+        )
         self._emit_event(
             "session.scalarChanged",
             {"session_id": session_id, "path": "ask_state", "value": session.ask_state.model_dump()},
@@ -405,28 +584,28 @@ class SessionManager:
             from_mode.value,
             mode.value,
         )
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_MODE_CHANGED,
+            {
+                "from": from_mode.value,
+                "to": mode.value,
+                "mode_metadata": dict(session.mode_metadata),
+            },
+            visibility="system",
+        )
+        if clear_ask_state:
+            self._append_session_event(
+                session_id,
+                SessionEventType.SESSION_ASK_STATE_UPDATED,
+                {"ask_state": session.ask_state.model_dump(mode="json")},
+                visibility="system",
+            )
         self._emit_event(
             "session.scalarChanged",
             {"session_id": session_id, "path": "mode", "value": mode.value},
         )
         return session
-
-    def compact_session(self, session_id: str) -> bool:
-        """
-        压缩会话：将深层旧分支替换为摘要节点。
-        当前版本为占位实现。
-        """
-        session = self._sessions.get(session_id)
-        if not session:
-            return False
-        # TODO: 实现真正的 compaction 逻辑
-        session.status = SessionStatus.COMPACTED
-        logger.info(f"[SessionManager] Compacted session {session_id}")
-        self._emit_event(
-            "session.scalarChanged",
-            {"session_id": session_id, "path": "status", "value": SessionStatus.COMPACTED.value},
-        )
-        return True
 
     def apply_full_compact_result(self, session_id: str, result: FullCompactResult) -> bool:
         session = self._sessions.get(session_id)
@@ -439,6 +618,27 @@ class SessionManager:
             "anchor_entry_id": result.next_anchor_entry_id,
             "estimated_tokens_after": result.estimated_tokens_after,
         }
+        metadata = self._compact_metadata.get(session_id)
+        summary_path = metadata.last_summary_file if metadata else None
+        summary_hash = metadata.last_summary_hash if metadata else None
+        self._append_session_event(
+            session_id,
+            SessionEventType.COMPACTION_SUMMARY_ADDED,
+            {
+                "scope": result.scope,
+                "summary_path": summary_path,
+                "summary_hash": summary_hash,
+                "cut_point_entry_id": result.cut_point_entry_id,
+                "anchor_entry_id": result.next_anchor_entry_id,
+                "source_event_start_seq": result.source_event_start_seq,
+                "source_event_end_seq": result.source_event_end_seq,
+                "source_event_ids": list(result.source_event_ids),
+                "retained_event_ids": list(result.retained_event_ids),
+                "template_version": result.template_version,
+                "estimated_tokens_after": result.estimated_tokens_after,
+            },
+            visibility="agent",
+        )
         self._emit_event(
             "session.scalarChanged",
             {
@@ -450,6 +650,12 @@ class SessionManager:
         self._emit_event(
             "session.scalarChanged",
             {"session_id": session_id, "path": "status", "value": SessionStatus.COMPACTED.value},
+        )
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_STATUS_CHANGED,
+            {"status": SessionStatus.COMPACTED.value},
+            visibility="system",
         )
         return True
 

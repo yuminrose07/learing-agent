@@ -183,7 +183,7 @@ async for chunk in self.provider.stream_chat(final_params):   # ← 同样直接
 
 | 属性 | 详情 |
 |------|------|
-| **文件** | `learning_agent/core/hook_system.py` |
+| **文件** | `learning_agent/agent/hook_system.py` |
 | **行号** | 105–109 |
 | **状态** | ✅ 确认存在 |
 
@@ -259,7 +259,7 @@ if len(result_content) > MAX_TOOL_RESULT_CHARS:
 
 | 属性 | 详情 |
 |------|------|
-| **文件** | `learning_agent/agent/agent_loop.py`、`learning_agent/core/event_bus.py` |
+| **文件** | `learning_agent/agent/agent_loop.py`、`learning_agent/agent/event_bus.py` |
 | **行号** | 131–144 (`_set_state` 中的 `create_task`) |
 | **状态** | ✅ 确认存在，严重程度有限 |
 
@@ -433,7 +433,7 @@ tool_results = await asyncio.gather(*[_execute_single_tool(...) for tc in tool_c
 
 | 属性 | 详情 |
 |------|------|
-| **文件** | `learning_agent/agent/agent_loop.py`、`learning_agent/core/observability.py` |
+| **文件** | `learning_agent/agent/agent_loop.py`、`learning_agent/agent/observability.py` |
 | **状态** | ✅ 确认存在（特定路径 + 多 Session 并发时加剧） |
 
 #### 问题描述
@@ -488,8 +488,8 @@ tool_results = await asyncio.gather(*[_execute_single_tool(...) for tc in tool_c
 | 文件 | 问题编号 | 改动说明 |
 |------|----------|----------|
 | `learning_agent/agent/agent_loop.py` | 1, 2, 3, 4, 6, 8, 9, 11, 12 | 状态隔离、上下文压缩修复、并发锁、兜底链路增强、工具结果截断、确认判断优化、system message 位置、并发执行、span 泄漏修复 |
-| `learning_agent/core/hook_system.py` | 5 | 增加 Hook 执行超时保护 |
-| `learning_agent/core/observability.py` | 12 | span 栈按 trace 隔离 |
+| `learning_agent/agent/hook_system.py` | 5 | 增加 Hook 执行超时保护 |
+| `learning_agent/agent/observability.py` | 12 | span 栈按 trace 隔离 |
 | `learning_agent/provider/resilient_provider.py` | 10 | 异常分类改为 `isinstance` 优先 |
 | `learning_agent/memory/*.py` | 13 | 需补充与 AgentLoop 的集成文档或默认 Extension |
 

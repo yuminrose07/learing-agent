@@ -46,6 +46,12 @@ class MessageRole(str, Enum):
     TOOL = "tool"
 
 
+class AgentMode(str, Enum):
+    CHAT = "chat"
+    ASK = "ask"
+    STUDY = "study"
+
+
 class EntryType(str, Enum):
     MESSAGE = "message"
     FORK_POINT = "fork_point"
@@ -190,6 +196,8 @@ class LearningSession(BaseModel):
     root_entry_id: Optional[str] = None
     current_leaf_id: Optional[str] = None
     status: SessionStatus = SessionStatus.ACTIVE
+    mode: AgentMode = AgentMode.CHAT
+    mode_metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_accessed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     extracted_knowledge_ids: list[str] = Field(default_factory=list)
@@ -406,6 +414,7 @@ class ChatChunk(BaseModel):
     tool_call_index: Optional[int] = None
     finish_reason: Optional[str] = None
     reasoning_content: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderConfig(BaseModel):
@@ -440,6 +449,7 @@ class Trace(BaseModel):
     trace_id: str = Field(default_factory=lambda: f"trace-{uuid.uuid4().hex[:8]}")
     session_id: Optional[str] = None
     objective_id: Optional[str] = None
+    mode: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     duration_ms: Optional[int] = None
     spans: list[TraceSpan] = Field(default_factory=list)
@@ -518,6 +528,51 @@ class ContextComponent(BaseModel):
     tokens: int = 0
     content: Any = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderUsage(BaseModel):
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class TurnCompactionUsage(BaseModel):
+    micro_compact_applied: bool = False
+    full_compact_applied: bool = False
+    summary_block_present: bool = False
+    full_compact_scope: Optional[str] = None
+    recent_token_budget: int = 0
+
+
+class TurnUsage(BaseModel):
+    estimated_prompt_tokens: int = 0
+    actual_prompt_tokens: Optional[int] = None
+    actual_completion_tokens: Optional[int] = None
+    actual_total_tokens: Optional[int] = None
+    context_limit: int = 0
+    utilization_ratio: float = 0.0
+    is_estimated: bool = True
+    compaction: TurnCompactionUsage = Field(default_factory=TurnCompactionUsage)
+
+    def with_provider_usage(self, usage: ProviderUsage | None) -> "TurnUsage":
+        if usage is None:
+            return self.model_copy(deep=True)
+        has_actual_usage = any(
+            value is not None
+            for value in (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+            )
+        )
+        return self.model_copy(
+            update={
+                "actual_prompt_tokens": usage.prompt_tokens,
+                "actual_completion_tokens": usage.completion_tokens,
+                "actual_total_tokens": usage.total_tokens,
+                "is_estimated": not has_actual_usage,
+            }
+        )
 
 
 # ───────────────────────────────

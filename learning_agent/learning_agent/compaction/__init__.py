@@ -13,23 +13,29 @@ from .micro_compact import (
     is_micro_compactable_tool_entry,
 )
 from .models import (
+    CompactMode,
     CompactMetadata,
+    CompactScope,
     CompactSourceUnit,
     CompactTraceSummary,
     CompactionPlan,
     FullCompactInput,
     FullCompactResult,
+    JsonlCursor,
     SessionMemoryState,
 )
 
 __all__ = [
     "CompactionCoordinator",
+    "CompactMode",
     "CompactMetadata",
+    "CompactScope",
     "CompactSourceUnit",
     "CompactTraceSummary",
     "CompactionPlan",
     "FullCompactInput",
     "FullCompactResult",
+    "JsonlCursor",
     "SessionMemoryState",
     "build_full_compact_input",
     "build_round_units",

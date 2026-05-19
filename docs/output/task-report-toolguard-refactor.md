@@ -103,7 +103,7 @@ return {
 
 #### 阶段 2：模型层扩展
 
-**修改文件**：`learning_agent/models/models.py`、`learning_agent/models/__init__.py`
+**修改文件**：`learning_agent/ai/models.py`、`learning_agent/models/__init__.py`
 
 核心设计决策：引入 Claude Code 风格的三级决策模型，同时保持向后兼容。
 
@@ -224,7 +224,7 @@ if hook_result.ask:
 
 审计记录包含：决策类型（allow/ask/deny）、原因、工具 ID、会话 ID、时间戳。
 
-**修改文件**：`learning_agent/extensions/built_in.py`
+**修改文件**：`learning_agent/learning_agent/extensions/built_in.py`
 
 将安全审计扩展注册到内置扩展列表中。
 

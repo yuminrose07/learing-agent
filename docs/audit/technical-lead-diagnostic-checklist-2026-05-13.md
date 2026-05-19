@@ -378,12 +378,12 @@
 ## 十、附录：本次诊断重点参考对象
 
 - `learning_agent/agent/agent_loop.py`
-- `learning_agent/core/hook_system.py`
-- `learning_agent/core/event_bus.py`
-- `learning_agent/core/observability.py`
+- `learning_agent/agent/hook_system.py`
+- `learning_agent/agent/event_bus.py`
+- `learning_agent/agent/observability.py`
 - `learning_agent/provider/openai_provider.py`
 - `learning_agent/provider/resilient_provider.py`
-- `learning_agent/extensions/built_in.py`
+- `learning_agent/learning_agent/extensions/built_in.py`
 - `learning_agent/extensions/context_compressor.py`
 - `learning_agent/extensions/tool_guard.py`
 - `learning_agent/memory/memory_manager.py`

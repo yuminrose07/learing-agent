@@ -110,8 +110,9 @@ class ObservabilityCollector:
         self,
         session_id: Optional[str] = None,
         objective_id: Optional[str] = None,
+        mode: Optional[str] = None,
     ) -> Trace:
-        trace = Trace(session_id=session_id, objective_id=objective_id)
+        trace = Trace(session_id=session_id, objective_id=objective_id, mode=mode)
         self._traces[trace.trace_id] = trace
         self._active_trace = trace
 
@@ -429,9 +430,36 @@ class ObservabilityCollector:
         et = event.type
 
         if et == "agent.responseChunk":
-            self.metrics.counter_inc("llm.token.received", 1)
+            self.metrics.counter_inc("llm.chunk.received", 1)
         elif et == "agent.responseDone":
             self.metrics.counter_inc("agent.request.completed", 1)
+        elif et == "agent.turnUsage":
+            usage = event.payload.get("usage", {})
+            phase = event.payload.get("phase", "response")
+            is_estimated = str(bool(usage.get("is_estimated", True))).lower()
+            self.metrics.counter_inc(
+                "llm.usage.turns",
+                1,
+                {"phase": phase, "is_estimated": is_estimated},
+            )
+            estimated_prompt_tokens = usage.get("estimated_prompt_tokens")
+            if estimated_prompt_tokens is not None:
+                self.metrics.histogram_record("llm.usage.estimated_prompt_tokens", estimated_prompt_tokens)
+            actual_prompt_tokens = usage.get("actual_prompt_tokens")
+            if actual_prompt_tokens is not None:
+                self.metrics.histogram_record("llm.usage.actual_prompt_tokens", actual_prompt_tokens)
+            actual_completion_tokens = usage.get("actual_completion_tokens")
+            if actual_completion_tokens is not None:
+                self.metrics.histogram_record("llm.usage.actual_completion_tokens", actual_completion_tokens)
+            actual_total_tokens = usage.get("actual_total_tokens")
+            if actual_total_tokens is not None:
+                self.metrics.histogram_record("llm.usage.actual_total_tokens", actual_total_tokens)
+            context_limit = usage.get("context_limit")
+            if context_limit:
+                self.metrics.histogram_record("llm.usage.context_limit", context_limit)
+            utilization_ratio = usage.get("utilization_ratio")
+            if utilization_ratio is not None:
+                self.metrics.histogram_record("llm.usage.context_utilization_ratio", utilization_ratio)
         elif et == "agent.toolCalled":
             self.metrics.counter_inc("tool.call.total", 1)
             tool_id = event.payload.get("tool_id", "unknown")

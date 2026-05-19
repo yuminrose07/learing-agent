@@ -38,9 +38,22 @@ def build_round_units(entries: list[SessionEntry]) -> list[CompactSourceUnit]:
 
 def _build_unit(entries: list[SessionEntry], index: int) -> CompactSourceUnit:
     transcript = render_role_transcript(entries)
+    event_ids = [
+        str(entry.metadata.get("source_event_id"))
+        for entry in entries
+        if entry.metadata.get("source_event_id")
+    ]
+    event_seqs = [
+        int(entry.metadata["source_event_seq"])
+        for entry in entries
+        if entry.metadata.get("source_event_seq") is not None
+    ]
     return CompactSourceUnit(
         unit_id=f"round-{index}",
         entry_ids=[entry.id for entry in entries],
+        event_ids=event_ids,
+        source_event_start_seq=min(event_seqs) if event_seqs else None,
+        source_event_end_seq=max(event_seqs) if event_seqs else None,
         transcript=transcript,
         estimated_tokens=estimate_text_tokens(transcript),
         started_at=entries[0].timestamp.isoformat() if entries else None,
@@ -86,7 +99,10 @@ def render_role_transcript(entries: list[SessionEntry]) -> str:
     lines: list[str] = []
     for entry in entries:
         role = (entry.role.value if entry.role else "system").upper()
-        content = (entry.content or "").strip()
+        if entry.role == MessageRole.TOOL and entry.metadata.get("sensitive"):
+            content = "[Tool output omitted from compact source]"
+        else:
+            content = (entry.content or "").strip()
         if entry.tool_calls:
             tool_names = ", ".join(tool_call.tool_id for tool_call in entry.tool_calls if tool_call.tool_id)
             header = f"{role}: {content}" if content else f"{role}:"
@@ -124,12 +140,27 @@ def build_full_compact_input(
     if not compact_units:
         return None
 
+    source_event_ids = [event_id for unit in compact_units for event_id in unit.event_ids]
+    source_starts = [
+        unit.source_event_start_seq
+        for unit in compact_units
+        if unit.source_event_start_seq is not None
+    ]
+    source_ends = [
+        unit.source_event_end_seq
+        for unit in compact_units
+        if unit.source_event_end_seq is not None
+    ]
+
     return FullCompactInput(
         session_id=session_id,
         scope=scope,
         compact_anchor_entry_id=anchor_entry_id,
         cut_point_entry_id=cut_point_entry_id,
         recent_token_budget=recent_token_budget,
+        source_event_start_seq=min(source_starts) if source_starts else None,
+        source_event_end_seq=max(source_ends) if source_ends else None,
+        source_event_ids=source_event_ids,
         source_units=compact_units,
         existing_summary=existing_summary,
         sm_state=sm_state,
@@ -194,6 +225,10 @@ def build_full_compact_result(
         compact_anchor_entry_id=compact_input.compact_anchor_entry_id,
         cut_point_entry_id=compact_input.cut_point_entry_id,
         next_anchor_entry_id=compacted_entry_ids[-1] if compacted_entry_ids else compact_input.compact_anchor_entry_id,
+        source_event_start_seq=compact_input.source_event_start_seq,
+        source_event_end_seq=compact_input.source_event_end_seq,
+        source_event_ids=list(compact_input.source_event_ids),
+        retained_event_ids=[],
         preserved_entry_ids=preserved_entry_ids,
         trace_summary=trace_summary,
         estimated_tokens_after=estimated_tokens_after,

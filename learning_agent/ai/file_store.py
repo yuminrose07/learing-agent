@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,7 +21,7 @@ class FileStore:
     目录结构：
     base_dir/
       sessions/
-        {session_id}.json
+        {session_id}.events.jsonl
       memory/
         knowledge_graph.json
         l1_working.json
@@ -38,7 +37,14 @@ class FileStore:
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
-        for sub in ["sessions", "memory", "materials", "objectives"]:
+        for sub in [
+            "sessions",
+            "memory",
+            "memory/session_state",
+            "memory/compact",
+            "materials",
+            "objectives",
+        ]:
             (self.base_dir / sub).mkdir(parents=True, exist_ok=True)
 
     # ─── 通用读写 ───
@@ -97,13 +103,57 @@ class FileStore:
             return True
         return False
 
-    # ─── 领域方法 ───
+    # ─── Session event log ───
 
-    def save_session(self, session_id: str, data: dict[str, Any]) -> None:
+    def append_session_event(self, session_id: str, event: dict[str, Any]) -> None:
+        self.append_jsonl(f"sessions/{session_id}.events.jsonl", event)
+
+    def read_session_events(
+        self,
+        session_id: str,
+        after_seq: int | None = None,
+    ) -> list[dict[str, Any]]:
+        records = self.read_jsonl(f"sessions/{session_id}.events.jsonl")
+        if after_seq is None:
+            return records
+        return [record for record in records if int(record.get("seq", 0)) > after_seq]
+
+    def delete_session_events(self, session_id: str) -> bool:
+        return self.delete(f"sessions/{session_id}.events.jsonl")
+
+    # ─── Legacy session snapshot/delta migration-only helpers ───
+
+    def legacy_save_session(self, session_id: str, data: dict[str, Any]) -> None:
         self.write_json(f"sessions/{session_id}.json", data)
 
-    def load_session(self, session_id: str) -> Optional[dict[str, Any]]:
+    def legacy_load_session(self, session_id: str) -> Optional[dict[str, Any]]:
         return self.read_json(f"sessions/{session_id}.json")
+
+    def legacy_append_session_delta(self, session_id: str, delta: dict[str, Any]) -> None:
+        self.append_jsonl(f"sessions/{session_id}.jsonl", delta)
+
+    def legacy_read_session_deltas(self, session_id: str) -> list[dict[str, Any]]:
+        return self.read_jsonl(f"sessions/{session_id}.jsonl")
+
+    def save_session_memory_state(self, session_id: str, data: dict[str, Any]) -> None:
+        self.write_json(f"memory/session_state/{session_id}.json", data)
+
+    def load_session_memory_state(self, session_id: str) -> Optional[dict[str, Any]]:
+        return self.read_json(f"memory/session_state/{session_id}.json")
+
+    def save_compact_metadata(self, session_id: str, data: dict[str, Any]) -> None:
+        self.write_json(f"memory/compact/{session_id}.meta.json", data)
+
+    def load_compact_metadata(self, session_id: str) -> Optional[dict[str, Any]]:
+        return self.read_json(f"memory/compact/{session_id}.meta.json")
+
+    def save_compact_summary(self, session_id: str, content: str) -> str:
+        relative_path = f"memory/compact/{session_id}.summary.txt"
+        self.write_text(relative_path, content)
+        return relative_path
+
+    def load_compact_summary(self, session_id: str) -> Optional[str]:
+        return self.read_text(f"memory/compact/{session_id}.summary.txt")
 
     def save_knowledge_graph(self, data: dict[str, Any]) -> None:
         self.write_json("memory/knowledge_graph.json", data)
@@ -127,7 +177,30 @@ class FileStore:
         path = self.base_dir / "sessions"
         if not path.exists():
             return []
-        return [f.stem for f in path.glob("*.json")]
+        event_ids = {
+            f.name.removesuffix(".events.jsonl")
+            for f in path.glob("*.events.jsonl")
+        }
+        legacy_ids = {
+            f.stem
+            for f in path.glob("*.json")
+            if not f.name.endswith(".events.json")
+        }
+        return sorted(event_ids | legacy_ids)
+
+    def list_legacy_sessions(self) -> list[str]:
+        path = self.base_dir / "sessions"
+        if not path.exists():
+            return []
+        return sorted(f.stem for f in path.glob("*.json"))
+
+    def delete_matching(self, relative_glob: str) -> int:
+        count = 0
+        for path in self.base_dir.glob(relative_glob):
+            if path.is_file():
+                path.unlink()
+                count += 1
+        return count
 
     def list_objectives(self) -> list[str]:
         path = self.base_dir / "objectives"

@@ -1,7 +1,7 @@
 # Resilience & Validation 实现总结
 
 > 生成日期：2026-05-11
-> 基于文档：`docs/design/resilience-and-validation-design.md`
+> 基于文档：`docs/design/design-resilience-and-validation-design.md`
 
 ---
 
@@ -13,17 +13,17 @@
 
 ## 二、实现组件
 
-### 1. 数据模型变更 (`learning_agent/models/models.py`)
+### 1. 数据模型变更 (`learning_agent/ai/models.py`)
 - **`ToolDefinition`** 新增 `input_model` 字段（`Optional[Type[BaseModel]]`），支持内置工具走 Pydantic 强校验路径
 - **新增 `ResilienceConfig`**：统一配置 Provider 重试、熔断、Turn 级重试、上下文压缩、Tool 滑动窗口禁用等全部参数
 - **新增错误分类体系**：`ResilienceError` 基类及 7 个子类（`RetryableError`、`ContextLengthError`、`ValidationError`、`ToolBannedError`、`AuthError`、`InvalidRequestError`、`ServiceUnavailable`），作为各层重试/熔断/降级决策依据
 
-### 2. ToolInputValidator (`learning_agent/core/tool_validator.py`)
+### 2. ToolInputValidator (`learning_agent/agent/tool_validator.py`)
 - 实现双轨校验：Pydantic 模型优先 → JSON Schema fallback → 降级宽松校验
 - 懒加载缓存 jsonschema 编译器，避免重复编译
 - 提供标准错误文本格式化，直接回流给 LLM 自纠正
 
-### 3. ToolFailureTracker (`learning_agent/core/tool_failure_tracker.py`)
+### 3. ToolFailureTracker (`learning_agent/agent/tool_failure_tracker.py`)
 - 滑动窗口失败计数器（默认 5 turn / 3 次阈值）
 - 成功执行后清零、窗口过期自动失效
 - 支持临时禁用判定和标准禁用消息生成

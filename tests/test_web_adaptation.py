@@ -10,10 +10,8 @@ Web 前后端适配方案 —— 测试套件
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import time
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +19,7 @@ import pytest
 sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.agent.agent_loop import AgentLoop, AgentLoopSession, AgentState
-from learning_agent.ai import KnowledgeNode, LearningSession, ResilienceConfig, SessionEntry
+from learning_agent.ai import AgentMode, KnowledgeNode, LearningSession, ResilienceConfig
 
 
 @pytest.fixture
@@ -37,16 +35,17 @@ def mock_system():
     system.observability = MagicMock()
     system.observability.data_dir = "/tmp/obs"
     system.get_session = MagicMock(return_value=None)
+    system.get_ui_messages = MagicMock(return_value=[])
     system.list_sessions = MagicMock(return_value=[])
     system.list_objectives = MagicMock(return_value=[])
     system.get_objective = MagicMock(return_value=None)
     system.create_session = MagicMock()
     system.stream_session_chat = MagicMock()
     system.collect_session_chat = AsyncMock(return_value="")
-    system.fork_session_entry = MagicMock(return_value=None)
     system.confirm_knowledge_candidate = AsyncMock(return_value=None)
     system.save_session = MagicMock(return_value=True)
     system.save_state = AsyncMock(return_value=None)
+    system.update_session_mode = MagicMock()
     system.delete_session = AsyncMock(return_value=False)
     system.reset_session_runtime = MagicMock(return_value=None)
     system.clear_all_runtimes = MagicMock()
@@ -57,6 +56,7 @@ def mock_system():
             "runtimes": [],
         }
     )
+    system.session_manager = MagicMock()
 
     return system
 
@@ -69,7 +69,7 @@ class TestSessionEndpointsUseSystemApi:
         session = LearningSession(title="Web Session")
         mock_system.create_session.return_value = session
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await create_session(CreateSessionRequest(title="Web Session"))
 
         assert result["id"] == session.id
@@ -86,7 +86,7 @@ class TestSessionEndpointsUseSystemApi:
         session = LearningSession(id="sess-update", title="Renamed")
         mock_system.update_session_title = MagicMock(return_value=session)
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await update_session("sess-update", UpdateSessionRequest(title="Renamed"))
 
         assert result["title"] == "Renamed"
@@ -100,28 +100,11 @@ class TestSessionEndpointsUseSystemApi:
         session = LearningSession(id="sess-query", title="Queried")
         mock_system.get_session.return_value = session
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await get_session("sess-query")
 
         assert result["id"] == "sess-query"
         mock_system.get_session.assert_called_once_with("sess-query")
-
-    @pytest.mark.asyncio
-    async def test_fork_session_uses_system_api(self, mock_system):
-        from learning_agent.web.web_server import fork_session, ForkRequest
-
-        fork_entry = SessionEntry(id="entry-fork", content="User initiated fork via web API")
-        mock_system.fork_session_entry.return_value = fork_entry
-
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
-            result = await fork_session("sess-123", ForkRequest(entry_id="entry-parent"))
-
-        assert result["id"] == "entry-fork"
-        mock_system.fork_session_entry.assert_called_once_with(
-            "sess-123",
-            "entry-parent",
-            fork_content="User initiated fork via web API",
-        )
 
     @pytest.mark.asyncio
     async def test_non_stream_chat_uses_system_api(self, mock_system):
@@ -129,8 +112,8 @@ class TestSessionEndpointsUseSystemApi:
 
         mock_system.collect_session_chat = AsyncMock(return_value="full response")
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
-            result = await chat("sess-chat", ChatRequest(message="hi", stream=False, ask_mode=True))
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
+            result = await chat("sess-chat", ChatRequest(message="hi", stream=False, mode=AgentMode.ASK))
 
         assert result == {
             "session_id": "sess-chat",
@@ -139,7 +122,7 @@ class TestSessionEndpointsUseSystemApi:
         mock_system.collect_session_chat.assert_awaited_once_with(
             "sess-chat",
             "hi",
-            ask_mode=True,
+            mode=AgentMode.ASK,
         )
 
     @pytest.mark.asyncio
@@ -147,18 +130,64 @@ class TestSessionEndpointsUseSystemApi:
         from learning_agent.web.web_server import _stream_chat_chunks
 
         async def _chunks():
-            yield MagicMock(content="part-1", tool_call=None, finish_reason=None)
-            yield MagicMock(content="part-2", tool_call=None, finish_reason="stop")
+            yield MagicMock(
+                content="part-1",
+                tool_call=None,
+                finish_reason=None,
+                metadata={"usage": {"estimated_prompt_tokens": 256, "context_limit": 128000}},
+            )
+            yield MagicMock(content="part-2", tool_call=None, finish_reason="stop", metadata={})
 
         mock_system.stream_session_chat.return_value = _chunks()
 
         payloads = []
-        async for payload in _stream_chat_chunks(mock_system, "sess-stream", "hi", ask_mode=True):
+        async for payload in _stream_chat_chunks(mock_system, "sess-stream", "hi", mode=AgentMode.ASK):
             payloads.append(payload)
 
         assert payloads[0].startswith("data: ")
         assert payloads[-1] == "data: [DONE]\n\n"
-        mock_system.stream_session_chat.assert_called_once_with("sess-stream", "hi", ask_mode=True)
+        assert '"mode": "ask"' in payloads[0]
+        assert '"usage": {"estimated_prompt_tokens": 256, "context_limit": 128000}' in payloads[0]
+        mock_system.stream_session_chat.assert_called_once_with("sess-stream", "hi", mode=AgentMode.ASK)
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_helper_falls_back_to_turn_usage_metadata(self, mock_system):
+        from learning_agent.web.web_server import _stream_chat_chunks
+
+        async def _chunks():
+            yield MagicMock(
+                content="part-1",
+                tool_call=None,
+                finish_reason="stop",
+                metadata={"turn_usage": {"estimated_prompt_tokens": 128, "context_limit": 64000}},
+            )
+
+        mock_system.stream_session_chat.return_value = _chunks()
+
+        payloads = []
+        async for payload in _stream_chat_chunks(mock_system, "sess-stream", "hi", mode=AgentMode.CHAT):
+            payloads.append(payload)
+
+        assert '"usage": {"estimated_prompt_tokens": 128, "context_limit": 64000}' in payloads[0]
+        mock_system.stream_session_chat.assert_called_once_with("sess-stream", "hi", mode=AgentMode.CHAT)
+
+    @pytest.mark.asyncio
+    async def test_update_mode_endpoint_uses_system_api(self, mock_system):
+        from learning_agent.web.web_server import update_session_mode, UpdateModeRequest
+
+        switched = LearningSession(id="sess-mode", mode=AgentMode.ASK)
+        switched.ask_state.status = "aligning"
+        mock_system.update_session_mode.return_value = switched
+
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
+            result = await update_session_mode("sess-mode", UpdateModeRequest(mode=AgentMode.ASK))
+
+        assert result == {
+            "session_id": "sess-mode",
+            "mode": "ask",
+            "ask_state": "aligning",
+        }
+        mock_system.update_session_mode.assert_called_once_with("sess-mode", AgentMode.ASK)
 
     @pytest.mark.asyncio
     async def test_confirm_knowledge_uses_system_api(self, mock_system):
@@ -168,7 +197,7 @@ class TestSessionEndpointsUseSystemApi:
             return_value=KnowledgeNode(id="kn-001", content="confirmed knowledge")
         )
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await confirm_knowledge("kn-001")
 
         assert result == {"status": "confirmed", "node_id": "kn-001"}
@@ -180,7 +209,7 @@ class TestSessionEndpointsUseSystemApi:
 
         mock_system.save_state = AsyncMock(return_value=None)
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await save_state()
 
         assert result == {"status": "saved"}
@@ -197,7 +226,7 @@ class TestDeleteSessionClearsRuntime:
         from learning_agent.web.web_server import delete_session
 
         mock_system.delete_session = AsyncMock(return_value=True)
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await delete_session("sess-001")
 
         assert result["status"] == "deleted"
@@ -209,7 +238,7 @@ class TestDeleteSessionClearsRuntime:
         from fastapi import HTTPException
 
         mock_system.delete_session = AsyncMock(return_value=False)
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             with pytest.raises(HTTPException) as exc_info:
                 await delete_session("nonexist")
         assert exc_info.value.status_code == 404
@@ -246,7 +275,7 @@ class TestResetRuntimeEndpoint:
                 },
             }
         )
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await reset_session_runtime("sess-002")
 
         assert result["status"] == "runtime_reset"
@@ -260,7 +289,7 @@ class TestResetRuntimeEndpoint:
         from fastapi import HTTPException
 
         mock_system.reset_session_runtime = MagicMock(return_value=None)
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             with pytest.raises(HTTPException) as exc_info:
                 await reset_session_runtime("nonexist")
         assert exc_info.value.status_code == 404
@@ -281,7 +310,7 @@ class TestObservabilityRuntimes:
             "total_session_count": 0,
             "runtimes": [],
         }
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await get_runtimes()
 
         assert result["active_runtime_count"] == 0
@@ -311,7 +340,7 @@ class TestObservabilityRuntimes:
             ],
         }
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await get_runtimes()
 
         assert result["active_runtime_count"] == 1
@@ -347,7 +376,7 @@ class TestObservabilityRuntimes:
             ],
         }
 
-        with patch("learning_agent.web_server._get_system", return_value=mock_system):
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
             result = await get_runtimes()
 
         assert result["active_runtime_count"] == 1
@@ -363,15 +392,13 @@ class TestLifespanClearsRuntimes:
     async def test_lifespan_startup_and_shutdown(self, mock_system):
         from learning_agent.web.web_server import lifespan
         from fastapi import FastAPI
-        from learning_agent.learning_agent.config import Config
-        from learning_agent.learning_agent.main import LearningAgentSystem
 
         app = FastAPI()
         mock_system.initialize = AsyncMock(return_value=None)
         mock_system.shutdown = AsyncMock(return_value=None)
-        with patch("learning_agent.web_server._system", None), \
-             patch("learning_agent.web_server.Config") as mock_config_cls, \
-             patch("learning_agent.web_server.LearningAgentSystem", return_value=mock_system):
+        with patch("learning_agent.web.web_server._system", None), \
+             patch("learning_agent.web.web_server.Config"), \
+             patch("learning_agent.web.web_server.LearningAgentSystem", return_value=mock_system):
             async with lifespan(app):
                 # 启动阶段已完成（进入 yield 后）
                 mock_system.clear_all_runtimes.assert_called_once()
@@ -381,8 +408,6 @@ class TestLifespanClearsRuntimes:
 
 class TestAgentLoopRuntimeOverview:
     def test_runtime_overview_public_api(self):
-        session_manager = MagicMock()
-        session_manager.list_sessions.return_value = [MagicMock(), MagicMock()]
         obs = MagicMock()
         trace = MagicMock()
         trace.trace_id = "trace-001"
@@ -395,11 +420,11 @@ class TestAgentLoopRuntimeOverview:
 
         agent_loop = AgentLoop(
             provider=MagicMock(),
-            memory_manager=MagicMock(),
-            session_manager=session_manager,
+            memory_service=MagicMock(),
+            session_store=MagicMock(),
             hook_system=MagicMock(),
             event_bus=MagicMock(),
-            tool_registry=MagicMock(),
+            tool_execution_service=MagicMock(),
             observability=obs,
         )
 
@@ -420,23 +445,36 @@ class TestAgentLoopRuntimeOverview:
         result = agent_loop.get_runtime_overview()
 
         assert result["active_runtime_count"] == 1
-        assert result["total_session_count"] == 2
         assert result["runtimes"][0]["session_id"] == "sess-003"
         assert result["runtimes"][0]["failure_tracker"]["tracked_tools"] == ["tool.search"]
         assert result["runtimes"][0]["trace"]["trace_id"] == "trace-001"
 
+    def test_learning_agent_system_aggregates_total_session_count(self):
+        from learning_agent.learning_agent.main import LearningAgentSystem
+
+        system = LearningAgentSystem()
+        system.agent_loop = MagicMock()
+        system.agent_loop.list_runtime_summaries.return_value = [{"session_id": "sess-003"}]
+        system.list_sessions = MagicMock(return_value=[MagicMock(), MagicMock()])
+
+        result = system.get_runtime_overview()
+
+        assert result == {
+            "active_runtime_count": 1,
+            "total_session_count": 2,
+            "runtimes": [{"session_id": "sess-003", "mode": "chat"}],
+        }
+
     def test_clear_runtime_returns_stable_summary(self):
-        session_manager = MagicMock()
-        session_manager.list_sessions.return_value = []
         obs = MagicMock()
 
         agent_loop = AgentLoop(
             provider=MagicMock(),
-            memory_manager=MagicMock(),
-            session_manager=session_manager,
+            memory_service=MagicMock(),
+            session_store=MagicMock(),
             hook_system=MagicMock(),
             event_bus=MagicMock(),
-            tool_registry=MagicMock(),
+            tool_execution_service=MagicMock(),
             observability=obs,
         )
 

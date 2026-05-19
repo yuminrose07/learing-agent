@@ -1,7 +1,7 @@
 # 技术设计文档：观测页面增强方案
 
 > **目标**：解决 Span 泄漏（问题 12）、全局 trace 栈错乱（多 Session 并发），并增强可观测性以支持 AgentLoopSession 架构的调试与监控
-> **范围**：`learning_agent/core/observability.py`、`learning_agent/web_server.py`、`web/observability.html`、`web/static/observability.js`
+> **范围**：`learning_agent/agent/observability.py`、`learning_agent/web_server.py`、`web/observability.html`、`web/static/observability.js`
 > **文档日期**：2026-05-12
 
 ---
@@ -718,11 +718,11 @@ function stopEventStream() {
 
 | 文件 | 修改内容 | 优先级 |
 |------|---------|--------|
-| `learning_agent/core/observability.py` | 重构 `_active_span_stack` → `_span_stacks: dict[str, list]` | P0 |
-| `learning_agent/core/observability.py` | 新增 `_session_trace_map` | P0 |
-| `learning_agent/core/observability.py` | 改造 `start_trace/end_trace/start_span/end_span/current_span` | P0 |
-| `learning_agent/core/observability.py` | 新增 `get_trace_by_session/get_spans_by_session/clear_session_traces` | P1 |
-| `learning_agent/core/observability.py` | 新增 per-session 指标记录 | P2 |
+| `learning_agent/agent/observability.py` | 重构 `_active_span_stack` → `_span_stacks: dict[str, list]` | P0 |
+| `learning_agent/agent/observability.py` | 新增 `_session_trace_map` | P0 |
+| `learning_agent/agent/observability.py` | 改造 `start_trace/end_trace/start_span/end_span/current_span` | P0 |
+| `learning_agent/agent/observability.py` | 新增 `get_trace_by_session/get_spans_by_session/clear_session_traces` | P1 |
+| `learning_agent/agent/observability.py` | 新增 per-session 指标记录 | P2 |
 | `learning_agent/agent/agent_loop.py` | 所有 span 创建点增加 try/finally 保护 | P0 |
 | `learning_agent/web_server.py` | 新增 `GET /observability/runtimes` | P1 |
 | `learning_agent/web_server.py` | 可选：新增 `GET /observability/events/stream` | P3 |

@@ -8,9 +8,9 @@ Learning-Agent Web API（FastAPI）。
 - 会话 Fork、知识确认等
 
 启动方式：
-    python -m learning_agent.main --web [--port 8000]
-或直接：
     uvicorn learning_agent.web.web_server:app --reload --port 8000
+或直接：
+    python -m learning_agent.learning_agent.main --web [--port 8000]
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
 from learning_agent.learning_agent.main import LearningAgentSystem
-from learning_agent.ai import ChatChunk, Event
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +51,7 @@ class CreateSessionRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     stream: bool = True
-    ask_mode: bool = False
-
-
-class ForkRequest(BaseModel):
-    entry_id: Optional[str] = None
+    mode: AgentMode = AgentMode.CHAT
 
 
 class ConfirmKnowledgeRequest(BaseModel):
@@ -64,6 +60,10 @@ class ConfirmKnowledgeRequest(BaseModel):
 
 class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
+
+
+class UpdateModeRequest(BaseModel):
+    mode: AgentMode
 
 
 class SaveStateRequest(BaseModel):
@@ -126,16 +126,22 @@ async def _stream_chat_chunks(
     system: LearningAgentSystem,
     session_id: str,
     message: str,
-    ask_mode: bool = False,
+    mode: AgentMode = AgentMode.CHAT,
 ) -> AsyncGenerator[str, None]:
     """将产品层对话流转换为 SSE 格式。"""
     try:
-        async for chunk in system.stream_session_chat(session_id, message, ask_mode=ask_mode):
+        async for chunk in system.stream_session_chat(session_id, message, mode=mode):
+            chunk_metadata = dict(chunk.metadata)
             payload = {
                 "content": chunk.content,
                 "tool_call": chunk.tool_call,
                 "finish_reason": chunk.finish_reason,
-                "ask_mode": ask_mode,
+                "mode": chunk_metadata.get("mode", mode.value),
+                "alignment": chunk_metadata.get("alignment", mode == AgentMode.ASK),
+                "persona_key": chunk_metadata.get("persona_key"),
+                "persona_name": chunk_metadata.get("persona_name"),
+                "persona_role": chunk_metadata.get("persona_role"),
+                "usage": chunk_metadata.get("usage") or chunk_metadata.get("turn_usage"),
             }
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
     except ValueError:
@@ -193,13 +199,15 @@ async def create_session(req: CreateSessionRequest) -> dict[str, Any]:
         objective_id=req.objective_id,
         title=req.title,
     )
-    return session.model_dump()
+    data = session.model_dump(exclude={"entries"})
+    data["messages"] = []
+    return data
 
 
 @app.get("/sessions")
 async def list_sessions() -> list[dict[str, Any]]:
     system = _get_system()
-    return [session.model_dump() for session in system.list_sessions()]
+    return [session.model_dump(exclude={"entries"}) for session in system.list_sessions()]
 
 
 @app.get("/sessions/{session_id}")
@@ -208,7 +216,9 @@ async def get_session(session_id: str) -> dict[str, Any]:
     session = system.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session.model_dump()
+    data = session.model_dump(exclude={"entries"})
+    data["messages"] = system.get_ui_messages(session_id)
+    return data
 
 
 # ───────────────────────────────
@@ -220,7 +230,7 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
     system = _get_system()
     if req.stream:
         return StreamingResponse(
-            _stream_chat_chunks(system, session_id, req.message, ask_mode=req.ask_mode),
+            _stream_chat_chunks(system, session_id, req.message, mode=req.mode),
             media_type="text/event-stream",
         )
     else:
@@ -228,7 +238,7 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
             content = await system.collect_session_chat(
                 session_id,
                 req.message,
-                ask_mode=req.ask_mode,
+                mode=req.mode,
             )
         except ValueError:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -241,21 +251,31 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
         }
 
 
-# ───────────────────────────────
-# 会话 Fork
-# ───────────────────────────────
-
-@app.post("/sessions/{session_id}/fork")
-async def fork_session(session_id: str, req: ForkRequest) -> dict[str, Any]:
+@app.put("/sessions/{session_id}/mode")
+async def update_session_mode(session_id: str, req: UpdateModeRequest) -> dict[str, Any]:
     system = _get_system()
-    fork = system.fork_session_entry(
-        session_id,
-        req.entry_id,
-        fork_content="User initiated fork via web API",
-    )
-    if not fork:
+    try:
+        session = system.update_session_mode(session_id, req.mode)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Session not found")
-    return fork.model_dump()
+    return {
+        "session_id": session.id,
+        "mode": session.mode.value,
+        "ask_state": session.ask_state.status,
+    }
+
+
+@app.get("/sessions/{session_id}/mode")
+async def get_session_mode(session_id: str) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "session_id": session.id,
+        "mode": session.mode.value,
+        "ask_state": session.ask_state.status,
+    }
 
 
 # ───────────────────────────────
@@ -268,7 +288,9 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
     session = system.update_session_title(session_id, req.title)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session.model_dump()
+    data = session.model_dump(exclude={"entries"})
+    data["messages"] = system.get_ui_messages(session_id)
+    return data
 
 
 @app.delete("/sessions/{session_id}")
@@ -441,6 +463,7 @@ async def list_traces(limit: int = 100) -> list[dict[str, Any]]:
                 "timestamp": data.get("timestamp"),
                 "duration_ms": data.get("duration_ms"),
                 "span_count": len(data.get("spans", [])),
+                "mode": data.get("mode"),
             })
         except Exception:
             pass

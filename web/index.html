@@ -14,6 +14,13 @@
         <!-- 侧边栏 -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-top">
+                <div class="sidebar-brand">
+                    <div class="sidebar-brand-mark">👑</div>
+                    <div class="sidebar-brand-copy">
+                        <span class="sidebar-brand-title">紫宸智阁</span>
+                        <span class="sidebar-brand-subtitle">夜色宫廷版 Learning-Agent</span>
+                    </div>
+                </div>
                 <button id="btn-new-chat" class="btn-new-chat">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                     <span>New chat</span>
@@ -50,34 +57,81 @@
                 <button id="btn-menu" class="btn-menu" aria-label="打开菜单">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
-                <span class="topbar-title" id="topbar-title">Learning-Agent</span>
+                <div class="topbar-session">
+                    <span class="topbar-title" id="topbar-title">Learning-Agent</span>
+                    <span class="topbar-subtitle" id="topbar-subtitle">今夜尚未翻牌，皇上可直接下旨。</span>
+                </div>
                 <div class="topbar-spacer"></div>
+                <div class="topbar-persona hidden" id="topbar-persona">
+                    <img id="topbar-persona-avatar" class="topbar-persona-avatar" alt="当前角色头像">
+                    <div class="topbar-persona-copy">
+                        <span class="topbar-persona-name" id="topbar-persona-name"></span>
+                        <span class="topbar-persona-mode" id="topbar-persona-mode"></span>
+                    </div>
+                </div>
             </header>
 
             <!-- 聊天区域 -->
             <div class="chat-area" id="chat-area">
                 <!-- 欢迎页 -->
-                <div class="welcome-screen" id="welcome-screen">
+                <div class="welcome-screen hidden" id="welcome-screen">
                     <div class="welcome-content">
-                        <div class="welcome-logo">🧠</div>
-                        <h1>Learning-Agent</h1>
-                        <p class="welcome-subtitle">你的个人学习助手</p>
+                        <span class="welcome-kicker">后宫智能中枢</span>
+                        <div class="welcome-logo">👑</div>
+                        <h1>今夜想召见哪位爱妃？</h1>
+                        <p class="welcome-subtitle">点击 `New chat` 或直接输入，首条消息发出时再翻牌。Chat 为三位妃子其一，Ask 由贵妃先行对齐，Study 由皇后陪皇上深学。</p>
+                        <div class="welcome-pill-row">
+                            <span class="welcome-pill">一会话一位妃子</span>
+                            <span class="welcome-pill">贵妃先行对齐</span>
+                            <span class="welcome-pill">皇后伴读深学</span>
+                        </div>
+
+                        <div class="home-mode-grid">
+                            <button class="home-mode-card active" data-mode="chat" type="button">
+                                <span class="home-mode-badge">默认</span>
+                                <div class="home-mode-title">Chat</div>
+                                <div class="home-mode-desc">今夜再翻牌，绑定一位妃子，陪皇上轻松闲聊。</div>
+                            </button>
+                            <button class="home-mode-card" data-mode="ask" type="button">
+                                <span class="home-mode-badge ask">对齐</span>
+                                <div class="home-mode-title">Ask</div>
+                                <div class="home-mode-desc">由贵妃先听圣意、收口目标，再请皇上示下。</div>
+                            </button>
+                            <button class="home-mode-card disabled" data-mode="study" type="button" disabled>
+                                <span class="home-mode-badge study">预告</span>
+                                <div class="home-mode-title">Study</div>
+                                <div class="home-mode-desc">皇后伴读的深学模式，后续开放。</div>
+                            </button>
+                        </div>
+
+                        <section class="persona-gallery">
+                            <div class="persona-gallery-head">
+                                <h2>后宫图鉴</h2>
+                                <p>五位角色各有性情，今夜翻牌后会在会话中全程陪皇上。</p>
+                            </div>
+                            <div class="persona-gallery-grid" id="persona-gallery-grid"></div>
+                        </section>
+
+                        <div class="suggestion-head">
+                            <h2>不妨从这些旨意开始</h2>
+                            <p>首页直接发问即可，系统会在首条消息时创建会话。</p>
+                        </div>
                         <div class="suggestion-grid">
-                            <div class="suggestion-card" data-text="帮我解释什么是强化学习？">
+                            <div class="suggestion-card" data-mode="chat" data-text="帮朕解释什么是强化学习？">
                                 <div class="suggestion-icon">🎯</div>
-                                <div class="suggestion-text">帮我解释什么是强化学习？</div>
+                                <div class="suggestion-text">帮朕解释什么是强化学习？</div>
                             </div>
-                            <div class="suggestion-card" data-text="制定一个 30 天学习 Python 的计划">
+                            <div class="suggestion-card" data-mode="ask" data-text="朕准备做一个新的项目，你先帮朕对齐目标和范围。">
                                 <div class="suggestion-icon">📅</div>
-                                <div class="suggestion-text">制定一个 30 天学习 Python 的计划</div>
+                                <div class="suggestion-text">朕准备做一个新的项目，你先帮朕对齐目标和范围。</div>
                             </div>
-                            <div class="suggestion-card" data-text="总结这篇文章的关键知识点">
+                            <div class="suggestion-card" data-mode="chat" data-text="给朕总结这篇设计文档的关键点。">
                                 <div class="suggestion-icon">📝</div>
-                                <div class="suggestion-text">总结这篇文章的关键知识点</div>
+                                <div class="suggestion-text">给朕总结这篇设计文档的关键点。</div>
                             </div>
-                            <div class="suggestion-card" data-text="如何建立长期记忆系统？">
+                            <div class="suggestion-card" data-mode="chat" data-text="朕想做一个长期记忆系统，你先给朕几个靠谱思路。">
                                 <div class="suggestion-icon">🧩</div>
-                                <div class="suggestion-text">如何建立长期记忆系统？</div>
+                                <div class="suggestion-text">朕想做一个长期记忆系统，你先给朕几个靠谱思路。</div>
                             </div>
                         </div>
                     </div>
@@ -87,13 +141,20 @@
                 <div class="messages" id="messages"></div>
             </div>
 
-            <!-- 模式工具栏（预留扩展位） -->
+            <!-- 模式工具栏 -->
             <div class="mode-toolbar" id="mode-toolbar">
-                <button id="btn-ask-mode" class="btn-mode" title="Ask 模式：先对齐意图再回答" aria-label="切换 Ask 模式">
+                <button id="btn-mode-chat" class="btn-mode active" data-mode="chat" title="Chat 模式：快速对话" aria-label="Chat 模式">
+                    <span class="mode-icon">💬</span>
+                    <span class="mode-label">Chat</span>
+                </button>
+                <button id="btn-mode-ask" class="btn-mode" data-mode="ask" title="Ask 模式：先对齐意图再回答" aria-label="Ask 模式">
                     <span class="mode-icon">❓</span>
                     <span class="mode-label">Ask</span>
                 </button>
-                <!-- 后续可在此添加更多模式按钮 -->
+                <button id="btn-mode-study" class="btn-mode disabled" data-mode="study" title="Study 模式：深度学习（即将上线）" aria-label="Study 模式" disabled>
+                    <span class="mode-icon">📚</span>
+                    <span class="mode-label">Study</span>
+                </button>
             </div>
 
             <!-- 输入区域 -->
@@ -106,7 +167,7 @@
                 </div>
                 <div class="input-hint">
                     <span id="typing-indicator" class="hidden">Agent 正在思考…</span>
-                    <span class="hint-text">Agent 可能会生成不准确的信息，请核实重要内容。</span>
+                    <span class="hint-text">Enter 换行，Cmd/Ctrl + Enter 发送。Agent 可能会生成不准确的信息，请核实重要内容。</span>
                 </div>
             </div>
         </main>
@@ -144,6 +205,7 @@
         </div>
     </div>
 
+    <script src="static/vendor/markdown-it.min.js"></script>
     <script src="static/app.js"></script>
 </body>
 </html>

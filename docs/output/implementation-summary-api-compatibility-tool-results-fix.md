@@ -1,6 +1,6 @@
 # API 兼容性与 Tool Results 完整性修复 —— 实施总结
 
-> 对应技术文档：`docs/design/api-compatibility-tool-results-fix.md` (v3.0)
+> 对应技术文档：`docs/design/design-api-compatibility-tool-results-fix.md` (v3.0)
 > 实施日期：2026-05-12
 
 ---
@@ -20,10 +20,10 @@
 
 | 文件 | 改动说明 |
 |------|---------|
-| `learning_agent/models/models.py` | 1. `HookPoint` 枚举新增 `BEFORE_TOOL_RESULTS_PERSIST`<br>2. 新增 `ToolResultsBatch` 数据类 |
+| `learning_agent/ai/models.py` | 1. `HookPoint` 枚举新增 `BEFORE_TOOL_RESULTS_PERSIST`<br>2. 新增 `ToolResultsBatch` 数据类 |
 | `learning_agent/models/__init__.py` | 导出 `ToolResultsBatch` |
 | `learning_agent/agent/agent_loop.py` | 1. **修改点 A**：保存 assistant entry 时回写 `call_id` 到 `tool_call_buffers`<br>2. **修改点 B**：ReACT 循环内流中断兜底逻辑（删除旧 `break`，替换为 `_ensure_tool_results_for_orphans` + `_finalize_with_llm` + `break`）<br>3. **修改点 C**：`run()` 外层 `except` 中增加补偿孤儿 tool + 尝试收尾 LLM + 错误通知<br>4. **修改点 D**：`_execute_tool_calls` 返回后触发 `BEFORE_TOOL_RESULTS_PERSIST` Hook<br>5. **修改点 E1/E2**：`_build_context_for_turn` 中 `reasoning_content` 兜底和 `tool_call_id` 读取（已有代码，无需改动）<br>6. 新增 `_ensure_tool_results_for_orphans()` 方法<br>7. 新增 `_finalize_with_llm()` 方法<br>8. `_stream_chat_with_retry`：最终 `RetryableError` 和未知异常改为 `raise`（使调用方可进入兜底流程） |
-| `learning_agent/extensions/built_in.py` | 1. 新增 `_create_tool_results_validator_extension()` 工厂函数<br>2. 在 `create_builtin_extensions()` 中注册新扩展 |
+| `learning_agent/learning_agent/extensions/built_in.py` | 1. 新增 `_create_tool_results_validator_extension()` 工厂函数<br>2. 在 `create_builtin_extensions()` 中注册新扩展 |
 | `learning_agent/provider/openai_provider.py` | `_convert_messages()` 已保留 `reasoning_content` 字段（`is not None` 判断），无需额外修改 |
 
 ---

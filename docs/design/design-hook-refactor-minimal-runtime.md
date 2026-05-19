@@ -176,7 +176,7 @@ Extensions
 
 ### 4.2 公共枚举与公共模型
 
-建议在 `learning_agent/models/models.py` 中新增或集中定义以下模型。
+建议在 `learning_agent/ai/models.py` 中新增或集中定义以下模型。
 
 ```python
 class HookDecision(str, Enum):
@@ -382,7 +382,7 @@ class AfterResponseResult(BaseModel):
 
 ### 5.1 重构目标
 
-`learning_agent/core/hook_system.py` 需要从“泛型 Hook 执行器”重构为“typed middleware dispatcher”。
+`learning_agent/agent/hook_system.py` 需要从“泛型 Hook 执行器”重构为“typed middleware dispatcher”。
 
 当前问题：
 
@@ -769,7 +769,7 @@ class HookSystem:
 
 ## 十、文件级改造清单
 
-### 10.1 `learning_agent/models/models.py`
+### 10.1 `learning_agent/ai/models.py`
 
 新增：
 
@@ -785,7 +785,7 @@ class HookSystem:
 - `HookPoint`
 - `HookResult`
 
-### 10.2 `learning_agent/core/hook_system.py`
+### 10.2 `learning_agent/agent/hook_system.py`
 
 重构内容：
 
@@ -795,7 +795,7 @@ class HookSystem:
 - 删除 `HookAbortError`
 - 明确多 handler merge 逻辑
 
-### 10.3 `learning_agent/core/extension_manager.py`
+### 10.3 `learning_agent/learning_agent/extension_manager.py`
 
 调整内容：
 
@@ -824,7 +824,7 @@ class HookSystem:
 - 迁移到 `before_tool_execute`
 - 统一返回 `BeforeToolExecuteResult`
 
-### 10.6 `learning_agent/extensions/built_in.py`
+### 10.6 `learning_agent/learning_agent/extensions/built_in.py`
 
 改造内容：
 
