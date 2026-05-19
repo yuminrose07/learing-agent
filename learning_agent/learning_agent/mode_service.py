@@ -27,6 +27,10 @@ class ModeProfile(BaseModel):
     memory_write: bool = False
     context_budget: str = "normal"
     response_style: str = "direct"
+    micro_compact_enabled: bool = True
+    full_compact_enabled: bool = True
+    full_compact_threshold: float = 0.85
+    recent_token_budget: int = 16000
 
 
 class PersonaProfile(BaseModel):
@@ -49,6 +53,10 @@ class TurnExecutionProfile(BaseModel):
     memory_read: bool = False
     memory_write: bool = False
     response_style: str = "direct"
+    micro_compact_enabled: bool = True
+    full_compact_enabled: bool = True
+    full_compact_threshold: float = 0.85
+    recent_token_budget: int = 16000
     user_message_metadata: dict[str, Any] = Field(default_factory=dict)
     assistant_message_metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -61,6 +69,7 @@ class PreparedSessionTurn(BaseModel):
     profile: TurnExecutionProfile
     stream_metadata: dict[str, Any] = Field(default_factory=dict)
     capture_response_as_confirmed_input: bool = False
+    compaction_plan: Any = None
 
 
 CHAT_PROFILE = ModeProfile(
@@ -69,6 +78,9 @@ CHAT_PROFILE = ModeProfile(
     tools_enabled=["read_file", "grep", "write_file", "edit_file"],
     context_budget="light",
     response_style="direct",
+    micro_compact_enabled=True,
+    full_compact_enabled=True,
+    recent_token_budget=16000,
 )
 
 ASK_PROFILE = ModeProfile(
@@ -78,6 +90,9 @@ ASK_PROFILE = ModeProfile(
     tools_enabled=[],
     context_budget="light",
     response_style="align",
+    micro_compact_enabled=True,
+    full_compact_enabled=False,
+    recent_token_budget=12000,
 )
 
 STUDY_PROFILE = ModeProfile(
@@ -88,6 +103,9 @@ STUDY_PROFILE = ModeProfile(
     memory_write=True,
     context_budget="heavy",
     response_style="tutor",
+    micro_compact_enabled=True,
+    full_compact_enabled=True,
+    recent_token_budget=24000,
 )
 
 EMPEROR_ROLEPLAY_GUARDRAILS = (
@@ -302,6 +320,10 @@ def build_turn_profile(
         memory_read=profile.memory_read,
         memory_write=profile.memory_write,
         response_style=profile.response_style,
+        micro_compact_enabled=profile.micro_compact_enabled,
+        full_compact_enabled=profile.full_compact_enabled,
+        full_compact_threshold=profile.full_compact_threshold,
+        recent_token_budget=profile.recent_token_budget,
         user_message_metadata={**default_metadata, **(user_message_metadata or {})},
         assistant_message_metadata={**default_metadata, **(assistant_message_metadata or {})},
     )

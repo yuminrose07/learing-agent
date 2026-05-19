@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from learning_agent.ai.file_store import FileStore
 from learning_agent.ai import (
     AgentMode,
     AskState,
@@ -19,6 +20,11 @@ from learning_agent.ai import (
     MessageRole,
     SessionEntry,
     SessionStatus,
+)
+from learning_agent.learning_agent.compaction.models import (
+    CompactMetadata,
+    FullCompactResult,
+    SessionMemoryState,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,10 +36,13 @@ class SessionManager:
     当前版本在内存中维护会话，通过 Persistence Layer 持久化。
     """
 
-    def __init__(self, event_bus: Any = None):
+    def __init__(self, event_bus: Any = None, file_store: FileStore | None = None):
         self._sessions: dict[str, LearningSession] = {}
+        self._session_memory_states: dict[str, SessionMemoryState] = {}
+        self._compact_metadata: dict[str, CompactMetadata] = {}
         self._on_delete_callbacks: list[Callable[[str], None]] = []
         self._event_bus = event_bus
+        self._file_store = file_store
 
     def register_delete_callback(self, callback: Callable[[str], None]) -> None:
         """注册 session 删除时的回调函数。"""
@@ -44,6 +53,8 @@ class SessionManager:
         if session_id not in self._sessions:
             return False
         del self._sessions[session_id]
+        self._session_memory_states.pop(session_id, None)
+        self._compact_metadata.pop(session_id, None)
         logger.info(f"[SessionManager] Deleted session {session_id}")
         for cb in self._on_delete_callbacks:
             try:
@@ -73,12 +84,21 @@ class SessionManager:
             entries=[root],
         )
         self._sessions[session.id] = session
+        self._session_memory_states[session.id] = SessionMemoryState(
+            session_id=session.id,
+            mode=session.mode.value,
+        )
+        self._compact_metadata[session.id] = CompactMetadata(session_id=session.id)
+        self._persist_session_memory_state(session.id)
+        self._persist_compact_metadata(session.id)
         logger.info(f"[SessionManager] Created session {session.id} (obj={objective_id})")
         return session
 
     def add_session(self, session: LearningSession) -> LearningSession:
         """将外部加载的会话注册到当前管理器。"""
         self._sessions[session.id] = session
+        self._session_memory_states[session.id] = self._load_or_create_session_memory_state(session)
+        self._compact_metadata[session.id] = self._load_or_create_compact_metadata(session.id)
         return session
 
     def get_session(self, session_id: str) -> Optional[LearningSession]:
@@ -86,6 +106,58 @@ class SessionManager:
 
     def has_session(self, session_id: str) -> bool:
         return session_id in self._sessions
+
+    def get_session_memory_state(self, session_id: str) -> SessionMemoryState | None:
+        return self._session_memory_states.get(session_id)
+
+    def set_session_memory_state(self, session_id: str, state: SessionMemoryState) -> None:
+        self._session_memory_states[session_id] = state
+        self._persist_session_memory_state(session_id)
+
+    def get_compact_metadata(self, session_id: str) -> CompactMetadata | None:
+        return self._compact_metadata.get(session_id)
+
+    def set_compact_metadata(self, session_id: str, metadata: CompactMetadata) -> None:
+        self._compact_metadata[session_id] = metadata
+        self._persist_compact_metadata(session_id)
+
+    def save_compact_summary(self, session_id: str, content: str) -> str:
+        if self._file_store is None:
+            return ""
+        return self._file_store.save_compact_summary(session_id, content)
+
+    def load_compact_summary(self, session_id: str) -> str | None:
+        if self._file_store is None:
+            return None
+        return self._file_store.load_compact_summary(session_id)
+
+    def _load_or_create_session_memory_state(self, session: LearningSession) -> SessionMemoryState:
+        if self._file_store is not None:
+            data = self._file_store.load_session_memory_state(session.id)
+            if data:
+                return SessionMemoryState.from_dict(data)
+        return SessionMemoryState(session_id=session.id, mode=session.mode.value)
+
+    def _load_or_create_compact_metadata(self, session_id: str) -> CompactMetadata:
+        if self._file_store is not None:
+            data = self._file_store.load_compact_metadata(session_id)
+            if data:
+                return CompactMetadata.from_dict(data)
+        return CompactMetadata(session_id=session_id)
+
+    def _persist_session_memory_state(self, session_id: str) -> None:
+        if self._file_store is None:
+            return
+        state = self._session_memory_states.get(session_id)
+        if state is not None:
+            self._file_store.save_session_memory_state(session_id, state.to_dict())
+
+    def _persist_compact_metadata(self, session_id: str) -> None:
+        if self._file_store is None:
+            return
+        metadata = self._compact_metadata.get(session_id)
+        if metadata is not None:
+            self._file_store.save_compact_metadata(session_id, metadata.to_dict())
 
     def update_session_title(
         self,
@@ -258,6 +330,18 @@ class SessionManager:
         path = self.get_path_to_leaf(session_id, leaf_id)
         return [e for e in path if e.type == EntryType.MESSAGE and e.role is not None]
 
+    def iter_message_entries(self, session_id: str, leaf_id: str | None = None) -> list[SessionEntry]:
+        return self.get_message_history(session_id, leaf_id)
+
+    def list_entries_after(self, session_id: str, entry_id: str | None) -> list[SessionEntry]:
+        history = self.get_message_history(session_id)
+        if entry_id is None:
+            return history
+        for index, entry in enumerate(history):
+            if entry.id == entry_id:
+                return history[index + 1 :]
+        return history
+
     def list_sessions(self, objective_id: Optional[str] = None) -> list[LearningSession]:
         sessions = list(self._sessions.values())
         if objective_id:
@@ -310,6 +394,11 @@ class SessionManager:
             "to": mode.value,
         }
         session.last_accessed_at = datetime.now(timezone.utc)
+        state = self._session_memory_states.get(session_id)
+        if state is not None:
+            state.mode = session.mode.value
+            state.updated_at = datetime.now(timezone.utc).timestamp()
+            self._persist_session_memory_state(session_id)
         logger.info(
             "[SessionManager] Switched session %s mode: %s -> %s",
             session_id,
@@ -333,6 +422,31 @@ class SessionManager:
         # TODO: 实现真正的 compaction 逻辑
         session.status = SessionStatus.COMPACTED
         logger.info(f"[SessionManager] Compacted session {session_id}")
+        self._emit_event(
+            "session.scalarChanged",
+            {"session_id": session_id, "path": "status", "value": SessionStatus.COMPACTED.value},
+        )
+        return True
+
+    def apply_full_compact_result(self, session_id: str, result: FullCompactResult) -> bool:
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        session.status = SessionStatus.COMPACTED
+        session.mode_metadata["compaction"] = {
+            "scope": result.scope,
+            "cut_point_entry_id": result.cut_point_entry_id,
+            "anchor_entry_id": result.next_anchor_entry_id,
+            "estimated_tokens_after": result.estimated_tokens_after,
+        }
+        self._emit_event(
+            "session.scalarChanged",
+            {
+                "session_id": session_id,
+                "path": "mode_metadata.compaction",
+                "value": dict(session.mode_metadata["compaction"]),
+            },
+        )
         self._emit_event(
             "session.scalarChanged",
             {"session_id": session_id, "path": "status", "value": SessionStatus.COMPACTED.value},

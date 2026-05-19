@@ -30,7 +30,6 @@ def create_builtin_extensions(config: dict | None = None) -> list[Extension]:
     return [
         _create_observability_extension(),
         _create_fulltrace_extension(),
-        _create_output_prompting_extension(),
         create_code_tools_extension(),
         create_grep_tools_extension(),
         create_tool_guard_extension(config),
@@ -73,32 +72,6 @@ async def _hook_after_response(hook_input: AfterResponseInput) -> AfterResponseR
         "[core-observability] Hook after_response: %s chars",
         len(hook_input.response_text),
     )
-    return AfterResponseResult()
-
-
-def _create_output_prompting_extension() -> Extension:
-    ext = Extension(
-        id="core-output-prompting",
-        name="Output Prompting",
-        version="0.2.0",
-        type="builtin",
-    )
-
-    async def activate(ctx: ExtensionContext) -> None:
-        ctx.register_hook(HookName.AFTER_RESPONSE, _hook_output_prompting, priority=50)
-
-    ext.on_activate(activate)
-    return ext
-
-
-async def _hook_output_prompting(hook_input: AfterResponseInput) -> AfterResponseResult:
-    history_count = hook_input.response_metadata.get("user_message_count", 0)
-    if history_count > 0 and history_count % 5 == 0:
-        modified = hook_input.response_text + (
-            "\n\n提示：你已经连续接收了一段内容，"
-            "可以试着用自己的话总结刚才的关键点。"
-        )
-        return AfterResponseResult(response_override=modified)
     return AfterResponseResult()
 
 

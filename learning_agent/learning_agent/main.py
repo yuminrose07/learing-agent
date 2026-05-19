@@ -32,12 +32,13 @@ from learning_agent.ai import (
     KnowledgeNode,
     LearningObjective,
     LearningSession,
-    SessionEntry,
 )
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
+from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
 from learning_agent.learning_agent.mode_service import (
     PreparedSessionTurn,
+    TurnExecutionProfile,
     build_turn_profile,
     is_confirmation_message,
     resolve_persona,
@@ -74,9 +75,10 @@ class LearningAgentSystem:
             self.tool_registry,
         )
         self.memory_manager = MemoryManager()
-        self.session_manager = SessionManager(event_bus=self.event_bus)
+        self.session_manager = SessionManager(event_bus=self.event_bus, file_store=self.file_store)
         self.provider: Optional[OpenAIProvider] = None
         self.agent_loop: Optional[AgentLoop] = None
+        self.compaction_coordinator: Optional[CompactionCoordinator] = None
 
         self._current_session = None
         self._current_objective = None
@@ -134,6 +136,10 @@ class LearningAgentSystem:
             tool_execution_service=tool_execution_service,
             observability=self.observability,
             max_react_turns=10,
+        )
+        self.compaction_coordinator = CompactionCoordinator(
+            self.session_manager,
+            max_context_tokens=self.provider.get_max_context_length(),
         )
         # 订阅状态快照事件，用于定期 compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
@@ -392,6 +398,9 @@ class LearningAgentSystem:
 
         self.file_store.delete(f"sessions/{session_id}.json")
         self.file_store.delete(f"sessions/{session_id}.jsonl")
+        self.file_store.delete(f"memory/session_state/{session_id}.json")
+        self.file_store.delete(f"memory/compact/{session_id}.meta.json")
+        self.file_store.delete(f"memory/compact/{session_id}.summary.txt")
         if self._current_session and self._current_session.id == session_id:
             self._current_session = None
         return True
@@ -472,11 +481,18 @@ class LearningAgentSystem:
                 target_mode,
                 persona_key=self._resolve_session_persona_key(session, target_mode),
             )
+            compaction_plan = self._build_compaction_plan(
+                session,
+                confirmed_input,
+                profile,
+                allow_full_compact=False,
+            )
             return session, PreparedSessionTurn(
                 effective_mode=target_mode,
                 runtime_input=confirmed_input,
                 profile=profile,
                 stream_metadata=dict(profile.assistant_message_metadata),
+                compaction_plan=compaction_plan,
             )
 
         if session.mode != requested_mode:
@@ -489,23 +505,58 @@ class LearningAgentSystem:
                 user_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
                 assistant_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
             )
+            compaction_plan = self._build_compaction_plan(
+                session,
+                user_input,
+                profile,
+                allow_full_compact=False,
+            )
             return session, PreparedSessionTurn(
                 effective_mode=AgentMode.ASK,
                 runtime_input=user_input,
                 profile=profile,
                 stream_metadata=dict(profile.assistant_message_metadata),
                 capture_response_as_confirmed_input=True,
+                compaction_plan=compaction_plan,
             )
 
         profile = build_turn_profile(
             requested_mode,
             persona_key=self._resolve_session_persona_key(session, requested_mode),
         )
+        compaction_plan = self._build_compaction_plan(
+            session,
+            user_input,
+            profile,
+            allow_full_compact=True,
+        )
         return session, PreparedSessionTurn(
             effective_mode=requested_mode,
             runtime_input=user_input,
             profile=profile,
             stream_metadata=dict(profile.assistant_message_metadata),
+            compaction_plan=compaction_plan,
+        )
+
+    def _build_compaction_plan(
+        self,
+        session: LearningSession,
+        user_input: str,
+        profile: TurnExecutionProfile,
+        *,
+        allow_full_compact: bool,
+    ) -> CompactionPlan:
+        coordinator = getattr(self, "compaction_coordinator", None)
+        if coordinator is None:
+            return CompactionPlan(
+                use_micro_compact=profile.micro_compact_enabled,
+                recent_token_budget=profile.recent_token_budget,
+            )
+        return coordinator.evaluate_turn(
+            session,
+            user_input,
+            profile,
+            allow_full_compact=allow_full_compact,
         )
 
     def _resolve_session_persona_key(
@@ -556,10 +607,15 @@ class LearningAgentSystem:
                 session,
                 prepared_turn.runtime_input,
                 profile=prepared_turn.profile,
+                compaction_plan=prepared_turn.compaction_plan,
             ):
                 if chunk.content:
                     response_parts.append(chunk.content)
-                yield chunk.model_copy(update={"metadata": dict(prepared_turn.stream_metadata)})
+                merged_metadata = dict(prepared_turn.stream_metadata)
+                merged_metadata.update(dict(chunk.metadata))
+                if "turn_usage" in merged_metadata and "usage" not in merged_metadata:
+                    merged_metadata["usage"] = merged_metadata["turn_usage"]
+                yield chunk.model_copy(update={"metadata": merged_metadata})
             completed = True
         finally:
             try:
@@ -569,6 +625,7 @@ class LearningAgentSystem:
                         prepared_turn,
                         "".join(response_parts),
                     )
+                    self.save_session(session.id)
             except Exception:
                 logger.exception(f"[System] Failed to finalize turn for session {session_id}")
 
