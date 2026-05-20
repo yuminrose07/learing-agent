@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual env
+.venv/
+venv/
+env/
+ENV/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache
+
+# Type checkers
+.mypy_cache/
+.pyright/
+.pyre/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+.trae/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Secrets / local config ---
+.env
+.env.local
+.env.*.local
+config.json
+config.yaml
+!config.example.json
+!config.example.yaml
+
+# --- Runtime data (project-specific, see LA_DATA_DIR / LA_OBS_DIR in README) ---
+.learning_agent_data/
+.observability/
+learning_agent_data/
+observability/
+
+# Node (web/ static tests)
+node_modules/
