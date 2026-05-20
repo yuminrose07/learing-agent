@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 
 sys.path.insert(0, "/Users/roseannk/my-agent")
@@ -118,7 +119,7 @@ def test_compaction_coordinator_runs_full_then_incremental(tmp_path):
     )
     coordinator = CompactionCoordinator(session_manager, max_context_tokens=1000)
 
-    first_plan = coordinator.evaluate_turn(session, "继续", profile, allow_full_compact=True)
+    first_plan = asyncio.run(coordinator.evaluate_turn(session, "继续", profile, allow_full_compact=True))
 
     assert first_plan.use_full_compact is True
     assert first_plan.full_compact_scope == "full"
@@ -144,7 +145,7 @@ def test_compaction_coordinator_runs_full_then_incremental(tmp_path):
         call_id="call-4",
     )
 
-    second_plan = coordinator.evaluate_turn(session, "继续", profile, allow_full_compact=True)
+    second_plan = asyncio.run(coordinator.evaluate_turn(session, "继续", profile, allow_full_compact=True))
 
     assert second_plan.use_full_compact is True
     assert second_plan.full_compact_scope == "incremental"
@@ -152,4 +153,7 @@ def test_compaction_coordinator_runs_full_then_incremental(tmp_path):
     metadata = session_manager.get_compact_metadata(session.id)
     assert metadata is not None
     assert metadata.compact_anchor_entry_id is not None
-    assert session_manager.load_compact_summary(session.id) is not None
+    latest_summary = session_manager.load_compact_summary(session.id)
+    assert latest_summary is not None
+    assert "读取 alpha" in latest_summary or "alpha 已分析" in latest_summary
+    assert "再写回 gamma" in latest_summary or "gamma 已写回" in latest_summary

@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
-from learning_agent.ai import LearningSession, SessionEntry
+from learning_agent.ai import ChatMessage, ChatParams, LearningSession, MessageRole, SessionEntry
+from learning_agent.ai.base_provider import BaseProvider
 from learning_agent.learning_agent.mode_service import TurnExecutionProfile
 
 from .full_compact import (
@@ -23,6 +24,7 @@ from .models import CompactMetadata, CompactMode, CompactionPlan, FullCompactInp
 from .prompts import (
     CompactPromptSpec,
     format_compact_summary,
+    render_compact_prompt,
     retained_policy_for_mode,
     summary_position_for_mode,
     validate_compact_summary,
@@ -31,6 +33,7 @@ from .prompts import (
 logger = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_COMPACT_FAILURES = 3
+CompactSummaryExecutor = Callable[[str], Awaitable[str]]
 
 
 class CompactionCoordinator:
@@ -40,12 +43,16 @@ class CompactionCoordinator:
         *,
         max_context_tokens: int = 128000,
         keep_recent_tool_groups: int = 2,
+        provider: BaseProvider | None = None,
+        summary_executor: CompactSummaryExecutor | None = None,
     ):
         self.session_manager = session_manager
         self.max_context_tokens = max_context_tokens
         self.keep_recent_tool_groups = keep_recent_tool_groups
+        self.provider = provider
+        self.summary_executor = summary_executor
 
-    def evaluate_turn(
+    async def evaluate_turn(
         self,
         session: LearningSession,
         user_input: str,
@@ -81,7 +88,7 @@ class CompactionCoordinator:
         ):
             return plan
 
-        result = self.maybe_run_full_compact(
+        result = await self.maybe_run_full_compact(
             session,
             profile=profile,
             entries=history,
@@ -119,7 +126,7 @@ class CompactionCoordinator:
         plan.summary_block = render_summary_block(result)
         return plan
 
-    def maybe_run_full_compact(
+    async def maybe_run_full_compact(
         self,
         session: LearningSession,
         *,
@@ -149,20 +156,19 @@ class CompactionCoordinator:
 
         try:
             prompt_spec = self._build_prompt_spec(compact_input)
-            raw_summary = self._summarize_transcript(compact_input, prompt_spec)
-            delta_summary = format_compact_summary(raw_summary)
+            raw_summary = await self._summarize_transcript(compact_input, prompt_spec)
+            summary_candidate = format_compact_summary(raw_summary)
+            if compact_input.scope in {"incremental", "rebase"} and not self._has_structured_summary_executor():
+                summary_text = merge_incremental_summary(existing_summary, summary_candidate)
+            else:
+                summary_text = summary_candidate
             validation = validate_compact_summary(
-                delta_summary,
+                summary_text,
                 mode=compact_input.compact_mode,
                 source_units=compact_input.source_units,
             )
             if not validation.valid:
                 raise ValueError(f"compact summary validation failed: {validation.errors}")
-            summary_text = (
-                merge_incremental_summary(existing_summary, delta_summary)
-                if compact_input.scope == "incremental"
-                else delta_summary
-            )
             preserved_entries = [
                 entry
                 for entry in list_entries_from(entries, compact_input.cut_point_entry_id)
@@ -199,12 +205,11 @@ class CompactionCoordinator:
         *,
         recent_token_budget: int,
     ) -> None:
-        summary_path = self.session_manager.save_compact_summary(session_id, result.summary_text)
         metadata = self.session_manager.get_compact_metadata(session_id) or CompactMetadata(session_id=session_id)
         previous_compact_event_id = metadata.last_compact_event_id
         result.previous_compact_event_id = result.previous_compact_event_id or previous_compact_event_id
         result.summary_hash = result.summary_hash or hashlib.sha256(result.summary_text.encode("utf-8")).hexdigest()
-        metadata.last_summary_file = summary_path
+        metadata.last_summary_file = None
         metadata.last_summary_hash = result.summary_hash
         applied = self.session_manager.apply_full_compact_result(session_id, result)
         if not applied:
@@ -344,12 +349,35 @@ class CompactionCoordinator:
             session_memory_state=compact_input.sm_state,
         )
 
-    def _summarize_transcript(
+    def _has_structured_summary_executor(self) -> bool:
+        return self.summary_executor is not None or self.provider is not None
+
+    async def _summarize_transcript(
         self,
         compact_input: FullCompactInput,
         prompt_spec: CompactPromptSpec,
     ) -> str:
-        del prompt_spec
+        if self.summary_executor is not None:
+            prompt_text = render_compact_prompt(prompt_spec)
+            return await self.summary_executor(prompt_text)
+        if self.provider is not None:
+            prompt_text = render_compact_prompt(prompt_spec)
+            response = await self.provider.chat(
+                ChatParams(
+                    model=self.provider.default_model,
+                    messages=[ChatMessage(role=MessageRole.USER, content=prompt_text)],
+                    temperature=0.1,
+                    stream=False,
+                    max_tokens=4096,
+                )
+            )
+            return response.content
+        return self._fallback_summarize_transcript(compact_input)
+
+    def _fallback_summarize_transcript(
+        self,
+        compact_input: FullCompactInput,
+    ) -> str:
         transcript = "\n\n".join(unit.transcript for unit in compact_input.source_units).strip()
         user_messages = [
             line.strip().removeprefix("USER:").strip()

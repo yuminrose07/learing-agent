@@ -194,9 +194,7 @@ class SessionManager:
         snapshot = self.get_agent_snapshot(session_id)
         if snapshot.latest_compact_summary:
             return snapshot.latest_compact_summary
-        if self._file_store is None:
-            return None
-        return self._file_store.load_compact_summary(session_id)
+        return None
 
     def get_latest_compact_summary_block(self, session_id: str) -> tuple[str, CompactMetadata] | None:
         snapshot = self.get_agent_snapshot(session_id)
@@ -627,7 +625,6 @@ class SessionManager:
         if not session:
             return False
         metadata = self._compact_metadata.get(session_id)
-        summary_path = metadata.last_summary_file if metadata else None
         summary_hash = result.summary_hash or (metadata.last_summary_hash if metadata else None)
         if summary_hash is None:
             summary_hash = hashlib.sha256(result.summary_text.encode("utf-8")).hexdigest()
@@ -639,7 +636,6 @@ class SessionManager:
                 "mode": result.compact_mode,
                 "scope": result.scope,
                 "summary_text": result.summary_text,
-                "summary_path": summary_path,
                 "summary_hash": summary_hash,
                 "cut_point_entry_id": result.cut_point_entry_id,
                 "anchor_entry_id": result.next_anchor_entry_id,

@@ -28,10 +28,13 @@ from learning_agent.memory.memory_manager import MemoryManager
 from learning_agent.ai import (
     AgentMode,
     ChatChunk,
+    ChatMessage,
+    ChatParams,
     Event,
     KnowledgeNode,
     LearningObjective,
     LearningSession,
+    MessageRole,
 )
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
@@ -142,6 +145,7 @@ class LearningAgentSystem:
         self.compaction_coordinator = CompactionCoordinator(
             self.session_manager,
             max_context_tokens=self.provider.get_max_context_length(),
+            summary_executor=self._execute_compact_summary,
         )
         # 状态快照只用于观测，不再触发持久化层 snapshot/delta compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
@@ -390,7 +394,21 @@ class LearningAgentSystem:
         self.file_store.save_knowledge_graph(self.memory_manager.kg.to_dict())
         return promoted
 
-    def _prepare_session_turn(
+    async def _execute_compact_summary(self, prompt_text: str) -> str:
+        if self.provider is None:
+            raise RuntimeError("Provider is not initialized")
+        chunk = await self.provider.chat(
+            ChatParams(
+                model=self.provider.default_model,
+                messages=[ChatMessage(role=MessageRole.USER, content=prompt_text)],
+                temperature=0.1,
+                stream=False,
+                max_tokens=4096,
+            )
+        )
+        return chunk.content
+
+    async def _prepare_session_turn(
         self,
         session: LearningSession,
         user_input: str,
@@ -422,7 +440,7 @@ class LearningAgentSystem:
                 target_mode,
                 persona_key=self._resolve_session_persona_key(session, target_mode),
             )
-            compaction_plan = self._build_compaction_plan(
+            compaction_plan = await self._build_compaction_plan(
                 session,
                 confirmed_input,
                 profile,
@@ -448,7 +466,7 @@ class LearningAgentSystem:
                 user_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
                 assistant_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
             )
-            compaction_plan = self._build_compaction_plan(
+            compaction_plan = await self._build_compaction_plan(
                 session,
                 user_input,
                 profile,
@@ -467,7 +485,7 @@ class LearningAgentSystem:
             requested_mode,
             persona_key=self._resolve_session_persona_key(session, requested_mode),
         )
-        compaction_plan = self._build_compaction_plan(
+        compaction_plan = await self._build_compaction_plan(
             session,
             user_input,
             profile,
@@ -481,7 +499,7 @@ class LearningAgentSystem:
             compaction_plan=compaction_plan,
         )
 
-    def _build_compaction_plan(
+    async def _build_compaction_plan(
         self,
         session: LearningSession,
         user_input: str,
@@ -495,7 +513,7 @@ class LearningAgentSystem:
                 use_micro_compact=profile.micro_compact_enabled,
                 recent_token_budget=profile.recent_token_budget,
             )
-        return coordinator.evaluate_turn(
+        return await coordinator.evaluate_turn(
             session,
             user_input,
             profile,
@@ -545,7 +563,7 @@ class LearningAgentSystem:
         if session is None:
             raise ValueError(f"Session {session_id} not found")
 
-        session, prepared_turn = self._prepare_session_turn(session, user_input, mode)
+        session, prepared_turn = await self._prepare_session_turn(session, user_input, mode)
         response_parts: list[str] = []
         completed = False
 

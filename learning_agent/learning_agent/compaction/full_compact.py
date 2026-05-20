@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import re
 from typing import Optional
 
 from learning_agent.ai import MessageRole, SessionEntry
@@ -235,8 +236,54 @@ def _filter_entries_for_compact_source(
 
 def merge_incremental_summary(existing_summary: str | None, delta_summary: str) -> str:
     if not existing_summary:
-        return delta_summary
-    return delta_summary.strip()
+        return delta_summary.strip()
+    if not delta_summary:
+        return existing_summary.strip()
+
+    existing_sections = _parse_summary_sections(existing_summary)
+    delta_sections = _parse_summary_sections(delta_summary)
+    merged_titles: list[str] = []
+    for title in [*existing_sections.keys(), *delta_sections.keys()]:
+        if title not in merged_titles:
+            merged_titles.append(title)
+
+    merged_parts: list[str] = []
+    for title in merged_titles:
+        existing_body = existing_sections.get(title, "").strip()
+        delta_body = delta_sections.get(title, "").strip()
+        if existing_body and delta_body:
+            body = _merge_section_bodies(existing_body, delta_body)
+        else:
+            body = delta_body or existing_body
+        merged_parts.append(f"{title}:\n{body}".strip())
+    return "\n\n".join(part for part in merged_parts if part).strip()
+
+
+def _parse_summary_sections(summary_text: str) -> OrderedDict[str, str]:
+    sections: OrderedDict[str, str] = OrderedDict()
+    matches = list(re.finditer(r"(?m)^(\d+\.\s.+?):\s*$", summary_text.strip()))
+    if not matches:
+        return OrderedDict({"1. Summary": summary_text.strip()})
+
+    for index, match in enumerate(matches):
+        title = match.group(1).strip()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(summary_text)
+        body = summary_text[start:end].strip()
+        sections[title] = body
+    return sections
+
+
+def _merge_section_bodies(existing_body: str, delta_body: str) -> str:
+    chunks = [* _split_section_chunks(existing_body), * _split_section_chunks(delta_body)]
+    deduped = list(OrderedDict.fromkeys(chunk for chunk in chunks if chunk))
+    return "\n\n".join(deduped).strip()
+
+
+def _split_section_chunks(body: str) -> list[str]:
+    if not body.strip():
+        return []
+    return [chunk.strip() for chunk in re.split(r"\n\s*\n", body.strip()) if chunk.strip()]
 
 
 def build_trace_summary(entries: list[SessionEntry]) -> CompactTraceSummary:
