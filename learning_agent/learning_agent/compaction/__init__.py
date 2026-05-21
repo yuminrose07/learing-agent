@@ -3,6 +3,7 @@ from .full_compact import (
     build_full_compact_input,
     build_round_units,
     find_cut_point,
+    list_entries_from,
     merge_incremental_summary,
     render_role_transcript,
     select_compact_scope,
@@ -24,6 +25,15 @@ from .models import (
     JsonlCursor,
     SessionMemoryState,
 )
+from .prompts import (
+    CompactPromptSpec,
+    CompactSummaryValidation,
+    format_compact_summary,
+    render_compact_prompt,
+    retained_policy_for_mode,
+    summary_position_for_mode,
+    validate_compact_summary,
+)
 
 __all__ = [
     "CompactionCoordinator",
@@ -37,13 +47,21 @@ __all__ = [
     "FullCompactResult",
     "JsonlCursor",
     "SessionMemoryState",
+    "CompactPromptSpec",
+    "CompactSummaryValidation",
     "build_full_compact_input",
     "build_round_units",
     "build_micro_compacted_history",
     "find_cut_point",
     "group_tool_result_units",
     "is_micro_compactable_tool_entry",
+    "list_entries_from",
     "merge_incremental_summary",
+    "format_compact_summary",
+    "render_compact_prompt",
+    "retained_policy_for_mode",
     "render_role_transcript",
     "select_compact_scope",
+    "summary_position_for_mode",
+    "validate_compact_summary",
 ]

@@ -6,6 +6,7 @@ from typing import Any
 
 from learning_agent.ai import ChatMessage, MessageRole, SessionEntry
 from learning_agent.learning_agent.compaction import CompactionPlan, build_micro_compacted_history
+from learning_agent.learning_agent.compaction.full_compact import render_summary_text_block
 from learning_agent.learning_agent.mode_service import TurnExecutionProfile
 from learning_agent.learning_agent.session_projection import AgentSnapshot
 
@@ -37,10 +38,13 @@ def build_llm_input_view(
 
     history = _filter_llm_history(snapshot.messages)
     history = _compress_tool_error_history(history)
+    summary_block = _resolve_summary_block(snapshot, compaction_plan)
+    if summary_block:
+        history = _filter_compacted_history(history, snapshot, compaction_plan)
     if compaction_plan and compaction_plan.use_micro_compact:
         history = build_micro_compacted_history(history)
-    if compaction_plan and compaction_plan.summary_block:
-        messages.append(ChatMessage(role=MessageRole.SYSTEM, content=compaction_plan.summary_block))
+    if summary_block:
+        messages.append(ChatMessage(role=MessageRole.SYSTEM, content=summary_block))
     messages.extend(_history_to_chat_messages(history))
 
     return LLMInputView(
@@ -110,6 +114,56 @@ def _compress_tool_error_history(entries: list[SessionEntry], max_groups: int = 
         index += 1
 
     return [entry for idx, entry in enumerate(entries) if idx not in skip_indices]
+
+
+def _resolve_summary_block(
+    snapshot: AgentSnapshot,
+    compaction_plan: CompactionPlan | None,
+) -> str | None:
+    if compaction_plan and compaction_plan.summary_block:
+        return compaction_plan.summary_block
+    if not snapshot.latest_compact_summary:
+        return None
+    return render_summary_text_block(
+        snapshot.latest_compact_summary,
+        compact_mode=snapshot.latest_compact_mode or "auto_prefix",
+        scope=snapshot.latest_compact_scope or "full",
+    )
+
+
+def _filter_compacted_history(
+    entries: list[SessionEntry],
+    snapshot: AgentSnapshot,
+    compaction_plan: CompactionPlan | None,
+) -> list[SessionEntry]:
+    retained_ids = set()
+    compact_event_seq: int | None = None
+
+    if compaction_plan is not None:
+        retained_ids.update(compaction_plan.retained_entry_ids)
+        compact_event_seq = compaction_plan.compact_event_seq
+
+    if not retained_ids:
+        retained_ids.update(snapshot.latest_compact_retained_entry_ids)
+    if compact_event_seq is None:
+        compact_event_seq = snapshot.latest_compact_event_seq
+
+    if not retained_ids and compact_event_seq is None:
+        return entries
+
+    result: list[SessionEntry] = []
+    for entry in entries:
+        if entry.id in retained_ids:
+            result.append(entry)
+            continue
+        event_seq = entry.metadata.get("source_event_seq")
+        if compact_event_seq is not None and event_seq is not None:
+            try:
+                if int(event_seq) > compact_event_seq:
+                    result.append(entry)
+            except (TypeError, ValueError):
+                continue
+    return result
 
 
 def _history_to_chat_messages(entries: list[SessionEntry]) -> list[ChatMessage]:

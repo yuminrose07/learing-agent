@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -31,7 +32,7 @@ from learning_agent.learning_agent.compaction.models import (
 )
 from learning_agent.learning_agent.mode_service import TurnExecutionProfile
 from learning_agent.learning_agent.session_event_store import SessionEventStore
-from learning_agent.learning_agent.session_events import SessionEventType
+from learning_agent.learning_agent.session_events import SessionEvent, SessionEventType
 from learning_agent.learning_agent.session_projection import (
     AgentSnapshot,
     project_legacy_session,
@@ -174,6 +175,10 @@ class SessionManager:
         )
 
     def get_compact_metadata(self, session_id: str) -> CompactMetadata | None:
+        if self._event_store is not None:
+            snapshot = self.get_agent_snapshot(session_id)
+            if snapshot.compact_metadata is not None:
+                self._compact_metadata[session_id] = snapshot.compact_metadata
         return self._compact_metadata.get(session_id)
 
     def set_compact_metadata(self, session_id: str, metadata: CompactMetadata) -> None:
@@ -186,9 +191,18 @@ class SessionManager:
         return self._file_store.save_compact_summary(session_id, content)
 
     def load_compact_summary(self, session_id: str) -> str | None:
+        snapshot = self.get_agent_snapshot(session_id)
+        if snapshot.latest_compact_summary:
+            return snapshot.latest_compact_summary
         if self._file_store is None:
             return None
         return self._file_store.load_compact_summary(session_id)
+
+    def get_latest_compact_summary_block(self, session_id: str) -> tuple[str, CompactMetadata] | None:
+        snapshot = self.get_agent_snapshot(session_id)
+        if not snapshot.latest_compact_summary or snapshot.compact_metadata is None:
+            return None
+        return snapshot.latest_compact_summary, snapshot.compact_metadata
 
     def _load_or_create_session_memory_state(self, session: LearningSession) -> SessionMemoryState:
         if self._file_store is not None:
@@ -262,11 +276,11 @@ class SessionManager:
         payload: dict[str, Any],
         *,
         visibility: str = "agent",
-    ) -> None:
+    ) -> SessionEvent | None:
         if self._event_store is None:
-            return
+            return None
         try:
-            self._event_store.append_event(
+            return self._event_store.append_event(
                 session_id=session_id,
                 type=event_type,
                 payload=payload,
@@ -278,6 +292,7 @@ class SessionManager:
                 event_type,
                 session_id,
             )
+        return None
 
     def _event_type_for_entry(self, entry: SessionEntry) -> str:
         if entry.role == MessageRole.USER:
@@ -611,34 +626,62 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if not session:
             return False
+        metadata = self._compact_metadata.get(session_id)
+        summary_path = metadata.last_summary_file if metadata else None
+        summary_hash = result.summary_hash or (metadata.last_summary_hash if metadata else None)
+        if summary_hash is None:
+            summary_hash = hashlib.sha256(result.summary_text.encode("utf-8")).hexdigest()
+        summary_event = self._append_session_event(
+            session_id,
+            SessionEventType.COMPACTION_SUMMARY_ADDED,
+            {
+                "schema_version": "v1",
+                "mode": result.compact_mode,
+                "scope": result.scope,
+                "summary_text": result.summary_text,
+                "summary_path": summary_path,
+                "summary_hash": summary_hash,
+                "cut_point_entry_id": result.cut_point_entry_id,
+                "anchor_entry_id": result.next_anchor_entry_id,
+                "previous_compact_event_id": result.previous_compact_event_id,
+                "current_user_event_id": result.current_user_event_id,
+                "source_event_start_seq": result.source_event_start_seq,
+                "source_event_end_seq": result.source_event_end_seq,
+                "source_snapshot_seq": result.source_snapshot_seq,
+                "source_event_ids": list(result.source_event_ids),
+                "source_entry_ids": list(result.source_entry_ids),
+                "retained_event_ids": list(result.retained_event_ids),
+                "retained_entry_ids": list(result.retained_entry_ids),
+                "template_version": result.template_version,
+                "validation_status": dict(result.validation_status),
+                "estimated_tokens_after": result.estimated_tokens_after,
+                "next_jsonl_cursor": (
+                    result.source_event_end_seq
+                    if result.source_event_end_seq is not None
+                    else None
+                ),
+            },
+            visibility="agent",
+        )
+        if self._event_store is not None and summary_event is None:
+            return False
         session.status = SessionStatus.COMPACTED
         session.mode_metadata["compaction"] = {
+            "compact_event_id": result.compact_event_id,
+            "mode": result.compact_mode,
             "scope": result.scope,
             "cut_point_entry_id": result.cut_point_entry_id,
             "anchor_entry_id": result.next_anchor_entry_id,
             "estimated_tokens_after": result.estimated_tokens_after,
         }
-        metadata = self._compact_metadata.get(session_id)
-        summary_path = metadata.last_summary_file if metadata else None
-        summary_hash = metadata.last_summary_hash if metadata else None
-        self._append_session_event(
-            session_id,
-            SessionEventType.COMPACTION_SUMMARY_ADDED,
-            {
-                "scope": result.scope,
-                "summary_path": summary_path,
-                "summary_hash": summary_hash,
-                "cut_point_entry_id": result.cut_point_entry_id,
-                "anchor_entry_id": result.next_anchor_entry_id,
-                "source_event_start_seq": result.source_event_start_seq,
-                "source_event_end_seq": result.source_event_end_seq,
-                "source_event_ids": list(result.source_event_ids),
-                "retained_event_ids": list(result.retained_event_ids),
-                "template_version": result.template_version,
-                "estimated_tokens_after": result.estimated_tokens_after,
-            },
-            visibility="agent",
-        )
+        if summary_event is not None:
+            result.compact_event_id = summary_event.event_id
+            result.compact_event_seq = summary_event.seq
+            session.mode_metadata["compaction"]["compact_event_id"] = summary_event.event_id
+            if metadata is not None:
+                metadata.last_compact_event_id = summary_event.event_id
+                metadata.compact_anchor_event_seq = summary_event.seq
+                self._compact_metadata[session_id] = metadata
         self._emit_event(
             "session.scalarChanged",
             {

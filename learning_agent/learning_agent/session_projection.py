@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -31,6 +32,13 @@ class AgentSnapshot:
     mode_metadata: dict[str, Any] = field(default_factory=dict)
     messages: list[SessionEntry] = field(default_factory=list)
     compact_metadata: CompactMetadata | None = None
+    latest_compact_summary: str | None = None
+    latest_compact_event_id: str | None = None
+    latest_compact_event_seq: int | None = None
+    latest_compact_mode: str | None = None
+    latest_compact_scope: str | None = None
+    latest_compact_source_entry_ids: list[str] = field(default_factory=list)
+    latest_compact_retained_entry_ids: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_accessed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source_event_range: tuple[int, int] | None = None
@@ -187,17 +195,60 @@ def _apply_event(
 
     if event.type == SessionEventType.COMPACTION_SUMMARY_ADDED:
         metadata = snapshot.compact_metadata or CompactMetadata(session_id=event.session_id)
+        summary_text = payload.get("summary_text")
+        summary_hash = payload.get("summary_hash")
+        if summary_text and summary_hash:
+            actual_hash = hashlib.sha256(str(summary_text).encode("utf-8")).hexdigest()
+            if actual_hash != summary_hash:
+                snapshot.corrupt_events.append(
+                    {
+                        "event_id": event.event_id,
+                        "seq": event.seq,
+                        "reason": "summary_hash_mismatch",
+                        "type": event.type,
+                    }
+                )
+                return
+        metadata.last_compact_event_id = event.event_id
+        metadata.previous_compact_event_id = payload.get("previous_compact_event_id") or metadata.previous_compact_event_id
         metadata.last_summary_file = payload.get("summary_path") or metadata.last_summary_file
+        metadata.last_summary_artifact_ref = payload.get("summary_artifact_ref") or metadata.last_summary_artifact_ref
         metadata.last_summary_hash = payload.get("summary_hash") or metadata.last_summary_hash
         metadata.last_cut_point_entry_id = payload.get("cut_point_entry_id") or metadata.last_cut_point_entry_id
         metadata.compact_anchor_entry_id = payload.get("anchor_entry_id") or metadata.compact_anchor_entry_id
+        metadata.compact_anchor_event_seq = event.seq
+        metadata.last_compact_mode = payload.get("mode") or payload.get("compact_mode") or metadata.last_compact_mode
         metadata.last_compact_scope = payload.get("scope") or metadata.last_compact_scope
         if payload.get("source_event_start_seq") is not None:
             metadata.source_event_start_seq = payload.get("source_event_start_seq")
         if payload.get("source_event_end_seq") is not None:
             metadata.source_event_end_seq = payload.get("source_event_end_seq")
+        if payload.get("source_snapshot_seq") is not None:
+            metadata.last_source_snapshot_seq = payload.get("source_snapshot_seq")
+        if isinstance(payload.get("source_event_ids"), list):
+            metadata.source_event_ids = list(payload["source_event_ids"])
+        if isinstance(payload.get("retained_event_ids"), list):
+            metadata.retained_event_ids = list(payload["retained_event_ids"])
+        if isinstance(payload.get("source_entry_ids"), list):
+            metadata.last_source_entry_ids = list(payload["source_entry_ids"])
+        if isinstance(payload.get("retained_entry_ids"), list):
+            metadata.last_retained_entry_ids = list(payload["retained_entry_ids"])
+        metadata.next_jsonl_cursor = payload.get("next_jsonl_cursor") or metadata.next_jsonl_cursor
+        metadata.last_source_jsonl_cursor = payload.get("source_jsonl_cursor") or metadata.last_source_jsonl_cursor
+        metadata.template_version = payload.get("template_version") or metadata.template_version
+        metadata.last_prompt_template = payload.get("template_version") or metadata.last_prompt_template
         snapshot.compact_metadata = metadata
+        if summary_text:
+            snapshot.latest_compact_summary = str(summary_text)
+            snapshot.latest_compact_event_id = event.event_id
+            snapshot.latest_compact_event_seq = event.seq
+            snapshot.latest_compact_mode = metadata.last_compact_mode
+            snapshot.latest_compact_scope = metadata.last_compact_scope
+            snapshot.latest_compact_source_entry_ids = list(metadata.last_source_entry_ids)
+            snapshot.latest_compact_retained_entry_ids = list(metadata.last_retained_entry_ids)
         snapshot.mode_metadata["compaction"] = {
+            "compact_event_id": metadata.last_compact_event_id,
+            "mode": metadata.last_compact_mode,
             "scope": metadata.last_compact_scope,
             "cut_point_entry_id": metadata.last_cut_point_entry_id,
             "anchor_entry_id": metadata.compact_anchor_entry_id,

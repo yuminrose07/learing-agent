@@ -6,6 +6,7 @@ from typing import Optional
 from learning_agent.ai import MessageRole, SessionEntry
 
 from .models import (
+    CompactMode,
     CompactMetadata,
     CompactSourceUnit,
     CompactTraceSummary,
@@ -48,8 +49,10 @@ def _build_unit(entries: list[SessionEntry], index: int) -> CompactSourceUnit:
         for entry in entries
         if entry.metadata.get("source_event_seq") is not None
     ]
+    unit_type = "tool_interaction" if any(entry.tool_calls or entry.role == MessageRole.TOOL for entry in entries) else "message_round"
     return CompactSourceUnit(
         unit_id=f"round-{index}",
+        unit_type=unit_type,
         entry_ids=[entry.id for entry in entries],
         event_ids=event_ids,
         source_event_start_seq=min(event_seqs) if event_seqs else None,
@@ -119,28 +122,42 @@ def build_full_compact_input(
     *,
     metadata: CompactMetadata | None,
     recent_token_budget: int,
+    compact_mode: str = CompactMode.AUTO_PREFIX.value,
+    current_user_event_id: str | None = None,
+    source_snapshot_seq: int | None = None,
     existing_summary: str | None = None,
     sm_state: SessionMemoryState | None = None,
 ) -> FullCompactInput | None:
     anchor_entry_id = metadata.compact_anchor_entry_id if metadata else None
     scope = select_compact_scope(metadata)
 
-    eligible_entries = list_entries_after(entries, anchor_entry_id)
+    eligible_entries = _filter_entries_for_compact_source(
+        list_entries_after(entries, anchor_entry_id),
+        source_snapshot_seq=source_snapshot_seq,
+        current_user_event_id=current_user_event_id,
+    )
     source_units = build_round_units(eligible_entries)
     cut_point_entry_id = find_cut_point(source_units, recent_token_budget)
     if not cut_point_entry_id:
         return None
 
     compact_units = []
+    retained_units = []
+    found_cut_point = False
     for unit in source_units:
         if cut_point_entry_id in unit.entry_ids:
-            break
-        compact_units.append(unit)
+            found_cut_point = True
+        if found_cut_point:
+            retained_units.append(unit)
+        else:
+            compact_units.append(unit)
 
     if not compact_units:
         return None
 
     source_event_ids = [event_id for unit in compact_units for event_id in unit.event_ids]
+    source_entry_ids = [entry_id for unit in compact_units for entry_id in unit.entry_ids]
+    retained_entry_ids = [entry_id for unit in retained_units for entry_id in unit.entry_ids]
     source_starts = [
         unit.source_event_start_seq
         for unit in compact_units
@@ -151,19 +168,27 @@ def build_full_compact_input(
         for unit in compact_units
         if unit.source_event_end_seq is not None
     ]
+    source_end_seq = max(source_ends) if source_ends else None
 
     return FullCompactInput(
         session_id=session_id,
+        compact_mode=compact_mode,
         scope=scope,
         compact_anchor_entry_id=anchor_entry_id,
         cut_point_entry_id=cut_point_entry_id,
         recent_token_budget=recent_token_budget,
+        summary_position="before_retained",
         source_event_start_seq=min(source_starts) if source_starts else None,
-        source_event_end_seq=max(source_ends) if source_ends else None,
+        source_event_end_seq=source_end_seq,
+        source_snapshot_seq=source_snapshot_seq if source_snapshot_seq is not None else source_end_seq,
         source_event_ids=source_event_ids,
+        source_entry_ids=source_entry_ids,
+        retained_entry_ids=retained_entry_ids,
         source_units=compact_units,
         existing_summary=existing_summary,
         sm_state=sm_state,
+        previous_compact_event_id=metadata.last_compact_event_id if metadata else None,
+        current_user_event_id=current_user_event_id,
     )
 
 
@@ -176,10 +201,42 @@ def list_entries_after(entries: list[SessionEntry], entry_id: str | None) -> lis
     return list(entries)
 
 
+def list_entries_from(entries: list[SessionEntry], entry_id: str | None) -> list[SessionEntry]:
+    if entry_id is None:
+        return list(entries)
+    for index, entry in enumerate(entries):
+        if entry.id == entry_id:
+            return entries[index:]
+    return list(entries)
+
+
+def _filter_entries_for_compact_source(
+    entries: list[SessionEntry],
+    *,
+    source_snapshot_seq: int | None,
+    current_user_event_id: str | None,
+) -> list[SessionEntry]:
+    filtered: list[SessionEntry] = []
+    for entry in entries:
+        if current_user_event_id and entry.metadata.get("source_event_id") == current_user_event_id:
+            continue
+        event_seq = entry.metadata.get("source_event_seq")
+        if source_snapshot_seq is not None and event_seq is not None:
+            try:
+                if int(event_seq) > source_snapshot_seq:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        if entry.metadata.get("status") in {"stream_failed", "interrupted"}:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
 def merge_incremental_summary(existing_summary: str | None, delta_summary: str) -> str:
     if not existing_summary:
         return delta_summary
-    return f"{existing_summary.rstrip()}\n\n[Incremental Update]\n{delta_summary.strip()}"
+    return delta_summary.strip()
 
 
 def build_trace_summary(entries: list[SessionEntry]) -> CompactTraceSummary:
@@ -220,15 +277,21 @@ def build_full_compact_result(
     trace_summary = build_trace_summary_from_units(compact_input.source_units)
     return FullCompactResult(
         session_id=compact_input.session_id,
+        compact_mode=compact_input.compact_mode,
         scope=compact_input.scope,
         summary_text=summary_text,
         compact_anchor_entry_id=compact_input.compact_anchor_entry_id,
         cut_point_entry_id=compact_input.cut_point_entry_id,
         next_anchor_entry_id=compacted_entry_ids[-1] if compacted_entry_ids else compact_input.compact_anchor_entry_id,
+        previous_compact_event_id=compact_input.previous_compact_event_id,
+        current_user_event_id=compact_input.current_user_event_id,
         source_event_start_seq=compact_input.source_event_start_seq,
         source_event_end_seq=compact_input.source_event_end_seq,
+        source_snapshot_seq=compact_input.source_snapshot_seq,
         source_event_ids=list(compact_input.source_event_ids),
+        source_entry_ids=list(compact_input.source_entry_ids),
         retained_event_ids=[],
+        retained_entry_ids=list(compact_input.retained_entry_ids),
         preserved_entry_ids=preserved_entry_ids,
         trace_summary=trace_summary,
         estimated_tokens_after=estimated_tokens_after,
@@ -251,15 +314,50 @@ def build_trace_summary_from_units(units: list[CompactSourceUnit]) -> CompactTra
     return trace
 
 
-def render_summary_block(result: FullCompactResult) -> str:
-    trace = result.trace_summary
+def render_summary_text_block(
+    summary_text: str,
+    *,
+    compact_mode: str,
+    scope: str,
+    trace: CompactTraceSummary | None = None,
+) -> str:
+    trace = trace or CompactTraceSummary()
     lines = [
-        f"[Compact Summary | scope={result.scope}]",
-        result.summary_text.strip(),
+        "[Compact Summary]",
+        "This session is being continued after context compaction.",
+        "The summary below covers earlier conversation content.",
+        "Recent messages may be preserved verbatim after this block.",
+        "Do not acknowledge this summary to the user.",
+        "Continue naturally from the latest user-visible request.",
+    ]
+    if compact_mode == CompactMode.AUTO_PREFIX.value:
+        lines.extend(
+            [
+                "This compact summary was inserted automatically.",
+                "Do not ask follow-up questions just because this summary exists.",
+                "Resume the current task directly.",
+            ]
+        )
+    lines.extend(
+        [
+        "",
+        f"mode: {compact_mode}",
+        f"scope: {scope}",
+        summary_text.strip(),
         "",
         f"reads: {', '.join(trace.reads) if trace.reads else 'none'}",
         f"writes: {', '.join(trace.writes) if trace.writes else 'none'}",
         f"searches: {', '.join(trace.searches) if trace.searches else 'none'}",
         f"failures: {', '.join(trace.failures) if trace.failures else 'none'}",
-    ]
+        ]
+    )
     return "\n".join(lines).strip()
+
+
+def render_summary_block(result: FullCompactResult) -> str:
+    return render_summary_text_block(
+        result.summary_text,
+        compact_mode=result.compact_mode,
+        scope=result.scope,
+        trace=result.trace_summary,
+    )
