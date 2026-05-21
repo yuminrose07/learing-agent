@@ -24,8 +24,14 @@
 
 ## 未决项
 
-- `.env` 历史泄漏：必须轮换 API key，并用 `git filter-repo` 清历史。
-- `.trae/` 在新 `.gitignore` 中被整目录忽略，但 main 上仍有 4 个已跟踪文件；c7ac46a 新增的 3 个 `.trae/specs/expose-context-usage-observability/*.md` 因此未能进入 `feat/compaction-pipeline`。需选择：迁移到 `docs/` 或放开 `.gitignore` 中 `.trae/` 规则。
+- ~~`.env` 历史泄漏：必须轮换 API key，并用 `git filter-repo` 清历史。~~ **已完成**：API key 已轮换，2026-05-21 通过 `git filter-repo --invert-paths --path .env` 重写历史；同时清掉 `.observability/` / `.learning_agent_data/` / `__pycache__/` / `*.pyc` / `.DS_Store`；5 个无效 commit message（`v1` / `fix v2` ×2 / `reday compact` / `micro-compact`）通过 `--commit-callback` 改写。所有 3 个分支已 force-push。备份 bundle：`.git/filter-repo-backup-*.bundle`。
+- ~~`.trae/` 在新 `.gitignore` 中被整目录忽略~~ 仍未决。需选择：迁移到 `docs/` 或放开 `.gitignore` 中 `.trae/` 规则。
+
+## 后续补充：单人项目调整
+
+新增 AGENTS.git.md §〇"当前模式：单人项目"，明确列出哪些条款放宽（PR 流程、`--force`、`--force-with-lease` 使用、direct push to main）、哪些仍是硬约束（分支命名、Conventional Commits、单 commit 单职责、`.gitignore` 基线、不提交 secret、不用 `--no-verify`）。
+
+§七 历史教训表标记前 4 项为已通过 filter-repo 解决（✓），第 5、6 项作为流程教训保留。
 
 ## 引用
 

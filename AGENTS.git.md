@@ -4,6 +4,29 @@
 
 ***
 
+## 〇、当前模式：单人项目
+
+本仓库目前为单人开发，下列条款放宽。**引入协作者时立刻全部恢复**——这些规则的真正用途是把人和人之间的协作摩擦提前规约掉。
+
+| 条款 | 单人模式下的状态 |
+|---|---|
+| §四 PR Checklist | PR 非必须；可直接 `git push origin <feat-branch>` 后本地 fast-forward 或自合并到 main。但 checklist 本身仍是有用的 **自检表**——commit 数量、变更范围、文档留痕、本地验证四项每次都应过一遍。 |
+| §四 "已通过 review" | 不适用，删除即可。 |
+| §六 "禁止 PR 进入 review 后 rebase 已被他人 review 的 commit" | 不适用。私有 feature 分支随便 rebase。 |
+| §六 "禁止直接 push 到 `main`" | 降级为 **自律建议**：紧急小修可直接 push，但功能/重构仍建议走 feature 分支以保留逻辑边界。 |
+| §六 "禁止 `--force`" | 降级为 **谨慎使用**：单人项目可用 `--force`，但仍优先 `--force-with-lease`；只对私有 feature 分支使用，对 `main` 仅在 `git filter-repo` 这类整体重写场景使用，并先用 `git bundle` 备份。 |
+
+仍然 **硬约束** 不变的条款（这些是单人也要遵守的工程素养）：
+
+- §一 分支命名（`<type>/<desc>`）
+- §二 Conventional Commits + 一个 commit 一件事
+- §二 绝不提交 secret / 生成产物 / runtime data
+- §三 `.gitignore` 基线
+- §六 绝不提交 `.env` / 不用 `--no-verify` 绕 hook
+- §七 全部历史教训
+
+***
+
 ## 一、分支模型
 
 ### 1.1 长期分支
@@ -212,11 +235,11 @@ git push origin --delete feat/xxx
 
 ## 七、本仓库历史教训（反面教材）
 
-供未来 review 时直接引用：
+供未来 review 时直接引用。带 ✓ 的是已通过 `git filter-repo` 重写历史清理掉的问题，其余仍在追溯参考。
 
-1. **炸弹 commit**：`c7ac46a "full compact fix"` 把源码 + 48k 行 events.jsonl + .pyc + 设计文档塞进一个 51082 行的 commit。下游分支全部受污染。→ 见 §2.2。
-2. **无效 commit message**：`v1` / `fix v2` ×2 / `reday compact` / `micro-compact`。半年后无人能追溯。→ 见 §2.1。
-3. **`.env` 入库**：API key 进了历史，仅删除当前文件不够，必须轮换 + 清历史。→ 见 §2.3、§六。
-4. **运行时数据入库**：`.learning_agent_data/`、`.observability/` 长期被跟踪，直到 `7495481` 才补 `.gitignore`。→ 见 §三。
-5. **AI 草稿前缀进入正式流程**：`codex/full-compact-slact-design` 等分支未 rename 即推远程，与 `chore/*`、`test/*` 混杂。→ 见 §1.2。
-6. **栈式污染分支**：`fix-compaction-summary-pipeline`、`test/compaction-dataset-suite` 建在 `c7ac46a` 之上，无法独立合并。→ 见 §1.3。
+1. ✓ **炸弹 commit**：原 `c7ac46a "full compact fix"` 把源码 + 48k 行 events.jsonl + .pyc + 设计文档塞进一个 51082 行的 commit。已重建为 `feat/compaction-pipeline` 上 5 个有结构的 commit。→ 见 §2.2。
+2. ✓ **无效 commit message**：`v1` / `fix v2` ×2 / `reday compact` / `micro-compact`。已在 2026-05-21 通过 `git filter-repo --commit-callback` 全部重写为 Conventional Commits 格式。→ 见 §2.1。
+3. ✓ **`.env` 入库**：API key 已轮换，历史已通过 `git filter-repo --invert-paths --path .env` 清除。备份 bundle 在 `.git/filter-repo-backup-*.bundle`。→ 见 §2.3、§六。
+4. ✓ **运行时数据入库**：`.learning_agent_data/`、`.observability/`、`__pycache__/`、`*.pyc`、`.DS_Store` 已从全部历史清除；新 `.gitignore` 防止再次入库。→ 见 §三。
+5. **AI 草稿前缀进入正式流程**：原 `codex/full-compact-slact-design` 等分支未 rename 即推远程，与 `chore/*`、`test/*` 混杂；已删除。今后凡 `codex/*`、`claude/*` 草稿分支必须在提 PR 前 rename。→ 见 §1.2。
+6. **栈式污染分支**：原 `fix-compaction-summary-pipeline`、`test/compaction-dataset-suite` 建在炸弹 commit 之上，无法独立合并；已重建。今后未合并的分支上不再拉新分支。→ 见 §1.3。
