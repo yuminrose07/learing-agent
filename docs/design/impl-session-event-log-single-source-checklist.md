@@ -484,26 +484,30 @@ def delete_session_events(self, session_id: str) -> bool: ...
 
 目标：
 
-- 新增正式 compact prompt 模板。
+- 按 `docs/design/design-full-compact-slact-adaptation.md` 第 6 章新增正式 compact prompt 模板。
+- 第一版模板版本固定为 `compact-summary-v1`。
 
 建议包含：
 
-- no-tools preamble
-- auto prefix template
-- slact full template
-- slact from template
-- slact up_to template
-- incremental template
-- rebase template
-- few-shot examples
-- `format_compact_summary(...)`
+- `CompactPromptSpec` 或等价结构，包含 mode、scope、summary_position、source_event_range、source_snapshot_seq、current_user_event_id、existing_summary、session_memory_state、source_units、source_transcript。
+- no-tools preamble。
+- auto prefix / slact full / slact from / slact up_to / incremental / rebase 的 mode-specific instruction。
+- required output contract：一个 `<analysis>` 加一个 `<summary>`。
+- 九章节 summary skeleton。
+- few-shot examples。
+- `format_compact_summary(...)`，只提取 `<summary>`。
+- `validate_compact_summary(...)` 或等价校验逻辑。
 
 完成标准：
 
-- analysis 被剥离。
-- summary 九章节完整。
+- prompt 输入来自 `CompactionSourceView.safe_units`，不直接读取 raw JSONL。
+- analysis 被剥离，不能进入 `compaction.summary_added`。
+- summary 九章节完整，且第 8/9 节标题与 compact mode 匹配。
 - few-shot 不进入最终 summary。
-- 用户原话锚点保留。
+- 用户原话锚点可从 `source_event_ids` 追溯。
+- retained-only 消息不会被 summary 发明或重复总结。
+- artifact_ref 被保留但不扩写 artifact 全文。
+- incremental / rebase 输出 canonical summary，不追加 `[Incremental Update]`。
 
 ---
 
@@ -672,4 +676,3 @@ pytest tests/test_compaction_event_source.py
 - observability 文件命名规则是否能按 session_id 定位。
 - 前端是否能接受 compact summary 折叠提示而不是 assistant 气泡。
 - mode / ask_state 当前事件字段是否足够 replay。
-

@@ -54,6 +54,7 @@ config.yaml
 .observability/
 learning_agent_data/
 observability/
+.test_artifacts/
 
 # Node (web/ static tests)
 node_modules/

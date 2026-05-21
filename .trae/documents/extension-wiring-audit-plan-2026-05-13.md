@@ -10,7 +10,7 @@
 
 ### 已确认的核心接线入口
 
-- 扩展统一注册与激活位于 `learning_agent/main.py`：
+- 扩展统一注册与激活位于 `learning_agent/learning_agent/main.py`：
   - `create_builtin_extensions()` 返回内置扩展列表。
   - `ExtensionManager.register()` 注册扩展。
   - `ExtensionManager.activate_all()` 激活扩展。
@@ -44,8 +44,8 @@
   - `agent.toolRetry`
   - `agent.orphanToolCallsCompensated`
 - 非 `AgentLoop` 事件发布点还包括：
-  - `session.created` in `learning_agent/main.py`
-  - `knowledge.confirmed` in `learning_agent/main.py` 与 `learning_agent/web_server.py`
+  - `session.created` in `learning_agent/learning_agent/main.py`
+  - `knowledge.confirmed` in `learning_agent/learning_agent/main.py` 与 `learning_agent/web/web_server.py`
   - `extension.activated` / `extension.deactivated` in `learning_agent/core/extension_manager.py`
   - `agent.toolResultsValidated` in `learning_agent/extensions/built_in.py`
 
@@ -72,7 +72,7 @@
 - Event 订阅存在于：
   - `learning_agent/extensions/built_in.py`
   - `learning_agent/extensions/security_audit.py`
-  - `learning_agent/main.py`
+  - `learning_agent/learning_agent/main.py`
 - Tool 注册存在于：
   - `learning_agent/extensions/built_in.py`
   - `learning_agent/extensions/code_tools.py`
@@ -167,9 +167,9 @@
 ### 4. 逐项盘点时必须覆盖的具体文件
 
 - 运行时主链路：
-  - `learning_agent/main.py`
+  - `learning_agent/learning_agent/main.py`
   - `learning_agent/agent/agent_loop.py`
-  - `learning_agent/web_server.py`
+  - `learning_agent/web/web_server.py`
 - 核心系统：
   - `learning_agent/models/models.py`
   - `learning_agent/core/extension_manager.py`
@@ -236,6 +236,6 @@
   - Test 表应至少覆盖两份测试文件里的关键对象映射。
 
 - 一致性检查
-  - 文档结论要与 `learning_agent/main.py` 的注册链保持一致。
+  - 文档结论要与 `learning_agent/learning_agent/main.py` 的注册链保持一致。
   - 文档中“已接线/部分接线/未接线”的判定要与证据一致。
   - 文档中“建议下一步”要与现有 `docs/audit/technical-lead-diagnostic-checklist-2026-05-13.md` 的治理方向一致。

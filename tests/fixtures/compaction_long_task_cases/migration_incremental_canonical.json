@@ -1,0 +1,103 @@
+{
+  "name": "migration_incremental_canonical",
+  "description": "模拟学习当前项目的 compaction 主链，验证 full -> incremental 压缩后仍能保留学习目标、架构约束、用户纠正与待办状态。",
+  "compaction": {
+    "max_context_tokens": 1400,
+    "full_compact_threshold": 0.0001,
+    "recent_token_budget": 80,
+    "assistant_repeat": 18
+  },
+  "turns": [
+    {
+      "user": "目标: 理解 LearningAgentSystem 如何把 compaction 计划收口到 runtime 可执行输入。",
+      "assistant": "先把 Product/Application 层的入口职责和 compaction 目标对齐。"
+    },
+    {
+      "user": "约束: 不能破坏 append-only JSONL 作为唯一事实源。",
+      "assistant": "学习过程中必须始终保持 JSONL 是唯一事实源，summary 只能追加事件。"
+    },
+    {
+      "user": "决定: 先串清 SessionManager、CompactionCoordinator、views 的链路，再看 runtime。",
+      "assistant": "先把 Product 层和视图层链路理解清楚，暂时不深入 runtime 细节。"
+    },
+    {
+      "user": "我现在的理解是 LearningAgentSystem 负责拼 turn profile，但还没完全看懂 compaction_plan 是怎么落下来的。",
+      "assistant": "先抓 `_prepare_session_turn()` 和 `_build_compaction_plan()`，它们是 Product 层把语义收口为 runtime 输入的关键节点。"
+    },
+    {
+      "user": "继续追问: 为什么 CompactionCoordinator 放在 Product/Application，而不是塞进 AgentLoopSession 里？",
+      "assistant": "因为压缩策略回答的是“产品想怎么运行”，不该由 runtime 偷做产品编排。"
+    },
+    {
+      "user": "待办: 画出 compaction.summary_added 的事件流向",
+      "assistant": "这项学习待办稍后补齐。"
+    },
+    {
+      "user": "我先记一个观察: session_manager.apply_full_compact_result 看起来像是 append summary event 的提交点。",
+      "assistant": "这个观察是对的，后面可以把它和 replay_events 的恢复逻辑连起来。"
+    },
+    {
+      "user": "纠正: 不要先看 web_server，当前学习重点是 Product 到 Runtime 的 compaction 主链。",
+      "assistant": "以这条纠正为新的最高优先级学习边界。"
+    },
+    {
+      "user": "完成: 画出 compaction.summary_added 的事件流向",
+      "assistant": "这项学习图已经补完，可以关闭这一项待办。"
+    },
+    {
+      "user": "待办: 校验 replay_events 如何恢复 latest compact summary",
+      "assistant": "保留为当前阶段最新的未完成学习事项。"
+    },
+    {
+      "user": "继续学习: 我想把 source_entry_ids、retained_entry_ids、latest_compact_summary 这三者的关系也串起来。",
+      "assistant": "可以沿着 session_projection 和 views 继续看，重点关注 summary block 与 retained raw messages 的边界。"
+    },
+    {
+      "user": "继续推进: 先整理 replay_events 和 session_projection 的实现细节。",
+      "assistant": "把新增待办逐步推进到可被下一轮 compact 消费的区间。"
+    },
+    {
+      "user": "继续推进: 记录 latest_compact_summary 与 retained view 的边界。",
+      "assistant": "继续补充细节，确保 replay 学习待办进入新的 compact source。"
+    },
+    {
+      "user": "最后再确认一下: 我应该先把 summary event 写入当成提交点，再把 metadata/cache 看成派生结果，对吗？",
+      "assistant": "对，学习这个链路时要始终把 JSONL 事件提交点和派生缓存区分开。"
+    }
+  ],
+  "expectations": {
+    "min_summary_events": 2,
+    "event_scopes_prefix": [
+      "full",
+      "incremental"
+    ],
+    "summary_contains": [
+      "目标: 理解 LearningAgentSystem 如何把 compaction 计划收口到 runtime 可执行输入。",
+      "约束: 不能破坏 append-only JSONL 作为唯一事实源。",
+      "纠正: 不要先看 web_server，当前学习重点是 Product 到 Runtime 的 compaction 主链。",
+      "完成: 画出 compaction.summary_added 的事件流向"
+    ],
+    "summary_pending_contains": [
+      "待办: 校验 replay_events 如何恢复 latest compact summary"
+    ],
+    "summary_pending_excludes": [
+      "待办: 画出 compaction.summary_added 的事件流向"
+    ],
+    "response_contains": [
+      "先把 Product/Application 层的入口职责和 compaction 目标对齐。",
+      "学习过程中必须始终保持 JSONL 是唯一事实源，summary 只能追加事件。",
+      "先把 Product 层和视图层链路理解清楚，暂时不深入 runtime 细节。",
+      "先抓 `_prepare_session_turn()` 和 `_build_compaction_plan()`，它们是 Product 层把语义收口为 runtime 输入的关键节点。",
+      "因为压缩策略回答的是“产品想怎么运行”，不该由 runtime 偷做产品编排。",
+      "这项学习待办稍后补齐。",
+      "这个观察是对的，后面可以把它和 replay_events 的恢复逻辑连起来。",
+      "以这条纠正为新的最高优先级学习边界。",
+      "这项学习图已经补完，可以关闭这一项待办。",
+      "保留为当前阶段最新的未完成学习事项。",
+      "可以沿着 session_projection 和 views 继续看，重点关注 summary block 与 retained raw messages 的边界。",
+      "把新增待办逐步推进到可被下一轮 compact 消费的区间。",
+      "继续补充细节，确保 replay 学习待办进入新的 compact source。",
+      "对，学习这个链路时要始终把 JSONL 事件提交点和派生缓存区分开。"
+    ]
+  }
+}
