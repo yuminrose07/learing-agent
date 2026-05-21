@@ -1,0 +1,76 @@
+{
+  "name": "retained_recent_context",
+  "description": "模拟学习当前项目分层边界，验证早期学习目标进入 summary，而最近纠正和最新学习请求继续以 retained 原文保留在 view 中。",
+  "compaction": {
+    "max_context_tokens": 1400,
+    "full_compact_threshold": 0.0001,
+    "recent_token_budget": 80,
+    "assistant_repeat": 18
+  },
+  "turns": [
+    {
+      "user": "目标: 理解当前项目里 Interface、Product/Application、Agent Runtime、Infrastructure 的分层边界。",
+      "assistant": "先把四层边界和主职责定清楚。"
+    },
+    {
+      "user": "约束: 学习时要区分 Product 编排与 Runtime 执行，不能把产品语义塞进 runtime。",
+      "assistant": "分层学习时必须始终保持 Product 编排和 Runtime 执行分离。"
+    },
+    {
+      "user": "决定: 先看 LearningAgentSystem、mode_service、CompactionCoordinator 的调用关系。",
+      "assistant": "先从 Product 入口和 compaction 计划构造链路入手，不直接跳到工具执行细节。"
+    },
+    {
+      "user": "我有点混淆 `_prepare_session_turn()`、`build_turn_profile()` 和 `AgentLoop.run()` 的职责边界。",
+      "assistant": "先记住前两个属于 Product 侧收口，`AgentLoop.run()` 才是 runtime 开始执行的一轮入口。"
+    },
+    {
+      "user": "待办: 记录 build_turn_profile 和 _prepare_session_turn 的职责分工。",
+      "assistant": "把这项学习笔记先记为当前待办。"
+    },
+    {
+      "user": "继续学习: `PreparedSessionTurn` 里哪些字段是给 runtime 的，哪些还是 Product 语义？",
+      "assistant": "重点看 `runtime_input`、`profile`、`compaction_plan`，这几个就是 Product 收口后的执行输入。"
+    },
+    {
+      "user": "纠正: 先不要看 web_server，最近两轮先集中理解 LearningAgentSystem 到 AgentLoop.run 的主链。",
+      "assistant": "最近的学习纠正应该继续保留原文，而不是被错误吞进摘要。"
+    },
+    {
+      "user": "最新请求: 先梳理 LearningAgentSystem 到 AgentLoop.run 的参数流，不要现在扩展到 provider 细节。",
+      "assistant": "这一轮优先梳理参数流，provider 细节先后置。"
+    },
+    {
+      "user": "我还想确认一点: compaction_plan 是 Product 先算好再交给 runtime，而不是 runtime 自己临时判断，对吗？",
+      "assistant": "对，这正是当前项目在分层上最关键的一条边界。"
+    }
+  ],
+  "expectations": {
+    "min_summary_events": 1,
+    "event_scopes_prefix": [
+      "full"
+    ],
+    "summary_contains": [
+      "目标: 理解当前项目里 Interface、Product/Application、Agent Runtime、Infrastructure 的分层边界。",
+      "约束: 学习时要区分 Product 编排与 Runtime 执行，不能把产品语义塞进 runtime。"
+    ],
+    "view_system_contains": [
+      "目标: 理解当前项目里 Interface、Product/Application、Agent Runtime、Infrastructure 的分层边界。"
+    ],
+    "view_recent_contains": [
+      "最新请求: 先梳理 LearningAgentSystem 到 AgentLoop.run 的参数流，不要现在扩展到 provider 细节。",
+      "我还想确认一点: compaction_plan 是 Product 先算好再交给 runtime，而不是 runtime 自己临时判断，对吗？"
+    ],
+    "response_contains": [
+      "先把四层边界和主职责定清楚。",
+      "分层学习时必须始终保持 Product 编排和 Runtime 执行分离。",
+      "先从 Product 入口和 compaction 计划构造链路入手，不直接跳到工具执行细节。",
+      "先记住前两个属于 Product 侧收口，`AgentLoop.run()` 才是 runtime 开始执行的一轮入口。",
+      "把这项学习笔记先记为当前待办。",
+      "重点看 `runtime_input`、`profile`、`compaction_plan`，这几个就是 Product 收口后的执行输入。",
+      "最近的学习纠正应该继续保留原文，而不是被错误吞进摘要。",
+      "这一轮优先梳理参数流，provider 细节先后置。",
+      "对，这正是当前项目在分层上最关键的一条边界。"
+    ]
+  }
+}

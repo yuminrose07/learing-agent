@@ -1,0 +1,106 @@
+{
+  "name": "multi_stage_accumulation",
+  "description": "模拟学习当前项目的多阶段理解过程，验证多次 incremental 压缩后，早期学习目标与后续新增纠正/待办仍可累计进入 canonical summary。",
+  "compaction": {
+    "max_context_tokens": 1400,
+    "full_compact_threshold": 0.0001,
+    "recent_token_budget": 80,
+    "assistant_repeat": 18
+  },
+  "turns": [
+    {
+      "user": "目标: 理解 session compaction 在当前项目里的完整执行链和边界。",
+      "assistant": "先确定整个学习任务的总目标。"
+    },
+    {
+      "user": "约束: 不能破坏 append-only JSONL，也不能把产品语义塞进 runtime。",
+      "assistant": "事实源语义和分层边界都必须稳定保留。"
+    },
+    {
+      "user": "决定: 先看 session_projection 和 replay_events，再回头看 views。",
+      "assistant": "先从 projection/replay 收口，避免一开始就碰全部链路。"
+    },
+    {
+      "user": "我先记一个理解: `compaction.summary_added` 进 JSONL 之后，snapshot 才能恢复 latest_compact_summary。",
+      "assistant": "这个理解对后续梳理 replay 恢复链很关键。"
+    },
+    {
+      "user": "待办: 画出 event replay fixture 与 snapshot 恢复关系",
+      "assistant": "先把这张学习图作为当前阶段待办。"
+    },
+    {
+      "user": "完成: 画出 event replay fixture 与 snapshot 恢复关系",
+      "assistant": "这一项已完成，不应继续出现在 pending 里。"
+    },
+    {
+      "user": "纠正: 先不要动 runtime 状态机，当前只学习 Product/Application 到 projection 的链路。",
+      "assistant": "新的学习纠正优先级高于之前泛化决策。"
+    },
+    {
+      "user": "待办: 加入学习场景的 dataset runner",
+      "assistant": "开始把学习场景的数据集回放 runner 列为当前待办。"
+    },
+    {
+      "user": "继续推进: 补 dataset schema，区分 summary_contains 和 view_recent_contains。",
+      "assistant": "把 runner 的 schema 先稳定下来，并明确 summary/view 两套断言。"
+    },
+    {
+      "user": "我还想搞清楚: retained recent messages 为什么不能被强行吞进 summary？",
+      "assistant": "因为最近用户纠正和最新请求更适合作为原文保留，避免学习语义被摘要化后失真。"
+    },
+    {
+      "user": "待办: 验证语义偏移报告输出",
+      "assistant": "新增一个和语义偏移相关的后续学习任务。"
+    },
+    {
+      "user": "继续推进: 把 report generation 接上，并记录 latest_compact_summary 的来源。",
+      "assistant": "再往前推进一轮，确保新的待办进入 compact source。"
+    },
+    {
+      "user": "决定: real-provider eval 独立于 CI，学习场景的稳定回归先走 scripted provider。",
+      "assistant": "把真实 provider 评估与稳定 CI 测试分开，先保证学习数据集可重复。"
+    },
+    {
+      "user": "最后再确认: 这一套测试集第一版就是为了模拟学习我们自己的项目，而不是通用业务聊天，对吗？",
+      "assistant": "对，第一版数据集应该优先覆盖当前项目的学习场景和架构理解链路。"
+    }
+  ],
+  "expectations": {
+    "min_summary_events": 3,
+    "event_scopes_prefix": [
+      "full",
+      "incremental",
+      "incremental"
+    ],
+    "summary_contains": [
+      "目标: 理解 session compaction 在当前项目里的完整执行链和边界。",
+      "约束: 不能破坏 append-only JSONL，也不能把产品语义塞进 runtime。",
+      "纠正: 先不要动 runtime 状态机，当前只学习 Product/Application 到 projection 的链路。"
+    ],
+    "summary_pending_contains": [
+      "待办: 加入学习场景的 dataset runner",
+      "待办: 验证语义偏移报告输出"
+    ],
+    "summary_pending_excludes": [
+      "待办: 画出 event replay fixture 与 snapshot 恢复关系"
+    ],
+    "view_recent_contains": [
+      "决定: real-provider eval 独立于 CI，学习场景的稳定回归先走 scripted provider。"
+    ],
+    "response_contains": [
+      "先确定整个学习任务的总目标。",
+      "事实源语义和分层边界都必须稳定保留。",
+      "先从 projection/replay 收口，避免一开始就碰全部链路。",
+      "这个理解对后续梳理 replay 恢复链很关键。",
+      "先把这张学习图作为当前阶段待办。",
+      "这一项已完成，不应继续出现在 pending 里。",
+      "新的学习纠正优先级高于之前泛化决策。",
+      "开始把学习场景的数据集回放 runner 列为当前待办。",
+      "把 runner 的 schema 先稳定下来，并明确 summary/view 两套断言。",
+      "因为最近用户纠正和最新请求更适合作为原文保留，避免学习语义被摘要化后失真。",
+      "新增一个和语义偏移相关的后续学习任务。",
+      "再往前推进一轮，确保新的待办进入 compact source。",
+      "把真实 provider 评估与稳定 CI 测试分开，先保证学习数据集可重复。"
+    ]
+  }
+}
