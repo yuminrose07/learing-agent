@@ -95,3 +95,25 @@ class ToolExecutionService(Protocol):
     def get_tool_definition(self, tool_id: str) -> Optional[ToolDefinition]: ...
 
     def list_tools(self) -> list[ToolDefinition]: ...
+
+
+class SessionEventWriter(Protocol):
+    """Runtime 写入 L1 事件流的最小能力端口。
+
+    依赖方向：Runtime 定义协议，Product 层 ``SessionEventStore`` 实现。
+    Runtime 通过这个 Protocol 写诊断/观测事件（visibility=observability），
+    不直接依赖 Product 层具体类型。
+
+    与 ``SessionStore`` 的区别：
+    - ``SessionStore`` 是高层 session 状态变更（append_message 等）
+    - ``SessionEventWriter`` 是底层事件流写入，用于 trace / observability
+    """
+
+    def append_event(
+        self,
+        session_id: str,
+        type: str,
+        payload: Optional[dict[str, Any]] = None,
+        visibility: str = "agent",
+        parent_event_id: Optional[str] = None,
+    ) -> Any: ...

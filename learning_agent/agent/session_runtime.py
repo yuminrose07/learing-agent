@@ -141,6 +141,7 @@ class AgentLoopSession:
             resilience_config=self._resilience_config,
             observability=self.obs,
             is_retryable_fn=self.agent_loop._is_retryable_tool_error,
+            event_writer=getattr(self.agent_loop, "event_writer", None),
         )
 
     # ── 共享依赖快捷访问 ──

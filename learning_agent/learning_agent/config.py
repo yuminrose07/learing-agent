@@ -46,9 +46,6 @@ class Config:
         self.data_dir = self._env_or_file(
             "LA_DATA_DIR", file_values, "data_dir", ".learning_agent_data"
         )
-        self.observability_dir = self._env_or_file(
-            "LA_OBS_DIR", file_values, "observability_dir", ".observability"
-        )
         self.auto_confirm_knowledge = self._env_or_file(
             "LA_AUTO_CONFIRM", file_values, "auto_confirm_knowledge", "false"
         ).lower() == "true"
@@ -180,7 +177,6 @@ class Config:
         """导出当前配置为字典（敏感信息已脱敏）。"""
         return {
             "data_dir": self.data_dir,
-            "observability_dir": self.observability_dir,
             "provider": {
                 "type": self.provider_type,
                 "model": self.provider_config.model,

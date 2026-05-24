@@ -33,7 +33,6 @@ def mock_system():
     # FileStore / Observability
     system.file_store = MagicMock()
     system.observability = MagicMock()
-    system.observability.data_dir = "/tmp/obs"
     system.get_session = MagicMock(return_value=None)
     system.get_ui_messages = MagicMock(return_value=[])
     system.list_sessions = MagicMock(return_value=[])
@@ -297,90 +296,12 @@ class TestResetRuntimeEndpoint:
 
 
 # ───────────────────────────────────────────────────────────────
-# P2: 观测运行时 API
+# P2: 观测运行时 API — 已下线
 # ───────────────────────────────────────────────────────────────
-
-class TestObservabilityRuntimes:
-    @pytest.mark.asyncio
-    async def test_empty_runtimes(self, mock_system):
-        from learning_agent.web.web_server import get_runtimes
-
-        mock_system.get_runtime_overview.return_value = {
-            "active_runtime_count": 0,
-            "total_session_count": 0,
-            "runtimes": [],
-        }
-        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
-            result = await get_runtimes()
-
-        assert result["active_runtime_count"] == 0
-        assert result["runtimes"] == []
-
-    @pytest.mark.asyncio
-    async def test_with_active_runtimes(self, mock_system):
-        from learning_agent.web.web_server import get_runtimes
-
-        mock_system.get_runtime_overview.return_value = {
-            "active_runtime_count": 1,
-            "total_session_count": 1,
-            "runtimes": [
-                {
-                    "session_id": "sess-003",
-                    "state": "idle",
-                    "chat_only_mode": False,
-                    "chat_only_success_turns": 2,
-                    "failure_tracker": {
-                        "tracked_tools": [],
-                        "banned_tools": [],
-                    },
-                    "lock_acquired": False,
-                    "last_accessed": 1234567890.0,
-                    "trace": None,
-                }
-            ],
-        }
-
-        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
-            result = await get_runtimes()
-
-        assert result["active_runtime_count"] == 1
-        assert len(result["runtimes"]) == 1
-        r = result["runtimes"][0]
-        assert r["session_id"] == "sess-003"
-        assert r["state"] == "idle"
-        assert r["chat_only_mode"] is False
-        assert r["chat_only_success_turns"] == 2
-        assert r["last_accessed"] == 1234567890.0
-
-    @pytest.mark.asyncio
-    async def test_chat_only_runtime_highlighted(self, mock_system):
-        from learning_agent.web.web_server import get_runtimes
-
-        mock_system.get_runtime_overview.return_value = {
-            "active_runtime_count": 1,
-            "total_session_count": 1,
-            "runtimes": [
-                {
-                    "session_id": "sess-004",
-                    "state": "idle",
-                    "chat_only_mode": True,
-                    "chat_only_success_turns": 0,
-                    "failure_tracker": {
-                        "tracked_tools": [],
-                        "banned_tools": [],
-                    },
-                    "lock_acquired": False,
-                    "last_accessed": 1234567890.0,
-                    "trace": None,
-                }
-            ],
-        }
-
-        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
-            result = await get_runtimes()
-
-        assert result["active_runtime_count"] == 1
-        assert result["runtimes"][0]["chat_only_mode"] is True
+#
+# 2026-05-24 重构：/observability/runtimes 端点已删除（前端不再依赖，新流程
+# 由 L1 事件流提供）。原 TestObservabilityRuntimes 三条用例随之移除。
+# 详见 docs/design/design-observability-l1-l4-architecture.md §九。
 
 
 # ───────────────────────────────────────────────────────────────

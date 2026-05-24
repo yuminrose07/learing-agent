@@ -16,7 +16,7 @@ from learning_agent.ai import (
     SessionStatus,
 )
 from learning_agent.learning_agent.compaction.models import CompactMetadata
-from learning_agent.learning_agent.session_events import SessionEvent, SessionEventType
+from learning_agent.learning_agent.session_events import EventVisibility, SessionEvent, SessionEventType
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,13 @@ def replay_events(events: list[SessionEvent], session_id: str | None = None) -> 
         last_seq = event.seq
         first_seq = event.seq if first_seq is None else first_seq
         snapshot.last_accessed_at = event.ts
+
+        # L1 事实源护栏：visibility=OBSERVABILITY 的事件是诊断/观测事件，
+        # 与业务事件共存于同一 JSONL 时间轴，但不参与 state 重建。
+        # 必须在 seq 检查之后跳过（保持 seq 连续性校验），在 _apply_event 之前跳过（避免污染 state）。
+        # 测试护栏：tests/test_session_projection.py::test_replay_filters_business_event_types_marked_observability
+        if event.visibility == EventVisibility.OBSERVABILITY:
+            continue
 
         try:
             _apply_event(snapshot, entry_index, event)

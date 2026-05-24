@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import sys
-from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from learning_agent.agent.agent_loop import AgentLoop
@@ -73,7 +72,7 @@ class LearningAgentSystem:
         self.event_bus = EventBus()
         self.hook_system = HookSystem()
         self.tool_registry = ToolRegistry()
-        self.observability = ObservabilityCollector(self.config.observability_dir)
+        self.observability = ObservabilityCollector()
         # Layer 2: Product/Application subdomains
         self.extension_manager = ExtensionManager(
             self.hook_system,
@@ -124,9 +123,6 @@ class LearningAgentSystem:
         # 激活所有扩展
         await self.extension_manager.activate_all()
 
-        # 订阅可观测性事件
-        self.event_bus.subscribe("*", self.observability.on_event)
-
         # Layer 3: Agent Runtime
         # 创建工具执行服务（Product 层实现）
         from learning_agent.learning_agent.tool_execution_service import ToolExecutionServiceImpl
@@ -141,6 +137,7 @@ class LearningAgentSystem:
             tool_execution_service=tool_execution_service,
             observability=self.observability,
             max_react_turns=10,
+            event_writer=self.session_event_store,
         )
         self.compaction_coordinator = CompactionCoordinator(
             self.session_manager,
@@ -329,24 +326,9 @@ class LearningAgentSystem:
         self.file_store.delete(f"memory/session_state/{session_id}.json")
         self.file_store.delete(f"memory/compact/{session_id}.meta.json")
         self.file_store.delete(f"memory/compact/{session_id}.summary.txt")
-        self._delete_session_observability_files(session_id)
         if self._current_session and self._current_session.id == session_id:
             self._current_session = None
         return True
-
-    def _delete_session_observability_files(self, session_id: str) -> None:
-        obs_dir = Path(self.observability.data_dir)
-        for pattern in (f"flow_{session_id}.json", f"*{session_id}*.tmp", f"*{session_id}*.cache"):
-            for path in obs_dir.glob(pattern):
-                if path.is_file():
-                    path.unlink()
-        for trace_file in list(obs_dir.glob("trace_*.json")) + list(obs_dir.glob("snap_*.json")):
-            try:
-                data = json.loads(trace_file.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if data.get("session_id") == session_id or data.get("state", {}).get("session_id") == session_id:
-                trace_file.unlink()
 
     def get_session_runtime_summary(self, session_id: str) -> Optional[dict[str, Any]]:
         if self.agent_loop is None:

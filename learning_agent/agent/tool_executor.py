@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.agent.observability import ObservabilityCollector
-from learning_agent.agent.runtime_ports import SessionStore, ToolExecutionService
+from learning_agent.agent.runtime_ports import SessionEventWriter, SessionStore, ToolExecutionService
 from learning_agent.agent.tool_failure_tracker import ToolFailureTracker
 from learning_agent.agent.tool_validator import ToolInputValidator
 from learning_agent.ai import (
@@ -35,6 +36,7 @@ from learning_agent.ai import (
     ResilienceConfig,
     ToolCall,
 )
+from learning_agent.learning_agent.session_events import EventVisibility, SessionEventType
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ class ToolExecutor:
         resilience_config: ResilienceConfig,
         observability: Optional[ObservabilityCollector] = None,
         is_retryable_fn: Optional[callable] = None,
+        event_writer: Optional[SessionEventWriter] = None,
     ):
         self.hooks = hooks
         self.validator = validator
@@ -76,6 +79,9 @@ class ToolExecutor:
         self.obs = observability
         self._resilience_config = resilience_config
         self._is_retryable = is_retryable_fn or _default_is_retryable
+        # L1 trace writer（可选）。若注入则在工具执行流水线发射 tool.exec_* 诊断事件，
+        # 这些事件 visibility=observability，不参与 replay/projection，仅做因果链追踪。
+        self._event_writer = event_writer
 
     # ── 批量执行 ──
 
@@ -232,7 +238,25 @@ class ToolExecutor:
         while True:
             try:
                 timeout = self._resilience_config.tool_default_timeout
+                started_event_id = self._emit_exec_started(
+                    session_id=session.id,
+                    tc=tc,
+                    tool_call_id=tool_call_id,
+                    attempt=tool_retry_count,
+                    timeout=timeout,
+                )
+                exec_start_ts = time.monotonic()
                 result = await self.tool_service.execute_tool_call(tc, timeout=timeout)
+                latency_ms = (time.monotonic() - exec_start_ts) * 1000.0
+                self._emit_exec_completed(
+                    session_id=session.id,
+                    tc=tc,
+                    tool_call_id=tool_call_id,
+                    attempt=tool_retry_count,
+                    latency_ms=latency_ms,
+                    result=result,
+                    parent_event_id=started_event_id,
+                )
                 tc.result = result
                 final_result = result
                 final_error = None
@@ -252,6 +276,16 @@ class ToolExecutor:
                 )
                 break
             except Exception as e:
+                latency_ms = (time.monotonic() - exec_start_ts) * 1000.0
+                self._emit_exec_failed(
+                    session_id=session.id,
+                    tc=tc,
+                    tool_call_id=tool_call_id,
+                    attempt=tool_retry_count,
+                    latency_ms=latency_ms,
+                    error=e,
+                    parent_event_id=started_event_id,
+                )
                 last_error = e
                 is_retryable = self._is_retryable(e)
 
@@ -466,6 +500,124 @@ class ToolExecutor:
         if trace_span and hasattr(result, "annotations") and result.annotations:
             for key, value in result.annotations.items():
                 trace_span.tags[f"hook.{hook_point}.{key}"] = value
+
+    # ── L1 trace 事件发射（visibility=observability，不入 state） ──
+
+    def _emit_exec_started(
+        self,
+        *,
+        session_id: str,
+        tc: ToolCall,
+        tool_call_id: str,
+        attempt: int,
+        timeout: Optional[float],
+    ) -> Optional[str]:
+        """发射 tool.exec_started 诊断事件到 L1，返回 event_id 供 completed/failed 做 parent。
+
+        失败容错：写 L1 不应该影响业务执行，任何异常都吞掉并打 warning。
+        """
+        if self._event_writer is None:
+            return None
+        try:
+            event = self._event_writer.append_event(
+                session_id=session_id,
+                type=SessionEventType.TOOL_EXEC_STARTED,
+                payload={
+                    "tool_name": tc.tool_id,
+                    "call_id": tool_call_id,
+                    "args": dict(tc.arguments),
+                    "attempt": attempt,
+                    "timeout": timeout,
+                },
+                visibility=EventVisibility.OBSERVABILITY,
+                parent_event_id=None,
+            )
+            return getattr(event, "event_id", None)
+        except Exception:
+            logger.warning("[ToolExecutor] Failed to emit tool.exec_started event", exc_info=True)
+            return None
+
+    def _emit_exec_completed(
+        self,
+        *,
+        session_id: str,
+        tc: ToolCall,
+        tool_call_id: str,
+        attempt: int,
+        latency_ms: float,
+        result: Any,
+        parent_event_id: Optional[str],
+    ) -> None:
+        if self._event_writer is None:
+            return
+        try:
+            result_repr = self._safe_result_repr(result)
+            self._event_writer.append_event(
+                session_id=session_id,
+                type=SessionEventType.TOOL_EXEC_COMPLETED,
+                payload={
+                    "tool_name": tc.tool_id,
+                    "call_id": tool_call_id,
+                    "attempt": attempt,
+                    "latency_ms": round(latency_ms, 3),
+                    "result": result_repr,
+                    "result_size": len(result_repr) if isinstance(result_repr, str) else None,
+                },
+                visibility=EventVisibility.OBSERVABILITY,
+                parent_event_id=parent_event_id,
+            )
+        except Exception:
+            logger.warning("[ToolExecutor] Failed to emit tool.exec_completed event", exc_info=True)
+
+    def _emit_exec_failed(
+        self,
+        *,
+        session_id: str,
+        tc: ToolCall,
+        tool_call_id: str,
+        attempt: int,
+        latency_ms: float,
+        error: BaseException,
+        parent_event_id: Optional[str],
+    ) -> None:
+        if self._event_writer is None:
+            return
+        try:
+            self._event_writer.append_event(
+                session_id=session_id,
+                type=SessionEventType.TOOL_EXEC_FAILED,
+                payload={
+                    "tool_name": tc.tool_id,
+                    "call_id": tool_call_id,
+                    "attempt": attempt,
+                    "latency_ms": round(latency_ms, 3),
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                },
+                visibility=EventVisibility.OBSERVABILITY,
+                parent_event_id=parent_event_id,
+            )
+        except Exception:
+            logger.warning("[ToolExecutor] Failed to emit tool.exec_failed event", exc_info=True)
+
+    @staticmethod
+    def _safe_result_repr(result: Any) -> str:
+        """把任意 tool 返回值转为字符串表示，限制最大长度避免 L1 文件膨胀。"""
+        try:
+            if isinstance(result, str):
+                text = result
+            else:
+                import json as _json
+                try:
+                    text = _json.dumps(result, ensure_ascii=False, default=str)
+                except Exception:
+                    text = repr(result)
+        except Exception:
+            text = "<unrepresentable result>"
+        max_len = 4096
+        if len(text) > max_len:
+            return text[:max_len] + f"...<truncated {len(text) - max_len} chars>"
+        return text
 
 
 def _default_is_retryable(error: Exception) -> bool:

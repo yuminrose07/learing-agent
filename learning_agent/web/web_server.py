@@ -25,12 +25,14 @@ from typing import Any, AsyncGenerator, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
 from learning_agent.learning_agent.main import LearningAgentSystem
+from learning_agent.learning_agent.session_event_store import filter_events
 
 logger = logging.getLogger(__name__)
 
@@ -355,160 +357,75 @@ async def save_state() -> dict[str, str]:
 
 
 # ───────────────────────────────
-# 可观测性（Observability）
+# 会话事件流（L1 timeline API）
 # ───────────────────────────────
+#
+# 2026-05-24 重构：旧的 /observability/* 端点（errors / flows / traces /
+# events / metrics / runtimes / logs / events/stream）已全部下线。它们读的
+# .observability/*.jsonl / trace_*.json / flow_*.json 文件不再写入；
+# 事件流改由 L1 (<base_dir>/sessions/<id>.events.jsonl) 提供，下方的
+# /sessions/{id}/events 端点是新流的唯一入口。
+# 详见 docs/design/design-observability-l1-l4-architecture.md §九。
 
-@app.get("/observability/errors")
-async def get_errors(limit: int = 500) -> dict[str, Any]:
+
+_MAX_EVENT_PAGE = 5000
+
+
+def _parse_csv_set(raw: str | None) -> set[str] | None:
+    if not raw:
+        return None
+    items = {token.strip() for token in raw.split(",") if token.strip()}
+    return items or None
+
+
+@app.get("/sessions/{session_id}/events")
+async def get_session_events(
+    session_id: str,
+    visibility: str | None = None,
+    type: str | None = None,
+    after_seq: int | None = None,
+    limit: int = _MAX_EVENT_PAGE,
+) -> dict[str, Any]:
+    """读取一份 session 的 L1 事件流（append-only JSONL）。
+
+    Query 参数：
+    - ``visibility``: CSV，e.g. ``"agent,system,observability"``，缺省返回全部 visibility
+    - ``type``: CSV，e.g. ``"tool.exec_started,tool.exec_completed"``，缺省返回全部类型
+    - ``after_seq``: int。**轮询契约**：客户端用 ``after_seq=last_seen_seq`` 实现 tail，
+      只拿严格大于该 seq 的事件
+    - ``limit``: 单次返回上限（默认 5000，硬上限 5000）
+
+    响应：
+        ``{"events": [...SessionEvent.model_dump(mode="json")...], "next_after_seq": <int>}``
+
+    ``next_after_seq`` 是本次返回里最大的 seq；客户端下次调用直接把它原样塞回
+    ``after_seq``。**不返回 ``total``**——底层是 append-only JSONL，没法不扫全文件就
+    给出总数。
+
+    并发性：``read_session_events`` 与 ``append_event`` 没有共享锁，但单条
+    ``append`` 是一次完整 ``json.dumps + "\\n"`` 的 write，正常使用下不会读到半行。
     """
-    返回全链路错误日志，聚合多个来源：
-    1. errors.jsonl —— 系统检测到的错误/警告事件
-    2. trace_errors —— Trace span 中的 error 字段
-    3. audit_errors —— audit.jsonl 中的 decision=error 记录
-    """
     system = _get_system()
-    data_dir = Path(system.observability.data_dir)
-    errors: list[dict[str, Any]] = []
+    if system.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
 
-    # 1. errors.jsonl
-    errors_path = data_dir / "errors.jsonl"
-    if errors_path.exists():
-        with open(errors_path, "r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    rec["source_type"] = "system_event"
-                    errors.append(rec)
-                except Exception:
-                    pass
+    visibility_set = _parse_csv_set(visibility)
+    types_set = _parse_csv_set(type)
+    capped_limit = max(1, min(limit, _MAX_EVENT_PAGE))
 
-    # 2. trace span errors
-    for f in data_dir.glob("trace_*.json"):
-        try:
-            data = json.loads(f.read_text())
-            for span in data.get("spans", []):
-                if span.get("error"):
-                    errors.append({
-                        "timestamp": span.get("start_time") or data.get("timestamp"),
-                        "level": "error",
-                        "category": "trace",
-                        "type": "span.error",
-                        "message": span["error"],
-                        "trace_id": data.get("trace_id"),
-                        "session_id": data.get("session_id"),
-                        "source": "trace",
-                        "source_type": "trace_span",
-                        "details": {
-                            "span_id": span.get("span_id"),
-                            "span_name": span.get("name"),
-                            "duration_ms": span.get("duration_ms"),
-                            "tags": span.get("tags"),
-                        },
-                    })
-        except Exception:
-            pass
-
-    # 3. audit errors
-    audit_path = data_dir / "audit.jsonl"
-    if audit_path.exists():
-        with open(audit_path, "r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    if rec.get("decision") == "error" or rec.get("success") is False:
-                        errors.append({
-                            "timestamp": rec.get("timestamp"),
-                            "level": "error",
-                            "category": "audit",
-                            "type": rec.get("event_type", "audit.error"),
-                            "message": rec.get("reason", "Audit error"),
-                            "trace_id": rec.get("trace_id"),
-                            "session_id": rec.get("session_id"),
-                            "source": rec.get("source", "audit"),
-                            "source_type": "audit_log",
-                            "details": rec,
-                        })
-                except Exception:
-                    pass
-
-    # 按时间排序，最新的在前
-    errors.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
-    return {"errors": errors[:limit], "total": len(errors)}
-
-@app.get("/observability/flows/{session_id}")
-async def get_flow(session_id: str) -> dict[str, Any]:
-    system = _get_system()
-    flow_path = Path(system.observability.data_dir) / f"flow_{session_id}.json"
-    if not flow_path.exists():
-        raise HTTPException(status_code=404, detail="Flow not found")
-    return json.loads(flow_path.read_text())
-
-@app.get("/observability/traces")
-async def list_traces(limit: int = 100) -> list[dict[str, Any]]:
-    system = _get_system()
-    trace_dir = Path(system.observability.data_dir)
-    traces = []
-    for f in sorted(trace_dir.glob("trace_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            data = json.loads(f.read_text())
-            traces.append({
-                "trace_id": data.get("trace_id"),
-                "session_id": data.get("session_id"),
-                "timestamp": data.get("timestamp"),
-                "duration_ms": data.get("duration_ms"),
-                "span_count": len(data.get("spans", [])),
-                "mode": data.get("mode"),
-            })
-        except Exception:
-            pass
-    return traces[:limit]
-
-
-@app.get("/observability/traces/{trace_id}")
-async def get_trace(trace_id: str) -> dict[str, Any]:
-    system = _get_system()
-    trace_path = Path(system.observability.data_dir) / f"trace_{trace_id}.json"
-    if not trace_path.exists():
-        raise HTTPException(status_code=404, detail="Trace not found")
-    return json.loads(trace_path.read_text())
-
-
-@app.get("/observability/events")
-async def list_events(limit: int = 500, offset: int = 0) -> list[dict[str, Any]]:
-    system = _get_system()
-    events_path = Path(system.observability.data_dir) / "events.jsonl"
-    if not events_path.exists():
-        return []
-    lines = events_path.read_text().strip().split("\n")
-    selected = lines[-(offset + limit):-offset if offset else None]
-    result = []
-    for line in selected:
-        line = line.strip()
-        if line:
-            try:
-                result.append(json.loads(line))
-            except Exception:
-                pass
-    return result
-
-
-@app.get("/observability/metrics")
-async def get_metrics() -> dict[str, Any]:
-    system = _get_system()
-    return system.observability.get_metrics_summary()
-
-
-@app.get("/observability/runtimes")
-async def get_runtimes() -> dict[str, Any]:
-    """返回当前活跃的 Session 运行时状态（含 trace/span 观测）。"""
-    system = _get_system()
-    return system.get_runtime_overview()
+    events = system.session_event_store.read_events(session_id)
+    filtered = filter_events(
+        events,
+        visibility=visibility_set,
+        types=types_set,
+        after_seq=after_seq,
+        limit=capped_limit,
+    )
+    next_after_seq = filtered[-1].seq if filtered else (after_seq or 0)
+    return {
+        "events": [event.model_dump(mode="json") for event in filtered],
+        "next_after_seq": next_after_seq,
+    }
 
 
 @app.post("/sessions/{session_id}/reset-runtime")
@@ -525,71 +442,20 @@ async def reset_session_runtime(session_id: str) -> dict[str, Any]:
     }
 
 
-@app.get("/observability/logs")
-async def get_logs(limit: int = 500) -> dict[str, Any]:
-    """
-    返回两类日志：
-    1. trace_errors: 所有 trace 中包含 error 的 span
-    2. event_logs: events.jsonl 中的记录（目前均为 info，预留扩展）
-    """
-    system = _get_system()
-    trace_dir = Path(system.observability.data_dir)
-    errors = []
-    for f in trace_dir.glob("trace_*.json"):
-        try:
-            data = json.loads(f.read_text())
-            for span in data.get("spans", []):
-                if span.get("error"):
-                    errors.append({
-                        "trace_id": data.get("trace_id"),
-                        "session_id": data.get("session_id"),
-                        "span_id": span.get("span_id"),
-                        "span_name": span.get("name"),
-                        "error": span.get("error"),
-                        "timestamp": data.get("timestamp"),
-                    })
-        except Exception:
-            pass
+# ───────────────────────────────
+# 前端静态资源挂载
+# ───────────────────────────────
+#
+# 把项目根的 web/ 目录挂在 /ui，根路径 / 重定向到 /ui/index.html。
+# 用 /ui 前缀而非 / 是为了避免与 API 路由冲突；用 RedirectResponse 让
+# `http://localhost:8000/` 这个最常用的入口仍然直达聊天页。
 
-    events_path = Path(system.observability.data_dir) / "events.jsonl"
-    event_logs = []
-    if events_path.exists():
-        with open(events_path, "r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    event_logs.append(rec)
-                except Exception:
-                    pass
-
-    return {
-        "trace_errors": errors[-limit:],
-        "event_logs": event_logs[-limit:],
-    }
+_WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_WEB_DIR)), name="ui")
 
 
-@app.get("/observability/events/stream")
-async def events_stream() -> StreamingResponse:
-    """SSE 实时推送新事件。"""
-    system = _get_system()
+@app.get("/")
+async def _root_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/ui/index.html")
 
-    async def generator() -> AsyncGenerator[str, None]:
-        last_size = 0
-        events_path = Path(system.observability.data_dir) / "events.jsonl"
-        while True:
-            if events_path.exists():
-                current_size = events_path.stat().st_size
-                if current_size > last_size:
-                    with open(events_path, "r", encoding="utf-8") as f:
-                        f.seek(last_size)
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                yield f"data: {line}\n\n"
-                    last_size = current_size
-            await asyncio.sleep(1)
-
-    return StreamingResponse(generator(), media_type="text/event-stream")

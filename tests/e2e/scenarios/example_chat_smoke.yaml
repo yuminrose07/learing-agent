@@ -1,0 +1,35 @@
+# 最小冒烟 scenario：用户发一句话，LLM 回一句，断言事件流正常。
+# 这是模板，复制后改 name / user_input / llm_script / assertions 即可。
+name: chat_smoke
+description: 最小聊天冒烟 - 验证 e2e 脚手架本身通畅
+markers:
+  - agent
+  - session
+
+user_input: "你好"
+
+llm_script:
+  - "你好！我能帮你做什么？"
+
+# 断言使用真实事件类型（来自 learning_agent.learning_agent.session_events.SessionEventType）。
+# runner.py 会把后缀 _added 去掉，但其余名字保持原样。
+# 可在 .test_artifacts/<test>/events.jsonl 查看完整事件流。
+assertions:
+  # 会话被真实创建
+  - kind: event_count_min
+    event_type: session.created
+    count: 1
+  # 用户消息被写入事件流（这是 append-only JSONL 事实源）
+  - kind: event_count_min
+    event_type: message.user_appended
+    count: 1
+  # 一轮结束有 message_end 收尾事件
+  - kind: event_count_min
+    event_type: message_end
+    count: 1
+  # assistant 完整响应聚合后包含 LLM 脚本里的内容
+  - kind: event_contains
+    event_type: assistant_response_aggregate
+    substring: "你好"
+  # 全程没有错误类事件
+  - kind: no_error

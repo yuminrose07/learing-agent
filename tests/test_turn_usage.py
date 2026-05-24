@@ -148,7 +148,7 @@ async def test_stream_session_chat_merges_public_usage_metadata():
 
 @pytest.mark.asyncio
 async def test_observability_distinguishes_chunk_and_usage_metrics(tmp_path):
-    collector = ObservabilityCollector(data_dir=str(tmp_path))
+    collector = ObservabilityCollector()
 
     await collector.on_event(
         Event(
@@ -193,7 +193,7 @@ async def test_observability_distinguishes_chunk_and_usage_metrics(tmp_path):
 
 @pytest.mark.asyncio
 async def test_observability_skips_missing_actual_usage_metrics(tmp_path):
-    collector = ObservabilityCollector(data_dir=str(tmp_path))
+    collector = ObservabilityCollector()
 
     await collector.on_event(
         Event(

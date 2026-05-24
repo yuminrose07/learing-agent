@@ -16,7 +16,12 @@ from typing import Any, AsyncIterable, Optional
 from learning_agent.agent.event_bus import EventBus
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.agent.observability import ObservabilityCollector
-from learning_agent.agent.runtime_ports import MemoryService, SessionStore, ToolExecutionService
+from learning_agent.agent.runtime_ports import (
+    MemoryService,
+    SessionEventWriter,
+    SessionStore,
+    ToolExecutionService,
+)
 from learning_agent.agent.tool_validator import ToolInputValidator
 from learning_agent.ai import (
     ChatChunk,
@@ -54,6 +59,7 @@ class AgentLoop:
         max_react_turns: int = 10,
         resilience_config: Optional[ResilienceConfig] = None,
         session_runtime_ttl: int = 3600,
+        event_writer: Optional[SessionEventWriter] = None,
     ):
         # Runtime 共享依赖
         self.provider = provider
@@ -63,6 +69,8 @@ class AgentLoop:
         self.events = event_bus
         self.tool_execution_service = tool_execution_service
         self.obs = observability
+        # 可选 L1 trace writer：若注入，ToolExecutor 会在工具执行流水线发射 tool.exec_* 诊断事件
+        self.event_writer = event_writer
 
         # 全局配置
         self.max_react_turns = max_react_turns

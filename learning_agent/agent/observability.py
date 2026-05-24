@@ -1,22 +1,24 @@
 """
-可观测性基础设施：Trace、Metrics、Snapshot、Log 收集器。
-观测即基础设施，通过订阅事件和注册 Hook 实现零侵入观测。
+可观测性基础设施：Trace、Metrics、Snapshot、Log 收集器（**纯内存**版本）。
 
-【多 Session 安全版本】
-核心变更：
-1. _active_span_stack → _span_stacks: dict[str, list[TraceSpan]]
-2. 增加 _session_trace_map 用于 session → trace 路由
-3. start_trace/end_trace 增加 session_id 参数
-4. 所有 span 操作默认使用当前 trace 的栈，支持显式指定 trace_id
+【2026-05-24 重构】事件流持久化已迁移到 L1（`<base_dir>/sessions/<id>.events.jsonl`，
+唯一写入入口为 ``SessionEventStore.append_event``），本模块只保留：
+
+1. ``MetricsStore`` —— 内存计数 / 直方图 / Gauge
+2. ``ObservabilityCollector`` —— 内存 Trace/Span/Snapshot 栈，给 ToolExecutor、
+   SessionRuntime 等组件在运行时打点用（``if self.obs:`` 守护）
+3. ``on_event`` —— EventBus 兜底订阅入口，目前仅做内存指标聚合，不再写入文件
+
+**不再产出任何文件**。之前的 ``events.jsonl`` / ``errors.jsonl`` /
+``trace_*.json`` / ``snap_*.json`` 写入逻辑已全部下线，详见
+``docs/design/design-observability-l1-l4-architecture.md`` 第九节迁移策略。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from learning_agent.ai import Event, Snapshot, Trace, TraceSpan
@@ -76,33 +78,26 @@ class MetricsStore:
 
 
 class ObservabilityCollector:
-    """
-    可观测性收集器（多 Session 安全版本）。
+    """纯内存的可观测性收集器（多 Session 安全）。
 
-    核心变更：
-    1. _active_span_stack → _span_stacks: dict[str, list[TraceSpan]]
-    2. 增加 _session_trace_map 用于 session → trace 路由
-    3. start_trace/end_trace 增加 session_id 参数
-    4. 所有 span 操作默认使用当前 trace 的栈，支持显式指定 trace_id
+    span 栈按 trace_id 隔离，session→trace 映射用于按 session 查询。
+    本类已不再产出任何文件——历史的 ``events.jsonl`` / ``trace_*.json`` 等都
+    迁到 L1 事件流，由 ``SessionEventStore`` 写入。
     """
 
-    def __init__(self, data_dir: str = ".observability"):
-        self.data_dir = data_dir
+    def __init__(self) -> None:
         self.metrics = MetricsStore()
         self._traces: dict[str, Trace] = {}
         self._snapshots: list[Snapshot] = []
-        self._logs: list[dict[str, Any]] = []
 
-        # 【改造】按 trace_id 隔离的 span 栈
+        # 按 trace_id 隔离的 span 栈
         self._span_stacks: dict[str, list[TraceSpan]] = {}
 
-        # 【改造】session → trace 映射
+        # session → trace 映射
         self._session_trace_map: dict[str, str] = {}
 
-        # 【保留兼容】最后激活的 trace
+        # 最后激活的 trace（兼容旧调用方）
         self._active_trace: Optional[Trace] = None
-
-        os.makedirs(data_dir, exist_ok=True)
 
     # ─── Trace 管理 ───
 
@@ -116,24 +111,19 @@ class ObservabilityCollector:
         self._traces[trace.trace_id] = trace
         self._active_trace = trace
 
-        # 【改造】为该 trace 创建独立的 span 栈
         self._span_stacks[trace.trace_id] = []
 
-        # 【改造】建立 session → trace 映射
         if session_id:
-            # 如果该 session 已有活跃 trace，先结束它
             old_trace_id = self._session_trace_map.get(session_id)
             if old_trace_id and old_trace_id in self._traces:
                 old_trace = self._traces[old_trace_id]
                 if not old_trace.end_time:
                     old_trace.end()
-                    self._persist_trace(old_trace)
-                    # 清理旧栈
                     self._span_stacks.pop(old_trace_id, None)
 
             self._session_trace_map[session_id] = trace.trace_id
 
-        logger.info(f"[Observability] Trace started: {trace.trace_id} (session={session_id})")
+        logger.debug("[Observability] Trace started: %s (session=%s)", trace.trace_id, session_id)
         return trace
 
     def end_trace(self, trace_id: Optional[str] = None) -> Optional[Trace]:
@@ -146,11 +136,8 @@ class ObservabilityCollector:
             return None
 
         trace.end()
-
-        # 【改造】清理该 trace 的 span 栈
         self._span_stacks.pop(target_trace_id, None)
 
-        # 【改造】清理 session → trace 映射（反向查找）
         sessions_to_remove = [
             sid for sid, tid in self._session_trace_map.items()
             if tid == target_trace_id
@@ -161,7 +148,6 @@ class ObservabilityCollector:
         if self._active_trace and self._active_trace.trace_id == target_trace_id:
             self._active_trace = None
 
-        self._persist_trace(trace)
         return trace
 
     # ─── Span 管理 ───
@@ -172,25 +158,21 @@ class ObservabilityCollector:
         parent: Optional[TraceSpan] = None,
         trace_id: Optional[str] = None,
     ) -> TraceSpan:
-        # 确定使用哪个 trace
         target_trace_id = trace_id
         if not target_trace_id and self._active_trace:
             target_trace_id = self._active_trace.trace_id
 
         if not target_trace_id:
-            # 兜底：创建一个新的 trace
             trace = self.start_trace()
             target_trace_id = trace.trace_id
 
         trace = self._traces.get(target_trace_id)
         if not trace:
-            # 如果 trace 不存在，创建一个新的
             trace = self.start_trace()
             target_trace_id = trace.trace_id
 
         span = trace.start_span(name, parent)
 
-        # 【改造】推入该 trace 的独立栈
         stack = self._span_stacks.setdefault(target_trace_id, [])
         stack.append(span)
 
@@ -201,16 +183,13 @@ class ObservabilityCollector:
         span: Optional[TraceSpan] = None,
         trace_id: Optional[str] = None,
     ) -> None:
-        # 确定使用哪个 trace
         target_trace_id = trace_id
         target_span = span
 
         if not target_trace_id and not target_span:
-            # 默认使用 active_trace
             target_trace_id = self._active_trace.trace_id if self._active_trace else None
 
         if not target_trace_id and target_span:
-            # 从 span 反查 trace（遍历所有 trace 查找）
             for tid, trace in self._traces.items():
                 if target_span in trace.spans:
                     target_trace_id = tid
@@ -227,7 +206,6 @@ class ObservabilityCollector:
             if target_span in stack:
                 stack.remove(target_span)
         elif stack:
-            # 默认结束栈顶 span
             top = stack.pop()
             top.end()
 
@@ -275,156 +253,17 @@ class ObservabilityCollector:
             state=state,
         )
         self._snapshots.append(snap)
-        self._persist_snapshot(snap)
         return snap
 
-    # ─── 事件处理 ───
+    # ─── 事件聚合（仅指标，不落盘）───
 
     async def on_event(self, event: Event) -> None:
-        """作为 EventBus 的订阅者，接收所有事件。"""
-        # 判断是否为错误/警告事件
-        level = self._detect_event_level(event)
+        """作为 EventBus 的订阅者，把事件转换为内存指标。
 
-        # 记录结构化日志
-        log_entry = {
-            "timestamp": event.timestamp.isoformat(),
-            "level": level,
-            "trace_id": event.trace_id,
-            "type": event.type,
-            "source": event.source,
-            "session_id": event.session_id,
-            "payload_keys": list(event.payload.keys()),
-        }
-        self._logs.append(log_entry)
-        self._append_jsonl("events.jsonl", log_entry)
-
-        # 错误事件写入专门的错误日志
-        if level in ("error", "warn"):
-            error_entry = self._build_error_entry(event, level)
-            self._append_jsonl("errors.jsonl", error_entry)
-
-        # 根据事件类型更新指标
+        注意：这条路径**不再写入文件**。日志只保留 metrics 更新，事件流
+        持久化由 L1 的 ``SessionEventStore`` 负责。
+        """
         self._update_metrics_from_event(event)
-
-    def _detect_event_level(self, event: Event) -> str:
-        """根据事件类型和载荷判断日志级别。"""
-        et = event.type
-
-        # 明确的错误事件
-        if et in (
-            "agent.toolBanned",
-            "agent.toolValidationFailed",
-            "agent.toolPermissionDenied",
-            "agent.traceError",
-        ):
-            return "error"
-
-        # 需要关注但非致命
-        if et in (
-            "agent.toolPermissionAsk",
-            "agent.turnRetry",
-            "agent.contextCompressed",
-        ):
-            return "warn"
-
-        # 状态变化到 error
-        if et == "agent.stateChanged" and event.payload.get("new_state") == "error":
-            return "error"
-
-        # toolResult 中的失败
-        if et == "agent.toolResult" and not event.payload.get("success", True):
-            return "error"
-
-        return "info"
-
-    def _build_error_entry(self, event: Event, level: str) -> dict[str, Any]:
-        """构建结构化的错误记录。"""
-        et = event.type
-        payload = event.payload
-        category = "system"
-        message = ""
-        details: dict[str, Any] = {}
-
-        if et == "agent.toolBanned":
-            category = "tool"
-            message = f"Tool '{payload.get('tool_id')}' temporarily banned"
-            details = {
-                "tool_id": payload.get("tool_id"),
-                "call_id": payload.get("call_id"),
-                "turn": payload.get("turn"),
-                "failures_in_window": payload.get("failures_in_window"),
-            }
-        elif et == "agent.toolValidationFailed":
-            category = "validation"
-            message = f"Tool '{payload.get('tool_id')}' input validation failed"
-            details = {
-                "tool_id": payload.get("tool_id"),
-                "call_id": payload.get("call_id"),
-                "errors": payload.get("errors"),
-                "turn": payload.get("turn"),
-            }
-        elif et == "agent.toolPermissionDenied":
-            category = "permission"
-            message = f"Tool '{payload.get('tool_id')}' permission denied"
-            details = {
-                "tool_id": payload.get("tool_id"),
-                "call_id": payload.get("call_id"),
-                "reason": payload.get("reason"),
-            }
-        elif et == "agent.toolPermissionAsk":
-            category = "permission"
-            message = f"Tool '{payload.get('tool_id')}' requires approval"
-            details = {
-                "tool_id": payload.get("tool_id"),
-                "call_id": payload.get("call_id"),
-                "message": payload.get("message"),
-            }
-        elif et == "agent.toolResult":
-            category = "tool"
-            message = f"Tool '{payload.get('tool_id')}' execution failed"
-            details = {
-                "tool_id": payload.get("tool_id"),
-                "success": payload.get("success"),
-                "result": payload.get("result"),
-            }
-        elif et == "agent.turnRetry":
-            category = "llm"
-            message = f"Turn retry (attempt {payload.get('attempt')})"
-            details = {
-                "attempt": payload.get("attempt"),
-                "reason": payload.get("reason"),
-            }
-        elif et == "agent.contextCompressed":
-            category = "system"
-            message = "Context compressed due to overflow"
-            details = {
-                "original_messages": payload.get("original_messages"),
-                "remaining_messages": payload.get("remaining_messages"),
-                "reason": payload.get("reason"),
-            }
-        elif et == "agent.stateChanged":
-            category = "system"
-            message = f"Agent entered error state"
-            details = {
-                "old_state": payload.get("old_state"),
-                "new_state": payload.get("new_state"),
-            }
-        else:
-            # 兜底：保留原始 payload
-            message = et
-            details = payload
-
-        return {
-            "timestamp": event.timestamp.isoformat(),
-            "level": level,
-            "category": category,
-            "type": et,
-            "message": message,
-            "trace_id": event.trace_id,
-            "session_id": event.session_id,
-            "source": event.source,
-            "details": details,
-        }
 
     def _update_metrics_from_event(self, event: Event) -> None:
         et = event.type
@@ -442,24 +281,17 @@ class ObservabilityCollector:
                 1,
                 {"phase": phase, "is_estimated": is_estimated},
             )
-            estimated_prompt_tokens = usage.get("estimated_prompt_tokens")
-            if estimated_prompt_tokens is not None:
-                self.metrics.histogram_record("llm.usage.estimated_prompt_tokens", estimated_prompt_tokens)
-            actual_prompt_tokens = usage.get("actual_prompt_tokens")
-            if actual_prompt_tokens is not None:
-                self.metrics.histogram_record("llm.usage.actual_prompt_tokens", actual_prompt_tokens)
-            actual_completion_tokens = usage.get("actual_completion_tokens")
-            if actual_completion_tokens is not None:
-                self.metrics.histogram_record("llm.usage.actual_completion_tokens", actual_completion_tokens)
-            actual_total_tokens = usage.get("actual_total_tokens")
-            if actual_total_tokens is not None:
-                self.metrics.histogram_record("llm.usage.actual_total_tokens", actual_total_tokens)
-            context_limit = usage.get("context_limit")
-            if context_limit:
-                self.metrics.histogram_record("llm.usage.context_limit", context_limit)
-            utilization_ratio = usage.get("utilization_ratio")
-            if utilization_ratio is not None:
-                self.metrics.histogram_record("llm.usage.context_utilization_ratio", utilization_ratio)
+            for field, metric in (
+                ("estimated_prompt_tokens", "llm.usage.estimated_prompt_tokens"),
+                ("actual_prompt_tokens", "llm.usage.actual_prompt_tokens"),
+                ("actual_completion_tokens", "llm.usage.actual_completion_tokens"),
+                ("actual_total_tokens", "llm.usage.actual_total_tokens"),
+                ("context_limit", "llm.usage.context_limit"),
+                ("utilization_ratio", "llm.usage.context_utilization_ratio"),
+            ):
+                value = usage.get(field)
+                if value is not None:
+                    self.metrics.histogram_record(metric, value)
         elif et == "agent.toolCalled":
             self.metrics.counter_inc("tool.call.total", 1)
             tool_id = event.payload.get("tool_id", "unknown")
@@ -479,30 +311,12 @@ class ObservabilityCollector:
         elif et == "session.forked":
             self.metrics.counter_inc("session.fork.count", 1)
         elif et == "agent.stateChanged":
-            # 【新增】per-session 状态指标
             session_id = event.session_id or "unknown"
             self.metrics.gauge_set(
                 "agent.state",
                 1,
                 labels={"session": session_id, "state": event.payload.get("new_state", "unknown")},
             )
-
-    # ─── 持久化 ───
-
-    def _persist_trace(self, trace: Trace) -> None:
-        path = os.path.join(self.data_dir, f"trace_{trace.trace_id}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(trace.model_dump_json(indent=2))
-
-    def _persist_snapshot(self, snap: Snapshot) -> None:
-        path = os.path.join(self.data_dir, f"snap_{snap.snapshot_id}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(snap.model_dump_json(indent=2))
-
-    def _append_jsonl(self, filename: str, record: dict[str, Any]) -> None:
-        path = os.path.join(self.data_dir, filename)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
     # ─── 查询 ───
 
