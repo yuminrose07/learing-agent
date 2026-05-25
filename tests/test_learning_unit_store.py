@@ -56,7 +56,7 @@ class TestLearningUnitStoreCRUD:
         assert store.get(unit.id) is unit
         assert unit.objective.text == "理解 attention 机制"
         assert unit.objective.source == "ai_distilled"
-        assert unit.phase == "aligning"
+        assert unit.phase == "absorbing"
 
         # 磁盘上确实落了文件
         raw = file_store.load_learning_unit(unit.id)
@@ -80,20 +80,19 @@ class TestLearningUnitStoreCRUD:
         unit = store.create(session_id="sess-2", objective_text="t")
 
         unit.objective.confirmed = True
-        unit.transition_to("absorbing")
+        unit.transition_to("outputting")
         store.save(unit)
 
         reloaded_store = LearningUnitStore(file_store)
         reloaded = reloaded_store.get(unit.id)
         assert reloaded is not None
-        assert reloaded.phase == "absorbing"
+        assert reloaded.phase == "outputting"
         assert reloaded.objective.confirmed is True
 
     def test_list_returns_all_units(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
         u1 = store.create(session_id="s1", objective_text="t1")
         # 把 u1 推进到 consolidated，让 find_active 不报 P3
-        u1.transition_to("absorbing")
         u1.transition_to("outputting")
         u1.transition_to("consolidated")
         store.save(u1)
@@ -118,14 +117,14 @@ class TestLoadAll:
     def test_load_all_restores_units_from_disk(self, file_store: FileStore):
         store1 = LearningUnitStore(file_store)
         unit = store1.create(session_id="sess-load", objective_text="t-load")
-        unit.transition_to("absorbing")
+        unit.transition_to("outputting")
         store1.save(unit)
 
         store2 = LearningUnitStore(file_store)
         reloaded = store2.get(unit.id)
         assert reloaded is not None
         assert reloaded.session_id == "sess-load"
-        assert reloaded.phase == "absorbing"
+        assert reloaded.phase == "outputting"
 
     def test_load_all_with_no_file_store_is_noop(self):
         store = LearningUnitStore(file_store=None)
@@ -141,7 +140,6 @@ class TestActiveUnitInvariant:
     def test_find_active_skips_consolidated(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
         unit = store.create(session_id="sess-a", objective_text="t")
-        unit.transition_to("absorbing")
         unit.transition_to("outputting")
         unit.transition_to("consolidated")
         store.save(unit)
@@ -159,14 +157,13 @@ class TestActiveUnitInvariant:
     def test_create_allowed_after_consolidation(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
         first = store.create(session_id="sess-1", objective_text="t1")
-        first.transition_to("absorbing")
         first.transition_to("outputting")
         first.transition_to("consolidated")
         store.save(first)
 
         second = store.create(session_id="sess-2", objective_text="t2")
         assert second.id != first.id
-        assert second.phase == "aligning"
+        assert second.phase == "absorbing"
 
 
 class TestSessionDeleteCascade:
@@ -193,12 +190,117 @@ class TestSessionDeleteCascade:
         assert store.get(unit.id) is unit
 
 
+class TestLegacyMigration:
+    """B1 投影迁移：旧 ``phase=aligning`` JSON 加载时转为新 schema。
+
+    迁移规则来自 adaptive alignment §8.4：
+    - phase=aligning → phase=absorbing, alignment_state=active, objective_status=working
+    - aligning_round 字段被丢弃（旧字段已无意义）
+    """
+
+    def _write_legacy_unit_json(self, file_store: FileStore, raw: dict) -> str:
+        """直接落一份模拟旧 schema 的 JSON 到磁盘，绕过 LearningUnitStore.create。"""
+        file_store.save_learning_unit(raw["id"], raw)
+        return raw["id"]
+
+    def test_legacy_aligning_phase_projects_to_absorbing(
+        self, file_store: FileStore
+    ):
+        legacy = {
+            "id": "lu-legacy-1",
+            "session_id": "sess-legacy",
+            "objective": {
+                "text": "理解旧 schema 的 aligning",
+                "source": "ai_distilled",
+                "source_ref": None,
+                "confirmed": False,
+            },
+            "phase": "aligning",
+            "concept_list": [],
+            "tangent_notes": [],
+            "aligning_round": 3,  # 已废弃字段
+            "teach_session": None,
+            "verification_status": None,
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-01T00:00:00+00:00",
+        }
+        self._write_legacy_unit_json(file_store, legacy)
+
+        store = LearningUnitStore(file_store)
+        reloaded = store.get("lu-legacy-1")
+
+        assert reloaded is not None
+        assert reloaded.phase == "absorbing"
+        assert reloaded.alignment_state == "active"
+        assert reloaded.objective_status == "working"
+        # aligning_round 字段已从模型中删除；不应出现在 dump 中
+        dumped = reloaded.model_dump()
+        assert "aligning_round" not in dumped
+
+    def test_legacy_absorbing_phase_unchanged(self, file_store: FileStore):
+        legacy = {
+            "id": "lu-legacy-2",
+            "session_id": "sess-legacy-2",
+            "objective": {
+                "text": "已经 absorbing 的旧卷",
+                "source": "ai_distilled",
+                "source_ref": None,
+                "confirmed": True,
+            },
+            "phase": "absorbing",
+            "concept_list": [],
+            "tangent_notes": [],
+            "aligning_round": 1,
+            "teach_session": None,
+            "verification_status": None,
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-01T00:00:00+00:00",
+        }
+        self._write_legacy_unit_json(file_store, legacy)
+
+        store = LearningUnitStore(file_store)
+        reloaded = store.get("lu-legacy-2")
+
+        assert reloaded is not None
+        assert reloaded.phase == "absorbing"
+        # 新字段默认值兜底
+        assert reloaded.alignment_state == "idle"
+        assert reloaded.objective_status == "working"
+
+    def test_legacy_consolidated_phase_unchanged(self, file_store: FileStore):
+        legacy = {
+            "id": "lu-legacy-3",
+            "session_id": "sess-legacy-3",
+            "objective": {
+                "text": "终态旧卷",
+                "source": "ai_distilled",
+                "source_ref": None,
+                "confirmed": True,
+            },
+            "phase": "consolidated",
+            "concept_list": [],
+            "tangent_notes": [],
+            "aligning_round": 2,
+            "teach_session": None,
+            "verification_status": "passed",
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-01T00:00:00+00:00",
+        }
+        self._write_legacy_unit_json(file_store, legacy)
+
+        store = LearningUnitStore(file_store)
+        reloaded = store.get("lu-legacy-3")
+
+        assert reloaded is not None
+        assert reloaded.phase == "consolidated"
+        assert reloaded.is_terminal()
+
+
 class TestPerUnitLock:
     @pytest.mark.asyncio
     async def test_lock_serializes_concurrent_writers(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
         unit = store.create(session_id="sess-lock", objective_text="t")
-        unit.transition_to("absorbing")
         store.save(unit)
 
         order: list[str] = []
@@ -221,7 +323,6 @@ class TestPerUnitLock:
     async def test_lock_is_per_unit_not_global(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
         u1 = store.create(session_id="s1", objective_text="t1")
-        u1.transition_to("absorbing")
         u1.transition_to("outputting")
         u1.transition_to("consolidated")
         store.save(u1)

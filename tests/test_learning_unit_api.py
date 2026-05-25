@@ -43,7 +43,7 @@ def mock_system():
 def _make_unit(
     *,
     session_id: str = "sess-x",
-    phase: str = "aligning",
+    phase: str = "absorbing",
     text: str = "理解 attention",
 ) -> LearningUnit:
     unit = LearningUnit(
@@ -79,7 +79,7 @@ class TestCreateLearningUnit:
 
         assert result["id"] == unit.id
         assert result["session_id"] == session.id
-        assert result["phase"] == "aligning"
+        assert result["phase"] == "absorbing"
         assert result["objective"]["text"] == "理解 attention"
         mock_system.create_learning_unit.assert_called_once_with(
             seed_text="理解 attention",
@@ -238,7 +238,7 @@ class TestAdvance:
         )
 
         mock_system.advance_learning_unit.side_effect = ValueError(
-            "Illegal phase transition: aligning -> consolidated"
+            "Illegal phase transition: absorbing -> consolidated"
         )
 
         with patch(

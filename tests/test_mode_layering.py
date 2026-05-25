@@ -48,7 +48,7 @@ def _attach_unit(system: LearningAgentSystem, unit: LearningUnit) -> None:
 
 def _make_unit(
     *,
-    phase: str = "aligning",
+    phase: str = "absorbing",
     teach_session: TeachSession | None = None,
 ) -> LearningUnit:
     unit = LearningUnit(
@@ -247,12 +247,11 @@ class TestTeachProtocol:
             session_id="sess-x",
             objective=UnitObjective(text="t"),
         )
-        # aligning → absorbing OK
-        assert unit.can_transition_to("absorbing")
-        unit.transition_to("absorbing")
+        # 新主链：默认 absorbing 起步（adaptive alignment §8.1，aligning 已移除）
         assert unit.phase == "absorbing"
 
         # absorbing → outputting OK
+        assert unit.can_transition_to("outputting")
         unit.transition_to("outputting")
         assert unit.phase == "outputting"
 
@@ -273,26 +272,13 @@ class TestTeachProtocol:
         with pytest.raises(ValueError):
             unit.transition_to("absorbing")
 
+    @pytest.mark.skip(
+        reason="B2 (adaptive alignment) 待实现：absorbing 阶段在 alignment_state=active "
+        "时由 Product 层临时覆写为 ASK，旧的 aligning phase 已移除。"
+    )
     @pytest.mark.asyncio
     async def test_prepare_session_turn_aligning_phase_yields_ask_mode(self):
-        system = _build_system_stub()
-        unit = _make_unit(phase="aligning")
-        _attach_unit(system, unit)
-        session = _make_session_with_unit(unit)
-
-        _, turn = await system._prepare_session_turn(
-            session, "我想学 Pydantic", AgentMode.CHAT
-        )
-
-        assert turn.effective_mode == AgentMode.ASK
-        assert turn.profile.turn_kind == TurnExecutionKind.SINGLE_PASS
-        assert turn.runtime_input == "我想学 Pydantic"
-        meta = turn.profile.assistant_message_metadata
-        assert meta["mode"] == "ask"
-        assert meta["learning_unit_id"] == unit.id
-        assert meta["learning_unit_phase"] == "aligning"
-        assert meta["alignment"] is True
-        assert meta["aligning_round"] == unit.aligning_round
+        pass
 
     @pytest.mark.asyncio
     async def test_prepare_session_turn_absorbing_phase_yields_chat_mode(self):
@@ -381,22 +367,19 @@ class TestTeachProtocol:
 
     @pytest.mark.asyncio
     async def test_full_lifecycle_happy_path(self):
-        """驱动一个学习卷走完 aligning → absorbing → outputting → consolidated。"""
+        """驱动一个学习卷走完 absorbing → outputting → consolidated。
+
+        B1 之后 aligning 已从主链移除（adaptive alignment §8.1）；
+        absorbing 阶段是否临时覆写为 ASK 由 alignment_state 决定，B2 实现。
+        """
         system = _build_system_stub()
-        unit = _make_unit(phase="aligning")
+        unit = _make_unit(phase="absorbing")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 1) aligning: ASK
-        _, turn1 = await system._prepare_session_turn(session, "我想学这个", AgentMode.CHAT)
-        assert turn1.effective_mode == AgentMode.ASK
-
-        # 用户确认目标后，进入 absorbing
-        unit.transition_to("absorbing")
-
-        # 2) absorbing: CHAT
-        _, turn2 = await system._prepare_session_turn(session, "讲讲", AgentMode.CHAT)
-        assert turn2.effective_mode == AgentMode.CHAT
+        # 1) absorbing: CHAT
+        _, turn1 = await system._prepare_session_turn(session, "讲讲", AgentMode.CHAT)
+        assert turn1.effective_mode == AgentMode.CHAT
 
         # 用户主动结束吸收，进入 outputting
         unit.transition_to("outputting")
@@ -407,9 +390,9 @@ class TestTeachProtocol:
             state="prompted",
         )
 
-        # 3) outputting: TEACH
-        _, turn3 = await system._prepare_session_turn(session, "答题", AgentMode.CHAT)
-        assert turn3.effective_mode == AgentMode.TEACH
+        # 2) outputting: TEACH
+        _, turn2 = await system._prepare_session_turn(session, "答题", AgentMode.CHAT)
+        assert turn2.effective_mode == AgentMode.TEACH
 
         # TEACH 通过后归档
         unit.transition_to("consolidated")

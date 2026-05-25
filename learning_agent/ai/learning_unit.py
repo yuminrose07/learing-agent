@@ -17,10 +17,25 @@ from pydantic import BaseModel, Field
 
 
 LearningUnitPhase = Literal[
-    "aligning",
     "absorbing",
     "outputting",
     "consolidated",
+]
+
+
+AlignmentState = Literal[
+    "idle",
+    "suggested",
+    "active",
+    "resolved",
+    "skipped",
+]
+
+
+ObjectiveStatus = Literal[
+    "working",
+    "refined",
+    "confirmed",
 ]
 
 
@@ -111,7 +126,6 @@ class TeachSession(BaseModel):
 
 
 _PHASE_ORDER: tuple[LearningUnitPhase, ...] = (
-    "aligning",
     "absorbing",
     "outputting",
     "consolidated",
@@ -119,8 +133,8 @@ _PHASE_ORDER: tuple[LearningUnitPhase, ...] = (
 
 
 _ALLOWED_TRANSITIONS: dict[LearningUnitPhase, frozenset[LearningUnitPhase]] = {
-    "aligning": frozenset({"absorbing"}),
-    # outputting 是必经的，但允许 TEACH 失败时回退到 absorbing（C5/§3.4）
+    # 主链：absorbing -> outputting -> consolidated；TEACH 失败时可回退到 absorbing。
+    # aligning 已从主链移除（adaptive alignment §8.1）；对齐降级为 alignment_state 旁路。
     "absorbing": frozenset({"outputting"}),
     "outputting": frozenset({"absorbing", "consolidated"}),
     "consolidated": frozenset(),  # 终态
@@ -133,10 +147,21 @@ class LearningUnit(BaseModel):
     id: str = Field(default_factory=lambda: f"lu-{uuid.uuid4().hex[:8]}")
     session_id: str
     objective: UnitObjective
-    phase: LearningUnitPhase = "aligning"
+    phase: LearningUnitPhase = "absorbing"
     concept_list: list[ConceptItem] = Field(default_factory=list)
     tangent_notes: list[TangentNote] = Field(default_factory=list)
-    aligning_round: int = 1
+
+    # ── adaptive alignment 旁路状态（§8.2）─────────────────────────
+    # 对齐不再是主阶段，而是横切能力；以下字段刻画当前轮是否需要触发 ASK
+    # 协议，以及目标的成熟度。Product 层在 _prepare_learning_unit_turn 中
+    # 读写，Runtime 不感知。
+    alignment_state: AlignmentState = "idle"
+    objective_status: ObjectiveStatus = "working"
+    assumption_note: str = ""
+    alignment_reason: str = ""
+    clarification_count: int = 0
+    last_alignment_at: Optional[datetime] = None
+
     teach_session: Optional[TeachSession] = None
     verification_status: Optional[VerificationStatus] = None
     created_at: datetime = Field(default_factory=_now)
@@ -154,9 +179,11 @@ class LearningUnit(BaseModel):
         self.updated_at = _now()
 
     def effective_mode(self) -> str:
-        """phase 到 AgentMode 字符串值的映射；consolidated 无效返回 None 由调用方拒绝。"""
-        if self.phase == "aligning":
-            return "ask"
+        """phase 到 AgentMode 字符串值的映射；consolidated 无效返回空串由调用方拒绝。
+
+        注意：是否在 absorbing 中临时覆写为 ASK，由 Product 层根据
+        ``alignment_state`` 决定（adaptive alignment §9.1），不在本方法范围。
+        """
         if self.phase == "absorbing":
             return "chat"
         if self.phase == "outputting":
@@ -170,6 +197,8 @@ class LearningUnit(BaseModel):
 __all__ = [
     "LearningUnit",
     "LearningUnitPhase",
+    "AlignmentState",
+    "ObjectiveStatus",
     "UnitObjective",
     "ConceptItem",
     "ConceptStatus",
