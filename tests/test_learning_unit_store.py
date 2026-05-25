@@ -266,6 +266,10 @@ class TestLegacyMigration:
         # 新字段默认值兜底
         assert reloaded.alignment_state == "idle"
         assert reloaded.objective_status == "working"
+        # §9.3 #2/#3 限流计数器也要有默认 0 —— 旧 JSON 完全没有这些键
+        assert reloaded.clarification_count == 0
+        assert reloaded.suggestion_count == 0
+        assert reloaded.nag_cooldown_remaining == 0
 
     def test_legacy_consolidated_phase_unchanged(self, file_store: FileStore):
         legacy = {
@@ -294,6 +298,24 @@ class TestLegacyMigration:
         assert reloaded is not None
         assert reloaded.phase == "consolidated"
         assert reloaded.is_terminal()
+
+
+class TestAlignmentCountersRoundTrip:
+    """B4 D1：§9.3 #2/#3 新增字段必须能落盘并 reload。"""
+
+    def test_suggestion_count_and_cooldown_round_trip(self, file_store: FileStore):
+        store = LearningUnitStore(file_store)
+        unit = store.create(session_id="sess-counters", objective_text="t")
+        unit.suggestion_count = 2
+        unit.nag_cooldown_remaining = 3
+        store.save(unit)
+
+        # 清缓存重新读盘
+        fresh = LearningUnitStore(file_store)
+        reloaded = fresh.get(unit.id)
+        assert reloaded is not None
+        assert reloaded.suggestion_count == 2
+        assert reloaded.nag_cooldown_remaining == 3
 
 
 class TestPerUnitLock:

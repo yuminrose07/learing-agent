@@ -160,6 +160,12 @@ class LearningUnit(BaseModel):
     assumption_note: str = ""
     alignment_reason: str = ""
     clarification_count: int = 0
+    # 已经向用户暴露过的"非阻塞建议"次数。§9.3 #2 限流：每个 unit
+    # 启动期最多 2 条 suggested 建议，超过即降级为 none，避免反复唠叨。
+    suggestion_count: int = 0
+    # "先按这个学"冷静期剩余轮数。§9.3 #3 限流：用户主动 accept_assumption
+    # 后，N 轮内不再弹建议条；每个 absorbing 轮进入时减 1，归零后恢复。
+    nag_cooldown_remaining: int = 0
     last_alignment_at: Optional[datetime] = None
 
     teach_session: Optional[TeachSession] = None

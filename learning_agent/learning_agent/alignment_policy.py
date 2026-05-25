@@ -24,6 +24,9 @@ AlignmentReason = Literal[
     "goal_drift",
     "conflicting_scope",
     "missing_learnable_target",
+    # 用户主动触发的对齐（POST /align）。policy 不会自己产出这个原因，
+    # 仅作为 Product 层调用 _apply_alignment_decision 时的合法值。
+    "user_request",
 ]
 
 
