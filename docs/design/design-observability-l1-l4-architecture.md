@@ -227,38 +227,43 @@ compaction.completed   { summary_event_id, reduction_ratio }
 第一批护栏遵循「先红再绿」原则——OBSERVABILITY 过滤器在 `session_projection.replay_events` 中显式 `continue`，
 就靠 `test_replay_filters_business_event_types_marked_observability` 锁住「过滤器真的在工作」。
 
-### 3.5 可复用断言模块（设计中，待实现）
+### 3.5 可复用断言模块（已落地）
 
-L2 层将沉淀一组**纯函数**断言 helper，给所有读 L1 events.jsonl 的测试共用。
-**只规定 API，不在本次落地实现**：
+L2 层沉淀了一组**纯函数**断言 helper，给所有读 L1 events.jsonl 的测试共用。
+
+实现位置：`tests/observability_asserts.py`，自测：`tests/test_observability_asserts.py`（24 个用例）。
 
 ```python
-# 期望路径：tests/assertions/session_events.py（暂未创建）
-
 def assert_event_present(
-    events: list[SessionEvent],
+    events: Sequence[SessionEvent],
     *,
     type: str,
     payload_contains: dict[str, Any] | None = None,
     visibility: str | None = None,
+    parent_event_id: str | None = None,  # "" 表示断言无 parent
 ) -> SessionEvent: ...
     """在 events 里找第一条满足条件的事件；找不到 → AssertionError 并附上候选清单。"""
 
-def assert_causal_chain_resolvable(events: list[SessionEvent]) -> None: ...
-    """对每条带 parent_event_id 的事件，校验 parent 在同 session 内可解析。"""
+def assert_causal_chain_resolvable(events: Sequence[SessionEvent]) -> None: ...
+    """parent 必须 (1) 存在 (2) 同 session_id (3) seq 严格小于 child。"""
 
-def assert_tool_exec_paired(events: list[SessionEvent]) -> None: ...
-    """每个 tool.exec_started 必须跟着一个 tool.exec_completed 或 tool.exec_failed（同 call_id）。"""
+def assert_tool_exec_paired(events: Sequence[SessionEvent]) -> None: ...
+    """tool.exec_started ↔ completed/failed（同 call_id）配对；
+    检出 unmatched / orphan / duplicate close / duplicate started 四类违例。"""
 
-def assert_visibility_isolation(events: list[SessionEvent], projected_messages: list[Any]) -> None: ...
-    """observability 事件不应出现在 replay 重建的 messages 里。"""
+def assert_visibility_isolation(
+    events: Sequence[SessionEvent], projected_messages: Iterable[Any]
+) -> None: ...
+    """observability 事件不应泄漏到 projection messages。
+    强校验 (event_id / metadata.event_id) + 弱校验 (content 子串扫描) 并行。"""
 ```
 
-设计要点：
-- 输入只接 `list[SessionEvent]`，不带 IO；测试自己负责加载
-- 失败消息要够 AI 友好——附上「最接近的几条候选事件」摘要，方便复制给模型诊断
-- 不强制返回值，但 `assert_event_present` 返回命中事件以便链式断言
-- 这些 helper 共享 `tests/render_session_timeline.py` 的 visibility / type 语义，**保证 CLI / Web / 测试三处对「事件长什么样」的理解一致**
+落地要点：
+- 输入只接 `Sequence[SessionEvent]`，不带 IO；测试自己负责加载
+- 失败消息附上「同 type 的最接近候选事件」单行摘要，方便复制给 AI 排查
+- `assert_event_present` 返回命中事件以便链式断言
+- 共享 `tests/render_session_timeline.py` 的 visibility / type 语义，**保证 CLI / Web / 测试三处对「事件长什么样」的理解一致**
+- 未在本次范围内：把现有 `tests/test_tool_exec_events.py` / `tests/test_llm_exec_events.py` 重构为调用新 helpers（后续整理）
 
 ### 3.6 棘轮字段（设计中，待实现）
 
@@ -454,7 +459,7 @@ L4 是「多次跑结果的聚合」，每次 CI / 每个分支都写一份独�
 | 层 | 现状 | 缺口 |
 |---|---|---|
 | **L1** | events.jsonl 已有，完整 payload，per-session；**`visibility=observability` + `parent_event_id` 已启用**；**第一批 trace 事件 `tool.exec_started/completed/failed` 已接入**；**旧 `.observability/` 并行流（events/errors/audit/flow/trace/snap）已全部下线**；**新 API `GET /sessions/{id}/events` 已上线（支持 `visibility` / `type` / `after_seq` / `limit` 过滤，5000 上限，返回 `next_after_seq` 作为轮询游标）** | 第二批 trace 事件（`llm.*`、`hook.*`、`compaction.*`）批量接入待办 |
-| **L2** | compaction hard assertions + ratchet ✓；e2e scenarios ✓；ScriptedProvider ✓；**`test_session_projection.py` 含 OBSERVABILITY 过滤护栏 ✓**；**`test_tool_exec_events.py` 含 tool.exec_* 因果链护栏 ✓** | §3.5 可复用断言模块（`assert_event_present` / `assert_causal_chain_resolvable` / `assert_tool_exec_paired` / `assert_visibility_isolation`）尚未沉淀；§3.6 ratchet 字段（drift_score、tool_exec_failed_rate、p99_latency_ms 等）尚未实现 |
+| **L2** | compaction hard assertions + ratchet ✓；e2e scenarios ✓；ScriptedProvider ✓；**`test_session_projection.py` 含 OBSERVABILITY 过滤护栏 ✓**；**`test_tool_exec_events.py` 含 tool.exec_* 因果链护栏 ✓**；**`tests/observability_asserts.py` 可复用断言模块已沉淀 ✓（`assert_event_present` / `assert_causal_chain_resolvable` / `assert_tool_exec_paired` / `assert_visibility_isolation`，24 个自测）** | §3.6 ratchet 字段（drift_score、tool_exec_failed_rate、p99_latency_ms 等）尚未实现 |
 | **L3** | compaction dataset HTML 报告 ✓；**per-session timeline 离线渲染器 `tests/render_session_timeline.py` 已上线 ✓**；**Web UI `/ui/observability.html` 重写完成（vanilla JS、无构建、无 SSE）✓**；**CLI 与 Web 共用同一份 events.jsonl 与 `filter_events` 纯函数 ✓** | 多次跑对比视图、SSE 实时尾随、跨 session 聚合（v2 再说） |
 | **L4** | 几乎为零 | §5.4 候选视图、§5.5 文件布局 `.test_artifacts/runs/<utc_ts>/` 都还是设计；至少积累一周 daily run 数据再动手 |
 
@@ -619,7 +624,7 @@ seq=8   message_end              (agent)         ← LLM 第二轮：用工具�
 ### 长期（L4 落地 + 旧系统清理）—— **未启动**
 
 9. **第二批 trace 事件**：`llm.*`（call_started/completed/failed）、`hook.*`（pre_run/post_run）、`compaction.*`（compact_started/completed）批量接入
-10. **L2 可复用断言模块**：按 §3.5 spec 沉淀 `assert_event_present` / `assert_causal_chain_resolvable` / `assert_tool_exec_paired` / `assert_visibility_isolation` 为 `tests/observability_asserts.py` 模块
+10. ✅ **L2 可复用断言模块**：按 §3.5 spec 已沉淀 `tests/observability_asserts.py`（4 个 helper + 24 个自测）。后续可逐步把现有 `test_tool_exec_events.py` / `test_llm_exec_events.py` 重构为调用这些 helper
 11. **L4 看板**：按 §5.4 / §5.5 在 `.test_artifacts/runs/<utc_ts>/dashboard.html` 落地 drift_score 趋势、tool 失败率、p99 延迟、慢调用 Top N
 12. **删除 `.observability/`**：仓库内残余目录与代码已经在 L1 落地阶段下线，本步骤事实上已合并入步骤 5（可在长期门槛达成后从架构文档中正式移除"`.observability/` 并行流"小节）
 
