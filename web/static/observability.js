@@ -28,6 +28,10 @@ const state = {
     eventIdToSeq: new Map(),
     visibilityFilter: new Set(['agent', 'system', 'observability', 'ui']),
     typeFilter: '',
+    activeTab: 'events',
+    learningUnitWindowDays: 7,
+    learningUnitMetrics: null,
+    learningUnitMetricsLoaded: false,
 };
 
 const els = {
@@ -38,6 +42,13 @@ const els = {
     typeInput: document.getElementById('type-filter'),
     btnRefresh: document.getElementById('btn-refresh'),
     visChips: document.querySelectorAll('.vis-chip'),
+    tabs: document.querySelectorAll('.tab'),
+    tabPanels: document.querySelectorAll('.tab-panel'),
+    luMetricsGrid: document.getElementById('lu-metrics-grid'),
+    luWindowSelect: document.getElementById('lu-window-select'),
+    luBtnRefresh: document.getElementById('lu-btn-refresh'),
+    luStatsText: document.getElementById('lu-stats-text'),
+    luDiagnostics: document.getElementById('lu-diagnostics'),
 };
 
 // ─── API ───
@@ -302,6 +313,127 @@ els.btnRefresh.addEventListener('click', async () => {
         await selectSession(state.currentSessionId);
     }
 });
+
+// ─── Tabs ───
+
+els.tabs.forEach((btn) => {
+    btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-tab-target');
+        switchTab(target);
+    });
+});
+
+function switchTab(target) {
+    if (!target || target === state.activeTab) return;
+    state.activeTab = target;
+    els.tabs.forEach((btn) => {
+        const isActive = btn.getAttribute('data-tab-target') === target;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    els.tabPanels.forEach((panel) => {
+        const isActive = panel.getAttribute('data-tab') === target;
+        panel.classList.toggle('active', isActive);
+        if (isActive) panel.removeAttribute('hidden');
+        else panel.setAttribute('hidden', '');
+    });
+    if (target === 'learning-units' && !state.learningUnitMetricsLoaded) {
+        loadLearningUnitMetrics();
+    }
+}
+
+// ─── Learning unit metrics ───
+
+if (els.luWindowSelect) {
+    els.luWindowSelect.addEventListener('change', () => {
+        const v = els.luWindowSelect.value;
+        state.learningUnitWindowDays = v === 'all' ? null : parseInt(v, 10);
+        loadLearningUnitMetrics();
+    });
+}
+if (els.luBtnRefresh) {
+    els.luBtnRefresh.addEventListener('click', () => loadLearningUnitMetrics());
+}
+
+async function loadLearningUnitMetrics() {
+    if (!els.luMetricsGrid) return;
+    const wd = state.learningUnitWindowDays;
+    // Backend treats negative as "no window"; pass -1 for the "全部" option.
+    const wdParam = wd == null ? -1 : wd;
+    els.luStatsText.textContent = '加载中…';
+    try {
+        const data = await apiGet(`/learning-units/metrics?window_days=${encodeURIComponent(wdParam)}`);
+        state.learningUnitMetrics = data;
+        state.learningUnitMetricsLoaded = true;
+        renderLearningUnitMetrics();
+    } catch (err) {
+        state.learningUnitMetricsLoaded = false;
+        els.luStatsText.textContent = '';
+        if (els.luDiagnostics) {
+            els.luDiagnostics.innerHTML = `<span class="empty" style="color:#b91c1c">加载指标失败: ${escapeHtml(err.message)}</span>`;
+        }
+    }
+}
+
+function renderLearningUnitMetrics() {
+    const m = state.learningUnitMetrics;
+    if (!m) return;
+
+    // TTFV
+    const ttfv = m.ttfv || {};
+    setBind('ttfv.p50', formatSeconds(ttfv.p50_seconds));
+    setBind('ttfv.p90', formatSeconds(ttfv.p90_seconds));
+    setBind('ttfv.sample', `样本 ${ttfv.sample_size ?? 0}`);
+
+    // Consolidation
+    const cons = m.consolidation_rate || {};
+    setBind('consolidation.ratio', formatRatio(cons.ratio));
+    setBind('consolidation.fraction', `${cons.numerator ?? 0} / ${cons.denominator ?? 0}`);
+
+    // Teach entry
+    const teach = m.teach_entry_rate || {};
+    setBind('teach.ratio', formatRatio(teach.ratio));
+    setBind('teach.fraction', `${teach.numerator ?? 0} / ${teach.denominator ?? 0}`);
+
+    // Reuse intent
+    const reuse = m.reuse_intent_rate || {};
+    setBind('reuse.ratio', formatRatio(reuse.ratio));
+    setBind('reuse.fraction', `${reuse.numerator ?? 0} / ${reuse.denominator ?? 0}`);
+
+    // Top-line stats
+    const generated = m.generated_at ? fullTs(m.generated_at) : '-';
+    const windowLabel = m.window_days == null ? '全部' : `${m.window_days} 天`;
+    els.luStatsText.textContent = `窗口 ${windowLabel} · 生成于 ${generated}`;
+
+    // Diagnostics
+    if (els.luDiagnostics) {
+        const diag = m.diagnostics || {};
+        const winStart = m.window_start ? fullTs(m.window_start) : '不裁窗口';
+        els.luDiagnostics.innerHTML = `
+            <code>窗口起点 ${escapeHtml(winStart)}</code>
+            <code>总事件 ${diag.total_events ?? 0}</code>
+            <code>学习卷事件 ${diag.learning_unit_events ?? 0}</code>
+        `;
+    }
+}
+
+function setBind(key, value) {
+    const node = document.querySelector(`[data-bind="${key}"]`);
+    if (node) node.textContent = value;
+}
+
+function formatSeconds(seconds) {
+    if (seconds == null) return '—';
+    if (seconds < 1) return `${(seconds * 1000).toFixed(0)} ms`;
+    if (seconds < 60) return `${seconds.toFixed(1)} s`;
+    if (seconds < 3600) return `${(seconds / 60).toFixed(1)} min`;
+    return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+function formatRatio(ratio) {
+    if (ratio == null) return '—';
+    return `${(ratio * 100).toFixed(1)}%`;
+}
 
 // ─── Init ───
 

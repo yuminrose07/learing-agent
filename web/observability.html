@@ -20,25 +20,98 @@
         </aside>
 
         <main class="main">
-            <div class="toolbar">
-                <span class="session-label" id="current-session">未选择会话</span>
-                <span class="toolbar-stats" id="stats-text"></span>
-                <div class="toolbar-actions">
-                    <button id="btn-refresh" type="button">↻ 刷新</button>
+            <nav class="tabs" role="tablist">
+                <button class="tab active" type="button" data-tab-target="events" role="tab" aria-selected="true">会话时间线</button>
+                <button class="tab" type="button" data-tab-target="learning-units" role="tab" aria-selected="false">学习卷指标</button>
+            </nav>
+
+            <section class="tab-panel active" data-tab="events" role="tabpanel">
+                <div class="toolbar">
+                    <span class="session-label" id="current-session">未选择会话</span>
+                    <span class="toolbar-stats" id="stats-text"></span>
+                    <div class="toolbar-actions">
+                        <button id="btn-refresh" type="button">↻ 刷新</button>
+                    </div>
                 </div>
-            </div>
-            <div class="filter-row">
-                <span>visibility</span>
-                <span class="vis-chip" data-vis="agent">agent</span>
-                <span class="vis-chip" data-vis="system">system</span>
-                <span class="vis-chip" data-vis="observability">observability</span>
-                <span class="vis-chip" data-vis="ui">ui</span>
-                <span style="margin-left:12px">type 子串</span>
-                <input id="type-filter" class="type-input" type="text" placeholder="例：tool.exec 或 message" />
-            </div>
-            <div id="timeline" class="timeline">
-                <div class="empty">从左侧选择一个会话以查看事件时间线</div>
-            </div>
+                <div class="filter-row">
+                    <span>visibility</span>
+                    <span class="vis-chip" data-vis="agent">agent</span>
+                    <span class="vis-chip" data-vis="system">system</span>
+                    <span class="vis-chip" data-vis="observability">observability</span>
+                    <span class="vis-chip" data-vis="ui">ui</span>
+                    <span style="margin-left:12px">type 子串</span>
+                    <input id="type-filter" class="type-input" type="text" placeholder="例：tool.exec 或 learning_unit" />
+                </div>
+                <div id="timeline" class="timeline">
+                    <div class="empty">从左侧选择一个会话以查看事件时间线</div>
+                </div>
+            </section>
+
+            <section class="tab-panel" data-tab="learning-units" role="tabpanel" hidden>
+                <div class="toolbar">
+                    <span class="session-label">学习卷 · P0 指标</span>
+                    <span class="toolbar-stats" id="lu-stats-text"></span>
+                    <div class="toolbar-actions">
+                        <label class="window-label">窗口
+                            <select id="lu-window-select">
+                                <option value="1">1 天</option>
+                                <option value="7" selected>7 天</option>
+                                <option value="30">30 天</option>
+                                <option value="all">全部</option>
+                            </select>
+                        </label>
+                        <button id="lu-btn-refresh" type="button">↻ 刷新</button>
+                    </div>
+                </div>
+                <div class="metrics-grid" id="lu-metrics-grid">
+                    <div class="metric-card" data-metric="ttfv">
+                        <div class="metric-card-header">
+                            <h3>首个学习价值时间 · TTFV</h3>
+                            <span class="metric-card-meta">秒</span>
+                        </div>
+                        <div class="metric-card-body">
+                            <div class="metric-dual">
+                                <div class="metric-stat"><span class="metric-label">p50</span><span class="metric-value" data-bind="ttfv.p50">—</span></div>
+                                <div class="metric-stat"><span class="metric-label">p90</span><span class="metric-value" data-bind="ttfv.p90">—</span></div>
+                            </div>
+                            <div class="metric-footnote" data-bind="ttfv.sample">样本 0</div>
+                        </div>
+                    </div>
+                    <div class="metric-card" data-metric="consolidation">
+                        <div class="metric-card-header">
+                            <h3>学习卷完成率</h3>
+                            <span class="metric-card-meta">consolidated / created</span>
+                        </div>
+                        <div class="metric-card-body">
+                            <div class="metric-value" data-bind="consolidation.ratio">—</div>
+                            <div class="metric-footnote" data-bind="consolidation.fraction">0 / 0</div>
+                        </div>
+                    </div>
+                    <div class="metric-card" data-metric="teach-entry">
+                        <div class="metric-card-header">
+                            <h3>验收进入率</h3>
+                            <span class="metric-card-meta">teach_entered / created</span>
+                        </div>
+                        <div class="metric-card-body">
+                            <div class="metric-value" data-bind="teach.ratio">—</div>
+                            <div class="metric-footnote" data-bind="teach.fraction">0 / 0</div>
+                        </div>
+                    </div>
+                    <div class="metric-card" data-metric="reuse-intent">
+                        <div class="metric-card-header">
+                            <h3>复用意愿</h3>
+                            <span class="metric-card-meta">yes / 全部反馈</span>
+                        </div>
+                        <div class="metric-card-body">
+                            <div class="metric-value" data-bind="reuse.ratio">—</div>
+                            <div class="metric-footnote" data-bind="reuse.fraction">0 / 0</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="metrics-diagnostics" id="lu-diagnostics">
+                    <span class="empty">尚未加载</span>
+                </div>
+            </section>
         </main>
     </div>
 

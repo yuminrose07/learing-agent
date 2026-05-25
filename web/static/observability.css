@@ -456,4 +456,154 @@ main.main {
     .toolbar,
     .filter-row,
     .timeline { padding-left: 18px; padding-right: 18px; }
+    .metrics-grid { padding-left: 18px; padding-right: 18px; }
 }
+
+
+/* ============================================================
+ * Tabs · Learning unit metrics panel
+ * ============================================================ */
+.tabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--hairline);
+    background: transparent;
+}
+.tabs .tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 12px 16px 10px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+    cursor: pointer;
+    transition: color var(--t-quick), border-color var(--t-quick);
+}
+.tabs .tab:hover { color: var(--ink); }
+.tabs .tab.active {
+    color: var(--vermillion-deep);
+    border-bottom-color: var(--vermillion);
+}
+
+.tab-panel { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.tab-panel.active { display: flex; }
+.tab-panel[hidden] { display: none; }
+
+.window-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.04em;
+}
+.window-label select {
+    background: var(--paper-1);
+    border: 1px solid var(--border-strong);
+    color: var(--ink);
+    padding: 5px 8px;
+    border-radius: var(--r-xs);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    cursor: pointer;
+}
+.window-label select:focus {
+    outline: none;
+    border-color: var(--vermillion);
+    box-shadow: 0 0 0 3px var(--vermillion-soft);
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    padding: 22px 28px 6px;
+}
+.metric-card {
+    background: var(--paper-1);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--vermillion);
+    border-radius: 0 var(--r-xs) var(--r-xs) 0;
+    padding: 14px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 130px;
+}
+.metric-card-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+.metric-card-header h3 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: 0.04em;
+}
+.metric-card-meta {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-4);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+}
+.metric-card-body { display: flex; flex-direction: column; gap: 6px; }
+.metric-card .metric-value {
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: 0.02em;
+    line-height: 1.1;
+}
+.metric-card .metric-footnote {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.02em;
+}
+.metric-card .metric-dual {
+    display: flex;
+    gap: 18px;
+    align-items: flex-end;
+}
+.metric-card .metric-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.metric-card .metric-stat .metric-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-4);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+.metric-card .metric-stat .metric-value { font-size: 20px; }
+
+.metrics-diagnostics {
+    padding: 12px 28px 28px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+}
+.metrics-diagnostics code {
+    background: var(--paper-2);
+    border: 1px solid var(--hairline);
+    padding: 2px 8px;
+    border-radius: 2px;
+    color: var(--vermillion-deep);
+}
+.metrics-diagnostics .empty { color: var(--ink-4); }
