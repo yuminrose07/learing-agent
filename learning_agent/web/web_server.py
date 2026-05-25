@@ -21,17 +21,23 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
+from learning_agent.learning_agent.learning_unit_store import ActiveUnitExistsError
 from learning_agent.learning_agent.main import LearningAgentSystem
+from learning_agent.learning_agent.mode_service import (
+    NEUTRAL_PERSONA,
+    PHILOSOPHER_PERSONAS,
+    resolve_persona,
+)
 from learning_agent.learning_agent.session_event_store import filter_events
 
 logger = logging.getLogger(__name__)
@@ -68,8 +74,31 @@ class UpdateModeRequest(BaseModel):
     mode: AgentMode
 
 
+class UpdatePersonaRequest(BaseModel):
+    # ``None`` / empty / "neutral" all mean "no overlay" (default).
+    persona_key: Optional[str] = None
+
+
 class SaveStateRequest(BaseModel):
     pass
+
+
+class CreateLearningUnitRequest(BaseModel):
+    seed_text: str
+    source: Literal[
+        "ai_distilled",
+        "user_written",
+        "material_imported",
+        "promoted_from_chat",
+    ] = "ai_distilled"
+
+
+class AdvanceLearningUnitRequest(BaseModel):
+    target_phase: Literal["absorbing", "outputting", "consolidated"]
+
+
+class PromoteSessionRequest(BaseModel):
+    seed_text: str
 
 
 # ───────────────────────────────
@@ -281,6 +310,72 @@ async def get_session_mode(session_id: str) -> dict[str, Any]:
 
 
 # ───────────────────────────────
+# 学伴风格(persona / 思路)
+# ───────────────────────────────
+
+def _persona_payload(persona) -> dict[str, Any]:
+    return {
+        "key": persona.key,
+        "display_name": persona.display_name,
+        "role_name": persona.role_name,
+        "home_mode": persona.mode.value,
+    }
+
+
+@app.get("/personas")
+async def list_personas() -> dict[str, Any]:
+    """Return the neutral default plus the curated philosopher overlays."""
+    return {
+        "default": _persona_payload(NEUTRAL_PERSONA),
+        "philosophers": [_persona_payload(p) for p in PHILOSOPHER_PERSONAS],
+    }
+
+
+@app.get("/sessions/{session_id}/persona")
+async def get_session_persona(session_id: str) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    stored = session.mode_metadata.get("chat_persona_key")
+    persona = resolve_persona(session.mode, persona_key=stored if isinstance(stored, str) else None)
+    return {
+        "session_id": session.id,
+        "persona_key": persona.key,
+        "display_name": persona.display_name,
+        "role_name": persona.role_name,
+    }
+
+
+@app.put("/sessions/{session_id}/persona")
+async def update_session_persona(session_id: str, req: UpdatePersonaRequest) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    requested = (req.persona_key or "").strip() or None
+    if requested is None or requested == NEUTRAL_PERSONA.key:
+        session.mode_metadata.pop("chat_persona_key", None)
+        persona = NEUTRAL_PERSONA
+    else:
+        persona = resolve_persona(session.mode, persona_key=requested)
+        if persona.key == NEUTRAL_PERSONA.key and requested != NEUTRAL_PERSONA.key:
+            raise HTTPException(status_code=400, detail=f"Unknown persona: {requested}")
+        session.mode_metadata["chat_persona_key"] = persona.key
+
+    if hasattr(system, "session_manager"):
+        system.session_manager.persist_mode_metadata(session.id)
+
+    return {
+        "session_id": session.id,
+        "persona_key": persona.key,
+        "display_name": persona.display_name,
+        "role_name": persona.role_name,
+    }
+
+
+# ───────────────────────────────
 # 会话更新与删除
 # ───────────────────────────────
 
@@ -303,6 +398,99 @@ async def delete_session(session_id: str) -> dict[str, str]:
         raise HTTPException(status_code=404, detail="Session not found")
 
     return {"status": "deleted", "session_id": session_id}
+
+
+# ───────────────────────────────
+# 学习卷（LearningUnit）
+# ───────────────────────────────
+
+def _learning_unit_payload(unit, *, session_id: Optional[str] = None) -> dict[str, Any]:
+    data = unit.model_dump(mode="json")
+    if session_id is not None:
+        data["session_id"] = session_id
+    return data
+
+
+@app.post("/learning-units")
+async def create_learning_unit(req: CreateLearningUnitRequest) -> dict[str, Any]:
+    system = _get_system()
+    try:
+        session, unit = system.create_learning_unit(
+            seed_text=req.seed_text,
+            source=req.source,
+        )
+    except ActiveUnitExistsError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "An active learning unit already exists; close it first.",
+                "active_unit_id": exc.active_unit_id,
+            },
+        )
+    return _learning_unit_payload(unit, session_id=session.id)
+
+
+@app.get("/learning-units")
+async def list_learning_units() -> list[dict[str, Any]]:
+    system = _get_system()
+    return [_learning_unit_payload(unit) for unit in system.list_learning_units()]
+
+
+@app.get("/learning-units/{unit_id}")
+async def get_learning_unit(unit_id: str) -> dict[str, Any]:
+    system = _get_system()
+    unit = system.get_learning_unit(unit_id)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/confirm-objective")
+async def confirm_learning_unit_objective(unit_id: str) -> dict[str, Any]:
+    system = _get_system()
+    try:
+        unit = system.confirm_learning_unit_objective(unit_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/advance")
+async def advance_learning_unit(
+    unit_id: str, req: AdvanceLearningUnitRequest
+) -> dict[str, Any]:
+    system = _get_system()
+    try:
+        unit = system.advance_learning_unit(unit_id, req.target_phase)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/chat-sessions/{session_id}/promote-to-learning-unit")
+async def promote_chat_session_to_learning_unit(
+    session_id: str, req: PromoteSessionRequest
+) -> dict[str, Any]:
+    system = _get_system()
+    try:
+        session, unit = system.promote_chat_session_to_learning_unit(
+            session_id, seed_text=req.seed_text
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    except ActiveUnitExistsError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "An active learning unit already exists; close it first.",
+                "active_unit_id": exc.active_unit_id,
+            },
+        )
+    return _learning_unit_payload(unit, session_id=session.id)
 
 
 # ───────────────────────────────

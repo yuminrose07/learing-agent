@@ -13,8 +13,6 @@ let currentMode = 'chat';
 let currentView = 'home';
 let currentPersonaKey = null;
 let currentPersonaName = '';
-let avatarRefreshSeed = String(Date.now());
-let avatarRefreshTimer = null;
 
 // ─── DOM 元素 ───
 const els = {
@@ -36,10 +34,10 @@ const els = {
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
     topbarSubtitle: document.getElementById('topbar-subtitle'),
-    topbarPersona: document.getElementById('topbar-persona'),
-    topbarPersonaAvatar: document.getElementById('topbar-persona-avatar'),
-    topbarPersonaName: document.getElementById('topbar-persona-name'),
-    topbarPersonaMode: document.getElementById('topbar-persona-mode'),
+    topbarThinking: document.getElementById('topbar-thinking'),
+    thinkingTrigger: document.getElementById('thinking-trigger'),
+    thinkingTriggerValue: document.getElementById('thinking-trigger-value'),
+    thinkingMenu: document.getElementById('thinking-menu'),
     apiStatus: document.getElementById('api-status'),
     typingIndicator: document.getElementById('typing-indicator'),
     memoryModal: document.getElementById('memory-modal'),
@@ -50,50 +48,21 @@ const els = {
     personaGalleryGrid: document.getElementById('persona-gallery-grid'),
 };
 
-const PERSONA_PROMPTS = {
-    empress_shen_qingyi: 'Chinese imperial court chibi portrait, refined palace style, elegant hanfu, premium game UI character icon style, empress, daughter of the prime minister, childhood sweetheart of the emperor, graceful and intelligent, calm eyes, dark teal and ivory hanfu, phoenix hairpin, warm and dignified, dark-background friendly, waist-up portrait, centered composition, not childish, no text, no watermark',
-    noble_consort_gu_mingyan: 'Chinese imperial court chibi portrait, refined palace style, elegant hanfu, premium game UI character icon style, noble consort, daughter of a grand duke, aristocratic and composed, highly perceptive, subtle knowing smile, crimson and gold hanfu, peony hair ornaments, graceful and prestigious aura, dark-background friendly, waist-up portrait, centered composition, not childish, no text, no watermark',
-    virtuous_consort_pei_ruotang: 'Chinese imperial court chibi portrait, refined palace style, elegant hanfu, premium game UI character icon style, virtuous consort, daughter of the minister of revenue, gentle and studious, soft scholarly charm, warm patient expression, lotus pink and light apricot hanfu, delicate bookish accessories, elegant and tender atmosphere, dark-background friendly, waist-up portrait, centered composition, not childish, no text, no watermark',
-    shu_consort_lu_zhiwei: 'Chinese imperial court chibi portrait, refined palace style, elegant hanfu, premium game UI character icon style, shu consort, daughter of a general, straightforward and pure-hearted, sincere and kind, bright clear eyes, slightly shy and inexperienced in romance, jade green and silver hanfu, simple refined hairpiece, clean and refreshing aura, dark-background friendly, waist-up portrait, centered composition, adult, not childish, no text, no watermark',
-    zhaoyi_su_lingxi: 'Chinese imperial court chibi portrait, refined palace style, elegant hanfu, premium game UI character icon style, zhaoyi, strikingly beautiful and alluring, mature flirtatious charm, playful smirk, elegant sensuality, rose red and deep purple hanfu with gold details, elaborate floral hair ornaments, magnetic presence, adult feminine charm, dark-background friendly, waist-up portrait, centered composition, not vulgar, no text, no watermark',
-};
-
+// Neutral default + curated philosopher overlays.
+// `mark` is the single ideograph used as an inline avatar — no external image fetch.
 const PERSONA_META = {
-    empress_shen_qingyi: {
-        name: '皇后·沈清仪',
-        short: '丞相之女，青梅竹马，聪明端庄，最善伴君深学。',
-        mode: 'study',
-    },
-    noble_consort_gu_mingyan: {
-        name: '贵妃·顾明嫣',
-        short: '镇国公之女，矜贵机敏，最会替皇上收口圣意。',
-        mode: 'ask',
-    },
-    virtuous_consort_pei_ruotang: {
-        name: '贤妃·裴若棠',
-        short: '户部尚书之女，温柔好学，身上藏着一点旧事。',
-        mode: 'chat',
-    },
-    shu_consort_lu_zhiwei: {
-        name: '淑妃·陆知微',
-        short: '将军之女，率直清爽，心思干净得像一阵风。',
-        mode: 'chat',
-    },
-    zhaoyi_su_lingxi: {
-        name: '昭仪·苏灵犀',
-        short: '明艳妩媚，最会拿捏气氛，也最懂如何撩皇上。',
-        mode: 'chat',
-    },
+    neutral:    { name: '默认',     mark: '學', short: '不附加思想风格，平实地回应。' },
+    socrates:   { name: '苏格拉底', mark: '蘇', short: '诘问者：用递进的提问逼近真意。' },
+    feynman:    { name: '费曼',     mark: '費', short: '拆解者：把复杂概念翻译成可触摸的类比。' },
+    montaigne:  { name: '蒙田',     mark: '蒙', short: '漫谈者：散笔随谈，多侧面、不急于收束。' },
+    zhu_xi:     { name: '朱熹',     mark: '朱', short: '格物者：循序渐进，由表及里逐层推演。' },
+    descartes:  { name: '笛卡尔',   mark: '笛', short: '存疑者：拆出可疑前提，再清楚明白地重建。' },
 };
 
-const FIXED_MODE_PERSONAS = {
-    ask: 'noble_consort_gu_mingyan',
-    study: 'empress_shen_qingyi',
-};
+const PHILOSOPHER_ORDER = ['socrates', 'feynman', 'montaigne', 'zhu_xi', 'descartes'];
 
-const EMPEROR_AVATAR_PROMPT = 'Chinese imperial court chibi portrait, refined palace style, elegant dragon robe, premium game UI character icon style, young emperor, noble and composed, confident gentle gaze, black hair with imperial crown, dark gold and deep black robe, subtle dragon embroidery, dignified and handsome, dark-background friendly, waist-up portrait, centered composition, not childish, no text, no watermark';
-const AVATAR_REFRESH_INTERVAL_MS = 4000;
-const AVATAR_REFRESH_MAX_ROUNDS = 5;
+// Populated from GET /personas at init. Falls back to PERSONA_META above.
+let personaCatalog = null;
 
 // ─── 聊天气泡渲染器（弱化文档感，保留必要 Markdown） ───
 
@@ -209,7 +178,8 @@ const GROUP_NAMES = {
 };
 
 function getPersonaMeta(personaKey) {
-    return PERSONA_META[personaKey] || null;
+    if (!personaKey) return PERSONA_META.neutral;
+    return PERSONA_META[personaKey] || PERSONA_META.neutral;
 }
 
 function updateViewTheme(view = currentView) {
@@ -221,27 +191,19 @@ function updateViewTheme(view = currentView) {
     }
 }
 
-function buildPersonaAvatarUrl(personaKey) {
-    const prompt = PERSONA_PROMPTS[personaKey];
-    if (!prompt) return '';
-    return `https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=${encodeURIComponent(prompt)}&image_size=square_hd&avatar_key=${encodeURIComponent(personaKey)}&refresh=${encodeURIComponent(avatarRefreshSeed)}`;
+function getPersonaMark(personaKey) {
+    return getPersonaMeta(personaKey).mark || '學';
 }
 
-function getUserAvatar() {
-    return `https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=${encodeURIComponent(EMPEROR_AVATAR_PROMPT)}&image_size=square_hd&avatar_key=emperor&refresh=${encodeURIComponent(avatarRefreshSeed)}`;
+function getPersonaDisplayName(personaKey) {
+    return getPersonaMeta(personaKey).name || '默认';
 }
 
-function getPersonaAvatar(personaKey) {
-    return buildPersonaAvatarUrl(personaKey);
-}
-
-function resolvePersonaKeyForMode(mode, session = null) {
-    if (mode === 'chat') {
-        return session
-            ? (session.mode_metadata?.chat_persona_key || null)
-            : (currentPersonaKey || null);
-    }
-    return FIXED_MODE_PERSONAS[mode] || null;
+function resolvePersonaKeyForMode(_mode, session = null) {
+    // Personas are universal across modes — pick whatever the session has stored,
+    // falling back to the in-memory selection, then NEUTRAL.
+    const stored = session ? session.mode_metadata?.chat_persona_key : null;
+    return stored || currentPersonaKey || 'neutral';
 }
 
 function getModeLabel(mode) {
@@ -353,44 +315,21 @@ function upsertAssistantUsage(content, rawUsage) {
 
 function getHomeSubtitle(mode) {
     if (mode === 'ask') {
-        return '贵妃已经候着了，皇上可直接下旨，让她先替你对齐目标。';
+        return '问道模式：先与你对齐目标，再开始作答。';
     }
     if (mode === 'study') {
-        return '皇后伴读尚在筹备，皇上可先用 Chat 或 Ask。';
+        return '研习模式：由资深学伴主持，深度展开（即将上线）。';
     }
-    return '今夜尚未翻牌，皇上可直接下旨。';
+    return '直接输入即可开新一卷。';
 }
 
 function refreshAvatarImages() {
-    document.querySelectorAll('img[data-persona-key]').forEach(img => {
-        const personaKey = img.dataset.personaKey;
-        if (!personaKey) return;
-        img.src = getPersonaAvatar(personaKey);
-    });
-    document.querySelectorAll('img[data-avatar-kind="emperor"]').forEach(img => {
-        img.src = getUserAvatar();
-    });
+    // legacy hook kept for safety after the avatar-image system was removed;
+    // persona marks are now plain text and need no refresh.
 }
 
 function scheduleAvatarRefresh() {
-    if (avatarRefreshTimer) {
-        clearTimeout(avatarRefreshTimer);
-        avatarRefreshTimer = null;
-    }
-
-    let round = 0;
-    const tick = () => {
-        if (round >= AVATAR_REFRESH_MAX_ROUNDS) {
-            avatarRefreshTimer = null;
-            return;
-        }
-        round += 1;
-        avatarRefreshSeed = `${Date.now()}-${round}`;
-        refreshAvatarImages();
-        avatarRefreshTimer = setTimeout(tick, AVATAR_REFRESH_INTERVAL_MS);
-    };
-
-    avatarRefreshTimer = setTimeout(tick, AVATAR_REFRESH_INTERVAL_MS);
+    // no-op: external avatar generation has been retired.
 }
 
 // ─── API ───
@@ -514,22 +453,18 @@ function showWelcome() {
     updateViewTheme('home');
     els.welcomeScreen.classList.remove('hidden');
     els.messages.innerHTML = '';
-    els.topbarTitle.textContent = 'Learning-Agent';
+    els.topbarTitle.textContent = '學齋';
     els.topbarSubtitle.textContent = getHomeSubtitle(currentMode);
     currentSessionId = null;
     currentSessionTitle = null;
     currentPersonaKey = null;
     currentPersonaName = '';
-    els.topbarPersona.classList.add('hidden');
+    syncThinkingPickerLabel('neutral');
     els.messageInput.disabled = false;
     els.btnSend.disabled = false;
     updateAskPlaceholderFromSession(null);
     updateModeToolbar();
     updateHomeModeCards();
-    const personaKey = resolvePersonaKeyForMode(currentMode);
-    if (personaKey && currentMode !== 'chat') {
-        updateTopbarPersona(personaKey, currentMode);
-    }
     els.messageInput.focus();
 }
 
@@ -539,39 +474,20 @@ function hideWelcome() {
     els.welcomeScreen.classList.add('hidden');
 }
 
-function updateTopbarPersona(personaKey, mode = currentMode) {
-    const meta = getPersonaMeta(personaKey);
-    if (!meta) {
-        currentPersonaKey = null;
-        currentPersonaName = '';
-        els.topbarPersona.classList.add('hidden');
-        els.topbarSubtitle.textContent = currentSessionTitle || getHomeSubtitle(currentMode);
-        return;
-    }
-
-    currentPersonaKey = personaKey;
-    currentPersonaName = meta.name;
-    els.topbarPersonaAvatar.dataset.personaKey = personaKey;
-    els.topbarPersonaAvatar.src = getPersonaAvatar(personaKey);
-    els.topbarPersonaAvatar.alt = `${meta.name}头像`;
-    els.topbarPersonaName.textContent = meta.name;
-    els.topbarPersonaMode.textContent = getModeLabel(mode);
-    els.topbarPersona.classList.remove('hidden');
-    els.topbarSubtitle.textContent =
-        mode === 'chat'
-            ? `今夜由 ${meta.name} 侍奉皇上。`
-            : `${meta.name} 正在为皇上处理这一轮。`;
+function updateTopbarPersona(personaKey, _mode = currentMode) {
+    // 思路 picker is the canonical surface — we keep currentPersonaKey in sync
+    // and refresh the picker label, but do not paint an avatar/subtitle blurb.
+    const key = personaKey || 'neutral';
+    currentPersonaKey = key === 'neutral' ? null : key;
+    currentPersonaName = getPersonaDisplayName(key);
+    syncThinkingPickerLabel(key);
 }
 
 function syncTopbarFromSession(session, title) {
-    els.topbarTitle.textContent = title || session?.title || currentSessionTitle || 'Learning-Agent';
+    els.topbarTitle.textContent = title || session?.title || currentSessionTitle || '學齋';
     const personaKey = resolvePersonaKeyForMode(session?.mode || currentMode, session);
-    if (personaKey) {
-        updateTopbarPersona(personaKey, session?.mode || currentMode);
-    } else {
-        els.topbarSubtitle.textContent = currentSessionTitle || '皇上可直接下旨。';
-        els.topbarPersona.classList.add('hidden');
-    }
+    updateTopbarPersona(personaKey, session?.mode || currentMode);
+    els.topbarSubtitle.textContent = currentSessionTitle || title || '';
 }
 
 function updateHomeModeCards() {
@@ -582,32 +498,131 @@ function updateHomeModeCards() {
 }
 
 function renderPersonaGallery() {
+    // legacy hook — the persona gallery is no longer rendered on the welcome
+    // screen. Persona selection now lives in the topbar 思路 picker.
     if (!els.personaGalleryGrid) return;
     els.personaGalleryGrid.innerHTML = '';
-    for (const key of [
-        'empress_shen_qingyi',
-        'noble_consort_gu_mingyan',
-        'virtuous_consort_pei_ruotang',
-        'shu_consort_lu_zhiwei',
-        'zhaoyi_su_lingxi',
-    ]) {
-        const meta = getPersonaMeta(key);
-        const card = document.createElement('div');
-        card.className = 'persona-card';
-        card.innerHTML = `
-            <img class="persona-card-avatar" data-persona-key="${key}" src="${getPersonaAvatar(key)}" alt="${meta.name}头像">
-            <div class="persona-card-name">${escapeHtml(meta.name)}</div>
-            <div class="persona-card-desc">${escapeHtml(meta.short)}</div>
-        `;
-        els.personaGalleryGrid.appendChild(card);
+}
+
+// ─── 思路 (persona overlay) picker ───
+
+function personaCatalogEntries() {
+    if (personaCatalog && Array.isArray(personaCatalog.philosophers)) {
+        return [personaCatalog.default, ...personaCatalog.philosophers];
     }
-    refreshAvatarImages();
+    return ['neutral', ...PHILOSOPHER_ORDER].map(key => {
+        const meta = getPersonaMeta(key);
+        return { key, display_name: meta.name, role_name: '' };
+    });
+}
+
+function syncThinkingPickerLabel(personaKey) {
+    if (!els.thinkingTriggerValue) return;
+    const key = personaKey || 'neutral';
+    const meta = getPersonaMeta(key);
+    els.thinkingTriggerValue.textContent = meta.name;
+    if (els.topbarThinking) {
+        els.topbarThinking.dataset.personaKey = key;
+        els.topbarThinking.classList.toggle('has-overlay', key !== 'neutral');
+    }
+    if (els.thinkingMenu) {
+        els.thinkingMenu.querySelectorAll('.thinking-option').forEach(opt => {
+            opt.classList.toggle('active', opt.dataset.personaKey === key);
+        });
+    }
+}
+
+function renderThinkingMenu() {
+    if (!els.thinkingMenu) return;
+    const entries = personaCatalogEntries();
+    els.thinkingMenu.innerHTML = entries.map(entry => {
+        const key = entry.key;
+        const meta = getPersonaMeta(key);
+        const name = entry.display_name || meta.name;
+        const short = meta.short || '';
+        const role = entry.role_name || '';
+        return `
+            <button type="button" class="thinking-option" data-persona-key="${escapeHtml(key)}" role="option">
+                <span class="thinking-option-mark">${escapeHtml(meta.mark || '·')}</span>
+                <span class="thinking-option-copy">
+                    <span class="thinking-option-name">${escapeHtml(name)}${role ? `<em>· ${escapeHtml(role)}</em>` : ''}</span>
+                    <span class="thinking-option-short">${escapeHtml(short)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+    els.thinkingMenu.querySelectorAll('.thinking-option').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const key = btn.dataset.personaKey || 'neutral';
+            applyPersonaSelection(key);
+            closeThinkingMenu();
+        });
+    });
+    syncThinkingPickerLabel(currentPersonaKey || 'neutral');
+}
+
+function openThinkingMenu() {
+    if (!els.thinkingMenu) return;
+    els.thinkingMenu.classList.remove('hidden');
+    els.thinkingTrigger.setAttribute('aria-expanded', 'true');
+    els.topbarThinking.classList.add('is-open');
+}
+
+function closeThinkingMenu() {
+    if (!els.thinkingMenu) return;
+    els.thinkingMenu.classList.add('hidden');
+    els.thinkingTrigger.setAttribute('aria-expanded', 'false');
+    els.topbarThinking.classList.remove('is-open');
+}
+
+async function applyPersonaSelection(personaKey) {
+    const key = personaKey || 'neutral';
+    // Optimistic local update so the picker feels instant.
+    currentPersonaKey = key === 'neutral' ? null : key;
+    currentPersonaName = getPersonaDisplayName(key);
+    syncThinkingPickerLabel(key);
+
+    if (!currentSessionId) return; // welcome screen — bind when session is created
+    try {
+        await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: key });
+    } catch (err) {
+        console.warn('更新思路失败:', err);
+        showToast('切换思路失败：' + err.message);
+    }
+}
+
+async function loadPersonaCatalog() {
+    try {
+        personaCatalog = await api('GET', '/personas');
+    } catch (err) {
+        console.warn('载入思路列表失败，使用本地默认列表:', err);
+        personaCatalog = null;
+    }
+    renderThinkingMenu();
+}
+
+function setupThinkingPicker() {
+    if (!els.thinkingTrigger) return;
+    els.thinkingTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (els.thinkingMenu.classList.contains('hidden')) {
+            openThinkingMenu();
+        } else {
+            closeThinkingMenu();
+        }
+    });
+    document.addEventListener('click', (e) => {
+        if (!els.topbarThinking.contains(e.target)) closeThinkingMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeThinkingMenu();
+    });
 }
 
 function renderSessionList(sessions) {
     els.sidebarScroll.innerHTML = '';
     if (!sessions || sessions.length === 0) {
-        els.sidebarScroll.innerHTML = '<div class="sidebar-empty">今夜尚无寝殿记录</div>';
+        els.sidebarScroll.innerHTML = '<div class="sidebar-empty">尚无会话记录</div>';
         return;
     }
 
@@ -799,12 +814,16 @@ function addMessage(role, text, options = {}) {
 
     const avatar = document.createElement('div');
     avatar.className = 'message-avatar';
-    if (role === 'assistant' && options.personaKey) {
-        avatar.innerHTML = `<img class="message-avatar-img" data-persona-key="${escapeHtml(options.personaKey)}" src="${getPersonaAvatar(options.personaKey)}" alt="${escapeHtml(options.personaName || '角色')}头像">`;
+    if (role === 'assistant') {
+        const personaKey = options.personaKey || 'neutral';
+        avatar.classList.add('persona-mark');
+        avatar.dataset.personaKey = personaKey;
+        avatar.textContent = getPersonaMark(personaKey);
     } else if (role === 'user') {
-        avatar.innerHTML = `<img class="message-avatar-img" data-avatar-kind="emperor" src="${getUserAvatar()}" alt="皇上头像">`;
+        avatar.classList.add('user-mark');
+        avatar.textContent = '我';
     } else {
-        avatar.textContent = '🧠';
+        avatar.textContent = '·';
     }
 
     const content = document.createElement('div');
@@ -877,7 +896,9 @@ function setLastAssistantPersona(personaKey, personaName) {
         const lastMessage = messages[messages.length - 1];
         const avatar = lastMessage.querySelector('.message-avatar');
         if (avatar) {
-            avatar.innerHTML = `<img class="message-avatar-img" data-persona-key="${escapeHtml(resolvedKey)}" src="${getPersonaAvatar(resolvedKey)}" alt="${escapeHtml(resolvedName || '角色')}头像">`;
+            avatar.classList.add('persona-mark');
+            avatar.dataset.personaKey = resolvedKey;
+            avatar.textContent = getPersonaMark(resolvedKey);
         }
     }
 
@@ -942,6 +963,14 @@ async function sendMessage(text) {
         const session = await createSession();
         if (!session) return;
         await selectSession(session.id, session.title || 'New chat');
+        // Carry the welcome-screen persona selection into the freshly-created session.
+        if (currentPersonaKey) {
+            try {
+                await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: currentPersonaKey });
+            } catch (err) {
+                console.warn('绑定思路到新会话失败:', err);
+            }
+        }
     }
 
     const isFirstMessage = els.messages.children.length === 0;
@@ -1062,19 +1091,19 @@ function updateAskPlaceholderFromSession(session) {
     updateHomeModeCards();
     if (!session) {
         if (currentMode === 'ask') {
-            els.messageInput.placeholder = '请告诉贵妃，皇上想先对齐什么任务...';
+            els.messageInput.placeholder = '描述想做的事，先与你对齐目标再展开...';
         } else {
-            els.messageInput.placeholder = '给爱妃下一道旨意，直接开始吧...';
+            els.messageInput.placeholder = '向学伴提问，直接开始吧...';
         }
         return;
     }
     const askStatus = session.ask_state?.status;
     if (askStatus === 'aligning') {
-        els.messageInput.placeholder = '请确认或修正上述理解…（回复“确认”开始回答）';
+        els.messageInput.placeholder = '请确认或修正上述理解…（回复”确认”开始回答）';
     } else {
         els.messageInput.placeholder = currentMode === 'ask'
-            ? '请继续告诉贵妃，需要对齐哪些要求...'
-            : '给爱妃下一道旨意，直接开始吧...';
+            ? '继续补充需要对齐的要求...'
+            : '向学伴提问，直接开始吧...';
     }
 }
 
@@ -1088,11 +1117,7 @@ async function switchMode(mode) {
 
     if (!currentSessionId) {
         updateAskPlaceholderFromSession(null);
-        const personaKey = resolvePersonaKeyForMode(mode);
-        if (personaKey && currentView !== 'chat') {
-            updateTopbarPersona(personaKey, mode);
-        } else if (currentView !== 'chat') {
-            els.topbarPersona.classList.add('hidden');
+        if (currentView !== 'chat') {
             els.topbarSubtitle.textContent = getHomeSubtitle(mode);
         }
         return;
@@ -1179,11 +1204,7 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
             updateModeToolbar();
             updateHomeModeCards();
             updateAskPlaceholderFromSession(null);
-            const personaKey = resolvePersonaKeyForMode(mode);
-            if (personaKey && currentView !== 'chat') {
-                updateTopbarPersona(personaKey, mode);
-            } else if (currentView !== 'chat') {
-                els.topbarPersona.classList.add('hidden');
+            if (currentView !== 'chat') {
                 els.topbarSubtitle.textContent = getHomeSubtitle(mode);
             }
         }
@@ -1192,13 +1213,7 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
     });
 });
 
-document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-        avatarRefreshSeed = `${Date.now()}-visible`;
-        refreshAvatarImages();
-        scheduleAvatarRefresh();
-    }
-});
+// (visibility-change avatar refresh removed along with external avatar fetch.)
 
 // 弹窗关闭
 [els.memoryModal, els.deleteModal].forEach(modal => {
@@ -1237,10 +1252,10 @@ els.chatArea.addEventListener('scroll', () => {
 async function init() {
     updateViewTheme(currentView);
     renderPersonaGallery();
-    refreshAvatarImages();
-    scheduleAvatarRefresh();
+    setupThinkingPicker();
+    await loadPersonaCatalog();
     updateModeToolbar();
-    els.topbarSubtitle.textContent = '正在替皇上整理上次的寝殿...';
+    els.topbarSubtitle.textContent = '正在载入会话…';
     const ok = await checkHealth();
     if (ok) {
         await loadSessions();

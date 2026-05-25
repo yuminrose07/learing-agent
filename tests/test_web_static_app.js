@@ -363,8 +363,8 @@ test('renderHistoryMessage 从 metadata.turn_usage 回放 usage 展示', () => {
 
     renderHistoryMessage('assistant', '历史回放消息', {
         mode: 'chat',
-        persona_key: 'empress_shen_qingyi',
-        persona_name: '皇后·沈清仪',
+        persona_key: 'neutral',
+        persona_name: '默认',
         turn_usage: {
             estimated_prompt_tokens: 640,
             context_limit: 128000,

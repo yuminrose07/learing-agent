@@ -70,6 +70,20 @@ class Config:
         # 可选：支持多 Provider 切换（预留）
         self.provider_type = provider_from_file.get("type", "openai")
 
+        # 概念抽取（学习卷 absorbing 阶段尾任务）。
+        # ``concept_extractor_model`` 若为 None，沿用主 provider.model。
+        # 想接 Haiku 4.5 / 其它 cheap 模型时，把字段值填成路由库认识的标识
+        # （依赖 base_url 后面的 Python 路由库做跨 provider 转发）。
+        learning_unit_from_file = file_values.get("learning_unit", {})
+        self.concept_extractor_model: Optional[str] = (
+            os.getenv("LA_CONCEPT_MODEL")
+            or learning_unit_from_file.get("concept_extractor_model")
+        )
+        self.concept_extraction_threshold: float = float(
+            os.getenv("LA_CONCEPT_THRESHOLD")
+            or learning_unit_from_file.get("concept_extraction_threshold", "0.6")
+        )
+
         # Tool Guard 配置
         tool_guard_from_file = file_values.get("tool_guard", {})
         rules_from_file = tool_guard_from_file.get("rules", {})

@@ -44,6 +44,7 @@ class FileStore:
             "memory/compact",
             "materials",
             "objectives",
+            "learning_units",
         ]:
             (self.base_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +205,21 @@ class FileStore:
 
     def list_objectives(self) -> list[str]:
         path = self.base_dir / "objectives"
+        if not path.exists():
+            return []
+        return [f.stem for f in path.glob("*.json")]
+
+    def save_learning_unit(self, unit_id: str, data: dict[str, Any]) -> None:
+        self.write_json(f"learning_units/{unit_id}.json", data)
+
+    def load_learning_unit(self, unit_id: str) -> Optional[dict[str, Any]]:
+        return self.read_json(f"learning_units/{unit_id}.json")
+
+    def delete_learning_unit(self, unit_id: str) -> bool:
+        return self.delete(f"learning_units/{unit_id}.json")
+
+    def list_learning_units(self) -> list[str]:
+        path = self.base_dir / "learning_units"
         if not path.exists():
             return []
         return [f.stem for f in path.glob("*.json")]

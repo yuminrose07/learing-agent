@@ -29,21 +29,30 @@ from learning_agent.ai import (
     ChatChunk,
     ChatMessage,
     ChatParams,
+    ConceptItem,
     Event,
     KnowledgeNode,
     LearningObjective,
     LearningSession,
+    LearningUnit,
+    LearningUnitPhase,
     MessageRole,
+    TangentNote,
+    UnitObjective,
 )
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
+from learning_agent.learning_agent.concept_extractor import ConceptExtractor
+from learning_agent.learning_agent.learning_unit_store import (
+    ActiveUnitExistsError,
+    LearningUnitStore,
+)
 from learning_agent.learning_agent.mode_service import (
     PreparedSessionTurn,
     TurnExecutionProfile,
     build_turn_profile,
     is_confirmation_message,
-    resolve_persona,
 )
 from learning_agent.learning_agent.session_event_store import SessionEventStore
 from learning_agent.learning_agent.session_migration import migrate_all_sessions
@@ -85,13 +94,19 @@ class LearningAgentSystem:
             file_store=self.file_store,
             event_store=self.session_event_store,
         )
+        self.learning_unit_store = LearningUnitStore(
+            self.file_store,
+            session_manager=self.session_manager,
+        )
         self.provider: Optional[OpenAIProvider] = None
         self.agent_loop: Optional[AgentLoop] = None
         self.compaction_coordinator: Optional[CompactionCoordinator] = None
+        self.concept_extractor: Optional[ConceptExtractor] = None
 
         self._current_session = None
         self._current_objective = None
         self._compaction_turn_counts: dict[str, int] = {}
+        self._extraction_tasks: set[asyncio.Task] = set()
 
     def _setup_logging(self) -> None:
         logging.basicConfig(
@@ -143,6 +158,11 @@ class LearningAgentSystem:
             self.session_manager,
             max_context_tokens=self.provider.get_max_context_length(),
             summary_executor=self._execute_compact_summary,
+        )
+        self.concept_extractor = ConceptExtractor(
+            provider=self.provider,
+            model_name=self.config.concept_extractor_model,
+            threshold=self.config.concept_extraction_threshold,
         )
         # 状态快照只用于观测，不再触发持久化层 snapshot/delta compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
@@ -390,6 +410,177 @@ class LearningAgentSystem:
         )
         return chunk.content
 
+    def get_learning_unit(self, unit_id: str) -> Optional[LearningUnit]:
+        """按 id 取出学习卷；委托给 LearningUnitStore。"""
+        return self.learning_unit_store.get(unit_id)
+
+    def list_learning_units(self) -> list[LearningUnit]:
+        return self.learning_unit_store.list()
+
+    def create_learning_unit(
+        self,
+        *,
+        seed_text: str,
+        source: str = "ai_distilled",
+        source_ref: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> tuple[LearningSession, LearningUnit]:
+        """创建一个新的学习卷及其专属会话。
+
+        命中 P3 单卷不变量（已有非 consolidated 卷）时抛 ActiveUnitExistsError，
+        由路由层翻译成 409。
+        """
+        session = self.session_manager.create_session(title=title or seed_text[:48])
+        try:
+            unit = self.learning_unit_store.create(
+                session_id=session.id,
+                objective_text=seed_text,
+                source=source,
+                source_ref=source_ref,
+            )
+        except ActiveUnitExistsError:
+            # 回滚刚创建的空 session，避免泄漏
+            self.session_manager.delete_session(session.id)
+            raise
+
+        session.learning_unit_id = unit.id
+        session.mode = AgentMode.ASK
+        return session, unit
+
+    def confirm_learning_unit_objective(self, unit_id: str) -> LearningUnit:
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        unit.objective.confirmed = True
+        if unit.phase == "aligning":
+            unit.transition_to("absorbing")
+        self.learning_unit_store.save(unit)
+        return unit
+
+    def advance_learning_unit(
+        self,
+        unit_id: str,
+        target_phase: LearningUnitPhase,
+    ) -> LearningUnit:
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        unit.transition_to(target_phase)  # 非法过渡抛 ValueError
+        self.learning_unit_store.save(unit)
+        return unit
+
+    def promote_chat_session_to_learning_unit(
+        self,
+        chat_session_id: str,
+        *,
+        seed_text: str,
+    ) -> tuple[LearningSession, LearningUnit]:
+        """把闲聊会话升格为学习卷：创建一条 **新** 会话，原 chat 会话不动（§3.6）。"""
+        if self.session_manager.get_session(chat_session_id) is None:
+            raise KeyError(chat_session_id)
+        return self.create_learning_unit(
+            seed_text=seed_text,
+            source="promoted_from_chat",
+            source_ref=chat_session_id,
+            title=seed_text[:48],
+        )
+
+    async def _run_concept_extraction_tail(
+        self,
+        unit_id: str,
+        assistant_text: str,
+    ) -> None:
+        """absorbing 尾任务：抽概念 → RMW 合并到 unit → 落库。任何失败仅记日志。"""
+        if self.concept_extractor is None:
+            return
+        try:
+            unit_before = self.learning_unit_store.get(unit_id)
+            if unit_before is None or unit_before.phase != "absorbing":
+                return
+            new_concepts, new_tangents = await self.concept_extractor.extract(
+                objective_text=unit_before.objective.text,
+                assistant_text=assistant_text,
+                existing_concept_names={c.name for c in unit_before.concept_list},
+                existing_tangent_names={t.name for t in unit_before.tangent_notes},
+            )
+            if not new_concepts and not new_tangents:
+                return
+            async with self.learning_unit_store.lock(unit_id):
+                unit = self.learning_unit_store.get(unit_id)
+                if unit is None or unit.phase != "absorbing":
+                    return
+                # 持锁后再核一次名字集，避免和并发抽取重复落
+                concept_names = {c.name.lower() for c in unit.concept_list}
+                tangent_names = {t.name.lower() for t in unit.tangent_notes}
+                for c in new_concepts:
+                    if c.name.lower() in concept_names:
+                        continue
+                    unit.concept_list.append(c)
+                    concept_names.add(c.name.lower())
+                for t in new_tangents:
+                    if t.name.lower() in tangent_names:
+                        continue
+                    unit.tangent_notes.append(t)
+                    tangent_names.add(t.name.lower())
+                self.learning_unit_store.save(unit)
+        except Exception:
+            logger.exception(
+                f"[System] Concept extraction tail failed for unit {unit_id}"
+            )
+
+    async def _prepare_learning_unit_turn(
+        self,
+        session: LearningSession,
+        unit: LearningUnit,
+        user_input: str,
+    ) -> tuple[LearningSession, PreparedSessionTurn]:
+        """学习卷会话的 turn 调度：effective_mode 由 unit.phase 派生。
+
+        - aligning   → ASK (single_pass + ask_state)
+        - absorbing  → CHAT (react)
+        - outputting → TEACH (single_pass)
+        - consolidated → 拒绝继续对话（只读）
+        """
+        if unit.is_terminal():
+            raise ValueError(
+                f"Learning unit {unit.id} is consolidated (read-only); "
+                "no further turns can be prepared."
+            )
+
+        effective_mode = AgentMode(unit.effective_mode())
+
+        unit_metadata = {
+            "mode": effective_mode.value,
+            "learning_unit_id": unit.id,
+            "learning_unit_phase": unit.phase,
+        }
+        if effective_mode == AgentMode.ASK:
+            unit_metadata["alignment"] = True
+            unit_metadata["aligning_round"] = unit.aligning_round
+        if effective_mode == AgentMode.TEACH and unit.teach_session is not None:
+            unit_metadata["teach_session_id"] = unit.teach_session.id
+            unit_metadata["teach_state"] = unit.teach_session.state
+
+        profile = build_turn_profile(
+            effective_mode,
+            persona_key=self._resolve_session_persona_key(session, effective_mode),
+            user_message_metadata=dict(unit_metadata),
+            assistant_message_metadata=dict(unit_metadata),
+        )
+        compaction_plan = await self._build_compaction_plan(
+            session,
+            user_input,
+            profile,
+            allow_full_compact=(effective_mode == AgentMode.CHAT),
+        )
+        return session, PreparedSessionTurn(
+            effective_mode=effective_mode,
+            runtime_input=user_input,
+            profile=profile,
+            stream_metadata=dict(profile.assistant_message_metadata),
+            compaction_plan=compaction_plan,
+        )
+
     async def _prepare_session_turn(
         self,
         session: LearningSession,
@@ -400,6 +591,13 @@ class LearningAgentSystem:
         在 Product/Application 层收口模式语义，生成 Runtime 可执行的 turn 计划。
         Runtime 不直接判断 Ask 确认、模式切换或 ask_state 推进。
         """
+        if session.learning_unit_id:
+            unit = self.get_learning_unit(session.learning_unit_id)
+            if unit is not None:
+                return await self._prepare_learning_unit_turn(
+                    session, unit, user_input
+                )
+
         if (
             session.mode == AgentMode.ASK
             and session.ask_state.status == "aligning"
@@ -507,18 +705,19 @@ class LearningAgentSystem:
         session: LearningSession,
         mode: AgentMode,
     ) -> str | None:
-        if mode != AgentMode.CHAT:
-            return None
+        """Return the persona key for this session, if the user opted into one.
 
+        Personas are an optional *thinking-style overlay* — the default is
+        NEUTRAL (no overlay). We do not auto-pick a persona; we only read what
+        the UI has explicitly stored on the session under ``chat_persona_key``.
+        The key name is kept for back-compat; semantically it is the session's
+        persona regardless of which mode this turn runs in.
+        """
+        del mode  # personas are no longer mode-restricted
         persona_key = session.mode_metadata.get("chat_persona_key")
         if isinstance(persona_key, str) and persona_key:
             return persona_key
-
-        persona = resolve_persona(AgentMode.CHAT)
-        session.mode_metadata["chat_persona_key"] = persona.key
-        if hasattr(self, "session_manager"):
-            self.session_manager.persist_mode_metadata(session.id)
-        return persona.key
+        return None
 
     def _finalize_prepared_turn(
         self,
@@ -530,6 +729,36 @@ class LearningAgentSystem:
             session.ask_state.confirmed_input = response_text
             if hasattr(self, "session_manager"):
                 self.session_manager.persist_ask_state(session.id)
+
+    def _maybe_fire_concept_extraction(
+        self,
+        session: LearningSession,
+        prepared_turn: PreparedSessionTurn,
+        response_text: str,
+    ) -> None:
+        """absorbing 阶段每回合后异步抽取概念。失败只记日志，不影响主流。"""
+        if not response_text.strip():
+            return
+        unit_id = session.learning_unit_id
+        if not unit_id:
+            return
+        if prepared_turn.effective_mode != AgentMode.CHAT:
+            return
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None or unit.phase != "absorbing":
+            return
+        try:
+            task = asyncio.create_task(
+                self._run_concept_extraction_tail(unit_id, response_text)
+            )
+        except RuntimeError:
+            logger.warning(
+                "[System] event loop closed; skip concept extraction "
+                f"for unit {unit_id}"
+            )
+            return
+        self._extraction_tasks.add(task)
+        task.add_done_callback(self._extraction_tasks.discard)
 
     async def stream_session_chat(
         self,
@@ -571,6 +800,9 @@ class LearningAgentSystem:
                         session,
                         prepared_turn,
                         "".join(response_parts),
+                    )
+                    self._maybe_fire_concept_extraction(
+                        session, prepared_turn, "".join(response_parts)
                     )
             except Exception:
                 logger.exception(f"[System] Failed to finalize turn for session {session_id}")

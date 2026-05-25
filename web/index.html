@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Learning-Agent</title>
+    <title>學齋 · Learning Agent</title>
+    <link rel="stylesheet" href="static/tokens.css">
     <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
@@ -15,15 +16,15 @@
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-top">
                 <div class="sidebar-brand">
-                    <div class="sidebar-brand-mark">👑</div>
+                    <div class="sidebar-brand-mark">學</div>
                     <div class="sidebar-brand-copy">
-                        <span class="sidebar-brand-title">紫宸智阁</span>
-                        <span class="sidebar-brand-subtitle">夜色宫廷版 Learning-Agent</span>
+                        <span class="sidebar-brand-title">學齋</span>
+                        <span class="sidebar-brand-subtitle">Learning Agent</span>
                     </div>
                 </div>
                 <button id="btn-new-chat" class="btn-new-chat">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                    <span>New chat</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    <span>新建对话</span>
                 </button>
             </div>
 
@@ -33,19 +34,19 @@
 
             <div class="sidebar-bottom">
                 <button id="btn-memory" class="sidebar-action">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                     <span>记忆状态</span>
                 </button>
                 <button id="btn-save" class="sidebar-action">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
                     <span>保存状态</span>
                 </button>
                 <button id="btn-obs" class="sidebar-action" onclick="window.open('observability.html', '_blank')">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
                     <span>会话事件</span>
                 </button>
                 <div class="sidebar-footer-line">
-                    <span id="api-status" class="status-text offline">API 离线</span>
+                    <span id="api-status" class="status-text offline">API offline</span>
                 </div>
             </div>
         </aside>
@@ -55,18 +56,21 @@
             <!-- 顶部栏 -->
             <header class="topbar">
                 <button id="btn-menu" class="btn-menu" aria-label="打开菜单">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
                 <div class="topbar-session">
-                    <span class="topbar-title" id="topbar-title">Learning-Agent</span>
-                    <span class="topbar-subtitle" id="topbar-subtitle">今夜尚未翻牌，皇上可直接下旨。</span>
+                    <span class="topbar-title" id="topbar-title">學齋</span>
+                    <span class="topbar-subtitle" id="topbar-subtitle">尚未开始 · 直接输入即可开新一卷</span>
                 </div>
                 <div class="topbar-spacer"></div>
-                <div class="topbar-persona hidden" id="topbar-persona">
-                    <img id="topbar-persona-avatar" class="topbar-persona-avatar" alt="当前角色头像">
-                    <div class="topbar-persona-copy">
-                        <span class="topbar-persona-name" id="topbar-persona-name"></span>
-                        <span class="topbar-persona-mode" id="topbar-persona-mode"></span>
+                <div class="topbar-thinking" id="topbar-thinking">
+                    <button type="button" class="thinking-trigger" id="thinking-trigger" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="thinking-trigger-label">思路</span>
+                        <span class="thinking-trigger-value" id="thinking-trigger-value">默认</span>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </button>
+                    <div class="thinking-menu hidden" id="thinking-menu" role="listbox">
+                        <!-- populated by JS from GET /personas -->
                     </div>
                 </div>
             </header>
@@ -76,62 +80,60 @@
                 <!-- 欢迎页 -->
                 <div class="welcome-screen hidden" id="welcome-screen">
                     <div class="welcome-content">
-                        <span class="welcome-kicker">后宫智能中枢</span>
-                        <div class="welcome-logo">👑</div>
-                        <h1>今夜想召见哪位爱妃？</h1>
-                        <p class="welcome-subtitle">点击 `New chat` 或直接输入，首条消息发出时再翻牌。Chat 为三位妃子其一，Ask 由贵妃先行对齐，Study 由皇后陪皇上深学。</p>
+                        <span class="welcome-kicker">學齋 · Learning Agent</span>
+                        <div class="welcome-logo">學</div>
+                        <h1>今日想从哪一题开始？</h1>
+                        <p class="welcome-subtitle">直接输入即可开新一卷。Chat 适合日常对话，Ask 会先与你对齐目标再作答，Study 由资深学伴主持深入研习。需要换一种思考风格时，可在右上角「思路」里切换苏格拉底 / 费曼 / 蒙田 / 朱熹 / 笛卡尔等思路覆层。</p>
                         <div class="welcome-pill-row">
-                            <span class="welcome-pill">一会话一位妃子</span>
-                            <span class="welcome-pill">贵妃先行对齐</span>
-                            <span class="welcome-pill">皇后伴读深学</span>
+                            <span class="welcome-pill">问道 · 先对齐再作答</span>
+                            <span class="welcome-pill">研习 · 深入展开</span>
+                            <span class="welcome-pill">思路 · 可选思想风格</span>
                         </div>
 
                         <div class="home-mode-grid">
                             <button class="home-mode-card active" data-mode="chat" type="button">
                                 <span class="home-mode-badge">默认</span>
-                                <div class="home-mode-title">Chat</div>
-                                <div class="home-mode-desc">今夜再翻牌，绑定一位妃子，陪皇上轻松闲聊。</div>
+                                <div class="home-mode-title" data-en="Chat">闲谈</div>
+                                <div class="home-mode-desc">轻巧的日常对话，直接进入，不预设角色或仪式。</div>
                             </button>
                             <button class="home-mode-card" data-mode="ask" type="button">
                                 <span class="home-mode-badge ask">对齐</span>
-                                <div class="home-mode-title">Ask</div>
-                                <div class="home-mode-desc">由贵妃先听圣意、收口目标，再请皇上示下。</div>
+                                <div class="home-mode-title" data-en="Ask">问道</div>
+                                <div class="home-mode-desc">回答之前先反问、收口目标，确认要解决的题目再展开。</div>
                             </button>
                             <button class="home-mode-card disabled" data-mode="study" type="button" disabled>
                                 <span class="home-mode-badge study">预告</span>
-                                <div class="home-mode-title">Study</div>
-                                <div class="home-mode-desc">皇后伴读的深学模式，后续开放。</div>
+                                <div class="home-mode-title" data-en="Study">研习</div>
+                                <div class="home-mode-desc">由资深学伴主持的深学模式，分章节带你推进，后续开放。</div>
                             </button>
                         </div>
 
-                        <section class="persona-gallery">
-                            <div class="persona-gallery-head">
-                                <h2>后宫图鉴</h2>
-                                <p>五位角色各有性情，今夜翻牌后会在会话中全程陪皇上。</p>
-                            </div>
+                        <section class="persona-gallery hidden" id="persona-gallery" aria-hidden="true">
+                            <!-- legacy hook retained so existing JS selectors don't error;
+                                 the philosopher overlay is now opt-in via the topbar 思路 picker. -->
                             <div class="persona-gallery-grid" id="persona-gallery-grid"></div>
                         </section>
 
                         <div class="suggestion-head">
-                            <h2>不妨从这些旨意开始</h2>
-                            <p>首页直接发问即可，系统会在首条消息时创建会话。</p>
+                            <h2>起手式</h2>
+                            <p>直接选一题开始，系统会在你发第一条消息时新开一卷。</p>
                         </div>
                         <div class="suggestion-grid">
-                            <div class="suggestion-card" data-mode="chat" data-text="帮朕解释什么是强化学习？">
-                                <div class="suggestion-icon">🎯</div>
-                                <div class="suggestion-text">帮朕解释什么是强化学习？</div>
+                            <div class="suggestion-card" data-mode="chat" data-text="帮我解释什么是强化学习？">
+                                <div class="suggestion-icon"></div>
+                                <div class="suggestion-text">帮我解释什么是强化学习？</div>
                             </div>
-                            <div class="suggestion-card" data-mode="ask" data-text="朕准备做一个新的项目，你先帮朕对齐目标和范围。">
-                                <div class="suggestion-icon">📅</div>
-                                <div class="suggestion-text">朕准备做一个新的项目，你先帮朕对齐目标和范围。</div>
+                            <div class="suggestion-card" data-mode="ask" data-text="我准备做一个新的项目，先帮我对齐目标和范围。">
+                                <div class="suggestion-icon"></div>
+                                <div class="suggestion-text">我准备做一个新的项目，先帮我对齐目标和范围。</div>
                             </div>
-                            <div class="suggestion-card" data-mode="chat" data-text="给朕总结这篇设计文档的关键点。">
-                                <div class="suggestion-icon">📝</div>
-                                <div class="suggestion-text">给朕总结这篇设计文档的关键点。</div>
+                            <div class="suggestion-card" data-mode="chat" data-text="帮我总结这篇设计文档的关键点。">
+                                <div class="suggestion-icon"></div>
+                                <div class="suggestion-text">帮我总结这篇设计文档的关键点。</div>
                             </div>
-                            <div class="suggestion-card" data-mode="chat" data-text="朕想做一个长期记忆系统，你先给朕几个靠谱思路。">
-                                <div class="suggestion-icon">🧩</div>
-                                <div class="suggestion-text">朕想做一个长期记忆系统，你先给朕几个靠谱思路。</div>
+                            <div class="suggestion-card" data-mode="chat" data-text="我想做一个长期记忆系统，先给我几个靠谱思路。">
+                                <div class="suggestion-icon"></div>
+                                <div class="suggestion-text">我想做一个长期记忆系统，先给我几个靠谱思路。</div>
                             </div>
                         </div>
                     </div>
@@ -143,31 +145,31 @@
 
             <!-- 模式工具栏 -->
             <div class="mode-toolbar" id="mode-toolbar">
-                <button id="btn-mode-chat" class="btn-mode active" data-mode="chat" title="Chat 模式：快速对话" aria-label="Chat 模式">
+                <button id="btn-mode-chat" class="btn-mode active" data-mode="chat" title="Chat 闲谈：日常对话" aria-label="Chat 闲谈">
                     <span class="mode-icon">💬</span>
-                    <span class="mode-label">Chat</span>
+                    <span class="mode-label">Chat 闲谈</span>
                 </button>
-                <button id="btn-mode-ask" class="btn-mode" data-mode="ask" title="Ask 模式：先对齐意图再回答" aria-label="Ask 模式">
+                <button id="btn-mode-ask" class="btn-mode" data-mode="ask" title="Ask 问道：先对齐再作答" aria-label="Ask 问道">
                     <span class="mode-icon">❓</span>
-                    <span class="mode-label">Ask</span>
+                    <span class="mode-label">Ask 问道</span>
                 </button>
-                <button id="btn-mode-study" class="btn-mode disabled" data-mode="study" title="Study 模式：深度学习（即将上线）" aria-label="Study 模式" disabled>
+                <button id="btn-mode-study" class="btn-mode disabled" data-mode="study" title="Study 研习：深度伴读（即将上线）" aria-label="Study 研习" disabled>
                     <span class="mode-icon">📚</span>
-                    <span class="mode-label">Study</span>
+                    <span class="mode-label">Study 研习</span>
                 </button>
             </div>
 
             <!-- 输入区域 -->
             <div class="input-container">
                 <div class="input-wrapper">
-                    <textarea id="message-input" rows="1" placeholder="Message Learning-Agent..." disabled></textarea>
+                    <textarea id="message-input" rows="1" placeholder="向学伴提问…" disabled></textarea>
                     <button id="btn-send" class="btn-submit" disabled aria-label="发送">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                     </button>
                 </div>
                 <div class="input-hint">
-                    <span id="typing-indicator" class="hidden">Agent 正在思考…</span>
-                    <span class="hint-text">Enter 换行，Cmd/Ctrl + Enter 发送。Agent 可能会生成不准确的信息，请核实重要内容。</span>
+                    <span id="typing-indicator" class="hidden">学伴正在思考…</span>
+                    <span class="hint-text">Enter 换行 · Cmd / Ctrl + Enter 发送 · 输出可能不准确，请核实关键内容</span>
                 </div>
             </div>
         </main>
@@ -196,7 +198,7 @@
                 <button class="btn-close" aria-label="关闭">&times;</button>
             </div>
             <div class="modal-body">
-                <p>确定要删除这个会话吗？此操作无法撤销。</p>
+                <p>确定要删除这个会话吗？此操作不可撤销。</p>
             </div>
             <div class="modal-footer">
                 <button id="btn-cancel-delete" class="btn-secondary">取消</button>

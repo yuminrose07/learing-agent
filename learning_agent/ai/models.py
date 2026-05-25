@@ -50,6 +50,7 @@ class AgentMode(str, Enum):
     CHAT = "chat"
     ASK = "ask"
     STUDY = "study"
+    TEACH = "teach"
 
 
 class EntryType(str, Enum):
@@ -192,6 +193,7 @@ class AskState(BaseModel):
 class LearningSession(BaseModel):
     id: str = Field(default_factory=lambda: f"sess-{uuid.uuid4().hex[:8]}")
     objective_id: Optional[str] = None
+    learning_unit_id: Optional[str] = None
     title: Optional[str] = None
     root_entry_id: Optional[str] = None
     current_leaf_id: Optional[str] = None
