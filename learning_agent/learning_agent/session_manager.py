@@ -407,34 +407,6 @@ class SessionManager:
         )
         return True
 
-    def fork_at(
-        self,
-        session_id: str,
-        entry_id: str,
-        fork_content: Optional[str] = None,
-    ) -> Optional[SessionEntry]:
-        """新模型不再支持新建 fork 分支。"""
-        del entry_id, fork_content
-        logger.warning("[SessionManager] fork_at is unsupported in linear event-log sessions: %s", session_id)
-        return None
-
-    def legacy_get_path_to_leaf(self, session_id: str, leaf_id: Optional[str] = None) -> list[SessionEntry]:
-        """Legacy-only: 获取旧树形 session 从根到叶子的路径。"""
-        session = self._sessions.get(session_id)
-        if not session:
-            return []
-
-        target = leaf_id or session.current_leaf_id
-        entry_map = {e.id: e for e in session.entries}
-        path = []
-        current = target
-        while current and current in entry_map:
-            entry = entry_map[current]
-            path.append(entry)
-            current = entry.parent_id
-        path.reverse()
-        return path
-
     def get_message_history(self, session_id: str, leaf_id: Optional[str] = None) -> list[SessionEntry]:
         """获取线性消息历史。`leaf_id` 仅保留兼容，不参与主路径。"""
         del leaf_id

@@ -3,7 +3,12 @@
  * 参考 ChatGPT / Gemini 设计
  */
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = typeof window !== 'undefined'
+    && window.location
+    && typeof window.location.origin === 'string'
+    && window.location.origin.startsWith('http')
+    ? window.location.origin
+    : '';
 
 let currentSessionId = null;
 let currentSessionTitle = null;
@@ -45,7 +50,6 @@ const els = {
     deleteModal: document.getElementById('delete-modal'),
     btnCancelDelete: document.getElementById('btn-cancel-delete'),
     btnConfirmDelete: document.getElementById('btn-confirm-delete'),
-    personaGalleryGrid: document.getElementById('persona-gallery-grid'),
 };
 
 // Neutral default + curated philosopher overlays.
@@ -323,15 +327,6 @@ function getHomeSubtitle(mode) {
     return '直接输入即可开新一卷。';
 }
 
-function refreshAvatarImages() {
-    // legacy hook kept for safety after the avatar-image system was removed;
-    // persona marks are now plain text and need no refresh.
-}
-
-function scheduleAvatarRefresh() {
-    // no-op: external avatar generation has been retired.
-}
-
 // ─── API ───
 
 async function api(method, path, body = null) {
@@ -495,13 +490,6 @@ function updateHomeModeCards() {
         const isActive = card.dataset.mode === currentMode && !card.disabled;
         card.classList.toggle('active', isActive);
     });
-}
-
-function renderPersonaGallery() {
-    // legacy hook — the persona gallery is no longer rendered on the welcome
-    // screen. Persona selection now lives in the topbar 思路 picker.
-    if (!els.personaGalleryGrid) return;
-    els.personaGalleryGrid.innerHTML = '';
 }
 
 // ─── 思路 (persona overlay) picker ───
@@ -1251,7 +1239,6 @@ els.chatArea.addEventListener('scroll', () => {
 
 async function init() {
     updateViewTheme(currentView);
-    renderPersonaGallery();
     setupThinkingPicker();
     await loadPersonaCatalog();
     updateModeToolbar();

@@ -83,10 +83,6 @@ class UpdatePersonaRequest(BaseModel):
     persona_key: Optional[str] = None
 
 
-class SaveStateRequest(BaseModel):
-    pass
-
-
 class CreateLearningUnitRequest(BaseModel):
     seed_text: str
     source: Literal[
@@ -696,4 +692,3 @@ if _WEB_DIR.is_dir():
 @app.get("/")
 async def _root_redirect() -> RedirectResponse:
     return RedirectResponse(url="/ui/index.html")
-

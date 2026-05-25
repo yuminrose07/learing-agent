@@ -610,16 +610,6 @@ body.chat-view { /* in-conversation */ }
     line-height: 1.65;
 }
 
-
-/* —— Persona gallery —— */
-.persona-gallery {
-    margin: 0 0 40px;
-    padding: 0;
-    border: none;
-    background: transparent;
-}
-
-.persona-gallery-head,
 .suggestion-head {
     margin-bottom: 18px;
     padding-bottom: 12px;
@@ -629,7 +619,6 @@ body.chat-view { /* in-conversation */ }
     gap: 14px;
     flex-wrap: wrap;
 }
-.persona-gallery-head h2,
 .suggestion-head h2 {
     font-family: var(--font-serif);
     font-size: 20px;
@@ -637,67 +626,16 @@ body.chat-view { /* in-conversation */ }
     color: var(--ink);
     letter-spacing: 0.02em;
 }
-.persona-gallery-head h2::before,
 .suggestion-head h2::before {
     content: "—— ";
     color: var(--vermillion);
     font-weight: 700;
 }
-.persona-gallery-head p,
 .suggestion-head p {
     color: var(--ink-3);
     font-size: 12.5px;
     line-height: 1.6;
 }
-
-.persona-gallery-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 16px;
-}
-
-.persona-card {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 16px 14px;
-    border: 1px solid var(--border);
-    background: var(--paper-1);
-    text-align: left;
-    cursor: pointer;
-    transition: border-color var(--t), background var(--t), transform var(--t);
-}
-.persona-card:hover {
-    border-color: var(--vermillion-line);
-    background: var(--surface-raised);
-    transform: translateY(-1px);
-}
-.persona-card-avatar {
-    width: 56px;
-    height: 56px;
-    border-radius: 2px;
-    object-fit: cover;
-    background: var(--paper-3);
-    border: 1px solid var(--border);
-    filter: grayscale(0.15) sepia(0.1);
-    transition: filter var(--t);
-}
-.persona-card:hover .persona-card-avatar {
-    filter: grayscale(0) sepia(0);
-}
-.persona-card-name {
-    font-family: var(--font-serif);
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--ink);
-}
-.persona-card-desc {
-    color: var(--ink-3);
-    font-size: 12px;
-    line-height: 1.55;
-}
-
 
 /* —— Suggestion cards —— */
 .suggestion-grid {
@@ -1349,9 +1287,6 @@ body.chat-view { /* in-conversation */ }
     .welcome-content::before { font-size: 120px; top: -8px; }
     .welcome-content h1 { font-size: 32px; }
     .welcome-pill-row { gap: 6px; }
-    .persona-gallery-grid { grid-template-columns: 1fr 1fr; }
-    .persona-card { flex-direction: row; align-items: center; }
-    .persona-card-desc { display: none; }
     .messages { padding: 22px 16px 28px; }
     .message-content { max-width: calc(100% - 52px); }
     .mode-toolbar { padding: 6px 16px 0; }

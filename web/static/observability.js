@@ -6,9 +6,12 @@
  * 过滤。无 SSE、无构建步骤、无前端框架。
  */
 
-const API_BASE = window.location.origin && window.location.origin.startsWith('http')
+const API_BASE = typeof window !== 'undefined'
+    && window.location
+    && typeof window.location.origin === 'string'
+    && window.location.origin.startsWith('http')
     ? window.location.origin
-    : 'http://127.0.0.1:8000';
+    : '';
 
 const VIS_COLORS = {
     agent: '#2563eb',

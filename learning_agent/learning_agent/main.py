@@ -29,7 +29,6 @@ from learning_agent.ai import (
     ChatChunk,
     ChatMessage,
     ChatParams,
-    ConceptItem,
     Event,
     KnowledgeNode,
     LearningObjective,
@@ -37,8 +36,6 @@ from learning_agent.ai import (
     LearningUnit,
     LearningUnitPhase,
     MessageRole,
-    TangentNote,
-    UnitObjective,
 )
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
@@ -213,18 +210,6 @@ class LearningAgentSystem:
                 self._compaction_turn_counts.get(session_id, 0),
                 turn_count,
             )
-
-    async def _on_entry_appended(self, event: Event) -> None:
-        """Legacy no-op: session persistence now happens in SessionManager event log writes."""
-        del event
-
-    async def _on_entry_patched(self, event: Event) -> None:
-        """Legacy no-op: session persistence now happens in SessionManager event log writes."""
-        del event
-
-    async def _on_scalar_changed(self, event: Event) -> None:
-        """Legacy no-op: scalar persistence now happens in SessionManager event log writes."""
-        del event
 
     # ─── Product/Application facade ───
 
@@ -452,8 +437,7 @@ class LearningAgentSystem:
         if unit is None:
             raise KeyError(unit_id)
         unit.objective.confirmed = True
-        if unit.phase == "aligning":
-            unit.transition_to("absorbing")
+        unit.objective_status = "confirmed"
         self.learning_unit_store.save(unit)
         return unit
 
@@ -536,8 +520,8 @@ class LearningAgentSystem:
     ) -> tuple[LearningSession, PreparedSessionTurn]:
         """学习卷会话的 turn 调度：effective_mode 由 unit.phase 派生。
 
-        - aligning   → ASK (single_pass + ask_state)
-        - absorbing  → CHAT (react)
+        - absorbing  → CHAT (react)；alignment_state=active 时由 Product 层
+          临时覆写为 ASK（adaptive alignment §9.1，B2 实现）
         - outputting → TEACH (single_pass)
         - consolidated → 拒绝继续对话（只读）
         """
@@ -553,10 +537,11 @@ class LearningAgentSystem:
             "mode": effective_mode.value,
             "learning_unit_id": unit.id,
             "learning_unit_phase": unit.phase,
+            "alignment_state": unit.alignment_state,
+            "objective_status": unit.objective_status,
         }
         if effective_mode == AgentMode.ASK:
             unit_metadata["alignment"] = True
-            unit_metadata["aligning_round"] = unit.aligning_round
         if effective_mode == AgentMode.TEACH and unit.teach_session is not None:
             unit_metadata["teach_session_id"] = unit.teach_session.id
             unit_metadata["teach_state"] = unit.teach_session.state
