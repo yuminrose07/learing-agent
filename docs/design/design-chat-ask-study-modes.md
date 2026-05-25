@@ -367,7 +367,7 @@ ModeProfile(
 ModeProfile(
     mode=AgentMode.ASK,
     system_prompt="前置对齐型提示词",
-    tools_enabled=["read_file", "grep"],
+    tools_enabled=[],
     memory_read=False,
     memory_write=False,
     ask_confirmation_required=True,
@@ -378,8 +378,9 @@ ModeProfile(
 
 说明：
 
-- 前期工具应尽量少，避免 Ask 变成“重分析模式”。
-- Ask 的价值在于澄清，不在于直接做大量工具执行。
+- Ask 是对齐阶段，不是执行阶段；本期不开放任何工具，避免 Ask 退化为"重分析模式"。
+- Ask 的价值在于澄清，需要看代码或文件的任务应在确认后切到 Chat 或 Study 模式执行。
+- 执行路径走 `SINGLE_PASS`，本就不会向 LLM 透传 `tools` 字段；这也与"对齐一次、立即收口"的语义保持一致。
 
 ### 8.3 Study Profile
 
@@ -519,7 +520,7 @@ Base Prompt
 | 模式 | 工具策略 |
 |------|----------|
 | `Chat` | 工具可见，但按需使用，避免不必要重链路 |
-| `Ask` | 尽量轻，只保留定位类和必要读取类工具 |
+| `Ask` | 无工具；需查代码或文件的任务请用户确认后切到 Chat / Study |
 | `Study` | 启用完整学习工具链，尤其是 `grep + read_file(offset/limit)` |
 
 ### 11.2 Memory 策略

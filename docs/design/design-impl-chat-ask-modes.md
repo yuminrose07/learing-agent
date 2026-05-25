@@ -208,7 +208,7 @@ ASK_PROFILE = ModeProfile(
         "Do NOT provide the detailed answer yet. "
         "Keep your response concise (under 150 words)."
     ),
-    tools_enabled=["read_file", "grep"],
+    tools_enabled=[],
     memory_read=False,
     memory_write=False,
     ask_confirmation_required=True,
