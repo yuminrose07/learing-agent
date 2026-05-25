@@ -111,7 +111,7 @@ async def test_stream_session_chat_merges_public_usage_metadata():
         stream_metadata=dict(profile.assistant_message_metadata),
         compaction_plan=None,
     )
-    system._prepare_session_turn = MagicMock(return_value=(session, prepared_turn))
+    system._prepare_session_turn = AsyncMock(return_value=(session, prepared_turn))
 
     async def _run(*args, **kwargs):
         yield ChatChunk(
