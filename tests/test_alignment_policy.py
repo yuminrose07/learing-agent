@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, "/Users/roseannk/my-agent")
 
-from learning_agent.ai.learning_unit import LearningUnit, UnitObjective
+from learning_agent.ai.learning_unit import ConceptItem, LearningUnit, UnitObjective
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
     should_run_alignment,
@@ -144,6 +144,38 @@ class TestDecisionContract:
             recent_messages=[{"role": "user", "content": "x"}],
         )
         assert d.mode == "none"
+
+
+class TestConceptListAwareness:
+    """已知 concept_list 的豁免：用户在已展开的学习地图里追问短问题不应被打断。"""
+
+    def _unit_with_concepts(self, *concepts: str) -> LearningUnit:
+        return LearningUnit(
+            session_id="sess-x",
+            objective=UnitObjective(text="理解 Pydantic v2"),
+            concept_list=[
+                ConceptItem(name=name, summary=f"{name} summary", relevance=0.9)
+                for name in concepts
+            ],
+        )
+
+    def test_short_input_naming_known_concept_is_clear(self):
+        unit = self._unit_with_concepts("BaseModel")
+        decision = should_run_alignment(unit, "讲讲 BaseModel")
+        # 没 concept_list 会被判 active；命中已知 concept 应豁免
+        assert decision.mode == "none"
+
+    def test_short_input_without_concept_match_still_active(self):
+        unit = self._unit_with_concepts("BaseModel")
+        decision = should_run_alignment(unit, "讲讲")
+        assert decision.mode == "active"
+        assert decision.reason == "missing_learnable_target"
+
+    def test_vague_pronoun_not_rescued_by_concept_list(self):
+        # "讲讲这个"是代词指代，即便 concept_list 非空也不应豁免
+        unit = self._unit_with_concepts("BaseModel")
+        decision = should_run_alignment(unit, "讲讲这个")
+        assert decision.mode == "active"
 
 
 @pytest.mark.parametrize(

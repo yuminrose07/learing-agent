@@ -272,13 +272,46 @@ class TestTeachProtocol:
         with pytest.raises(ValueError):
             unit.transition_to("absorbing")
 
-    @pytest.mark.skip(
-        reason="B2 (adaptive alignment) 待实现：absorbing 阶段在 alignment_state=active "
-        "时由 Product 层临时覆写为 ASK，旧的 aligning phase 已移除。"
-    )
     @pytest.mark.asyncio
-    async def test_prepare_session_turn_aligning_phase_yields_ask_mode(self):
-        pass
+    async def test_prepare_session_turn_absorbing_with_vague_input_yields_ask(self):
+        """absorbing + 模糊输入：策略判 active 时 Product 层临时覆写为 ASK。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # "讲讲这个" 是代词指代，即便 concept_list 非空也不豁免
+        _, turn = await system._prepare_session_turn(session, "讲讲这个", AgentMode.CHAT)
+
+        assert turn.effective_mode == AgentMode.ASK
+        meta = turn.profile.assistant_message_metadata
+        assert meta["mode"] == "ask"
+        assert meta["alignment"] is True
+        assert meta["alignment_state"] == "active"
+        assert meta["alignment_reason"] == "missing_learnable_target"
+        # unit 状态写回 + 限流计数 +1
+        assert unit.alignment_state == "active"
+        assert unit.clarification_count == 1
+
+    @pytest.mark.asyncio
+    async def test_prepare_session_turn_clarification_rate_limited_to_once(self):
+        """§9.3 第 1 条护栏：单卷启动期阻塞澄清最多 1 次，第二次模糊输入强制走 CHAT。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # 第一轮：触发澄清
+        _, turn1 = await system._prepare_session_turn(session, "讲讲这个", AgentMode.CHAT)
+        assert turn1.effective_mode == AgentMode.ASK
+        assert unit.clarification_count == 1
+
+        # 第二轮：同样模糊但限流命中 → 强制 CHAT，不再递增
+        _, turn2 = await system._prepare_session_turn(session, "再讲讲", AgentMode.CHAT)
+        assert turn2.effective_mode == AgentMode.CHAT
+        assert unit.clarification_count == 1
+        meta2 = turn2.profile.assistant_message_metadata
+        assert meta2["alignment_state"] == "idle"
 
     @pytest.mark.asyncio
     async def test_prepare_session_turn_absorbing_phase_yields_chat_mode(self):
@@ -377,8 +410,8 @@ class TestTeachProtocol:
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 1) absorbing: CHAT
-        _, turn1 = await system._prepare_session_turn(session, "讲讲", AgentMode.CHAT)
+        # 1) absorbing: CHAT — 输入命中 concept_list (BaseModel) 走 A 档
+        _, turn1 = await system._prepare_session_turn(session, "讲讲 BaseModel", AgentMode.CHAT)
         assert turn1.effective_mode == AgentMode.CHAT
 
         # 用户主动结束吸收，进入 outputting

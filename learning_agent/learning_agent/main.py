@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Optional
 
 from learning_agent.agent.agent_loop import AgentLoop
@@ -39,6 +40,10 @@ from learning_agent.ai import (
 )
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
+from learning_agent.learning_agent.alignment_policy import (
+    AlignmentDecision,
+    should_run_alignment,
+)
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
 from learning_agent.learning_agent.learning_unit_store import (
@@ -429,7 +434,7 @@ class LearningAgentSystem:
             raise
 
         session.learning_unit_id = unit.id
-        session.mode = AgentMode.ASK
+        session.mode = AgentMode.CHAT
         return session, unit
 
     def confirm_learning_unit_objective(self, unit_id: str) -> LearningUnit:
@@ -518,12 +523,15 @@ class LearningAgentSystem:
         unit: LearningUnit,
         user_input: str,
     ) -> tuple[LearningSession, PreparedSessionTurn]:
-        """学习卷会话的 turn 调度：effective_mode 由 unit.phase 派生。
+        """学习卷会话的 turn 调度：phase 派生主协议，alignment_policy 决定是否覆写为 ASK。
 
-        - absorbing  → CHAT (react)；alignment_state=active 时由 Product 层
-          临时覆写为 ASK（adaptive alignment §9.1，B2 实现）
-        - outputting → TEACH (single_pass)
         - consolidated → 拒绝继续对话（只读）
+        - outputting → TEACH (single_pass)
+        - absorbing → 默认 CHAT；若策略判 active 且未澄清过则覆写为 ASK；
+          策略判 suggested 时保留 CHAT 但通过 ``alignment_state`` 让 UI 出建议条。
+
+        adaptive alignment §9.1 / §9.3：单卷启动期阻塞澄清最多 1 次，
+        由 ``unit.clarification_count`` 计数控制；超出时强制走 CHAT。
         """
         if unit.is_terminal():
             raise ValueError(
@@ -531,15 +539,35 @@ class LearningAgentSystem:
                 "no further turns can be prepared."
             )
 
-        effective_mode = AgentMode(unit.effective_mode())
+        if unit.phase == "absorbing":
+            decision = should_run_alignment(unit, user_input)
+            # §9.3 第 1 条护栏：启动期阻塞澄清不超过 1 次
+            if decision.mode == "active" and unit.clarification_count >= 1:
+                decision = AlignmentDecision(
+                    mode="none",
+                    reason="clear_enough",
+                )
+            await self._apply_alignment_decision(unit, decision)
+            effective_mode = (
+                AgentMode.ASK if decision.mode == "active" else AgentMode.CHAT
+            )
+        else:
+            decision = None
+            effective_mode = AgentMode.TEACH
 
-        unit_metadata = {
+        unit_metadata: dict[str, Any] = {
             "mode": effective_mode.value,
             "learning_unit_id": unit.id,
             "learning_unit_phase": unit.phase,
             "alignment_state": unit.alignment_state,
             "objective_status": unit.objective_status,
         }
+        if decision is not None and decision.mode != "none":
+            unit_metadata["alignment_reason"] = decision.reason
+            if decision.assumption_note:
+                unit_metadata["assumption_note"] = decision.assumption_note
+            if decision.suggested_objective:
+                unit_metadata["suggested_objective"] = decision.suggested_objective
         if effective_mode == AgentMode.ASK:
             unit_metadata["alignment"] = True
         if effective_mode == AgentMode.TEACH and unit.teach_session is not None:
@@ -565,6 +593,45 @@ class LearningAgentSystem:
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
         )
+
+    async def _apply_alignment_decision(
+        self,
+        unit: LearningUnit,
+        decision: AlignmentDecision,
+    ) -> None:
+        """把策略结果写回 unit；状态确实变化时持锁 save。
+
+        ``alignment_state`` 映射：``none → idle`` / ``suggested → suggested`` /
+        ``active → active``。``active`` 触发 ``clarification_count`` 递增（限流计数）。
+        """
+        state_map = {"none": "idle", "suggested": "suggested", "active": "active"}
+        new_state = state_map[decision.mode]
+        will_increment = decision.mode == "active"
+
+        if (
+            not will_increment
+            and unit.alignment_state == new_state
+            and unit.alignment_reason == decision.reason
+            and unit.assumption_note == decision.assumption_note
+        ):
+            return
+
+        async with self.learning_unit_store.lock(unit.id):
+            latest = self.learning_unit_store.get(unit.id) or unit
+            latest.alignment_state = new_state
+            latest.alignment_reason = decision.reason
+            latest.assumption_note = decision.assumption_note
+            if will_increment:
+                latest.clarification_count += 1
+                latest.last_alignment_at = datetime.now(timezone.utc)
+            self.learning_unit_store.save(latest)
+            # caller 持有的 unit 与 store 缓存指向同一对象，确保元数据立刻可见
+            if latest is not unit:
+                unit.alignment_state = latest.alignment_state
+                unit.alignment_reason = latest.alignment_reason
+                unit.assumption_note = latest.assumption_note
+                unit.clarification_count = latest.clarification_count
+                unit.last_alignment_at = latest.last_alignment_at
 
     async def _prepare_session_turn(
         self,

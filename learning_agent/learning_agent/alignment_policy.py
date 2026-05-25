@@ -137,6 +137,21 @@ def _count_distinct_objects(text: str) -> int:
     return sum(1 for p in pieces if _token_count(p) >= 1)
 
 
+def _mentions_known_concept(unit: LearningUnit, text: str) -> bool:
+    """``text`` 是否提到了 ``unit.concept_list`` 中的任一概念名。
+
+    用于豁免短输入的 C 档：若用户输入虽短但已点名一个 unit 已抽到的概念，
+    则视为 "在已知地图上深挖"，不应该被打断要求澄清。
+    """
+    if not unit.concept_list:
+        return False
+    lowered = text.lower()
+    for concept in unit.concept_list:
+        if concept.name and concept.name.lower() in lowered:
+            return True
+    return False
+
+
 def should_run_alignment(
     unit: LearningUnit,
     user_input: str,
@@ -146,14 +161,17 @@ def should_run_alignment(
 
     判定顺序：先看"完全不能学"(C)，再看"明显过宽"(B)，剩下都视为"能直接学"(A)。
 
-    一阶段限制：只用单轮 user_input 做判定；``recent_messages`` 与 unit 的
-    concept_list 在 B4 之后接入"中途纠偏"路径。
+    一阶段限制：只用单轮 user_input + unit.concept_list 做判定；
+    ``recent_messages`` 在 B4 之后接入"中途纠偏"路径。
     """
     text = user_input.strip()
 
     # ─── C 档：missing_learnable_target / conflicting_scope ───
 
-    if _token_count(text) < _MIN_LEARNABLE_TOKENS:
+    # 短输入豁免：若已点名某个已知 concept，不再视为模糊
+    if _token_count(text) < _MIN_LEARNABLE_TOKENS and not _mentions_known_concept(
+        unit, text
+    ):
         return AlignmentDecision(
             mode="active",
             reason="missing_learnable_target",
