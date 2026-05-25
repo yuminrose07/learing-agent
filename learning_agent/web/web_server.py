@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
 from learning_agent.learning_agent.learning_unit_store import ActiveUnitExistsError
+from learning_agent.learning_agent.learning_unit_metrics import summary_to_dict
 from learning_agent.learning_agent.main import LearningAgentSystem
 from learning_agent.learning_agent.mode_service import (
     NEUTRAL_PERSONA,
@@ -103,6 +104,10 @@ class PromoteSessionRequest(BaseModel):
 
 class RefineObjectiveRequest(BaseModel):
     new_text: str
+
+
+class ReuseFeedbackRequest(BaseModel):
+    value: str  # "yes" | "no"
 
 
 # ───────────────────────────────
@@ -560,6 +565,40 @@ async def refine_learning_unit_objective(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/reuse-feedback")
+async def record_learning_unit_reuse_feedback(
+    unit_id: str, req: ReuseFeedbackRequest
+) -> dict[str, Any]:
+    """M2：反馈卡上"下次还会用学习模式吗"轻量问卷。
+
+    400：value 非 yes/no，或卷未进入 consolidated。404：unit 不存在。
+    """
+    system = _get_system()
+    try:
+        unit = system.record_reuse_feedback(unit_id, req.value)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.get("/learning-units/metrics")
+async def get_learning_unit_metrics(
+    window_days: Optional[int] = 7,
+) -> dict[str, Any]:
+    """M2：返回 4 个 P0 指标（TTFV / consolidation / teach-entry / reuse）。
+
+    ``window_days=0`` 表示当天，``None`` 走全量回看（前端可以传 ``window_days=-1``
+    或省略该参数）。
+    """
+    system = _get_system()
+    if window_days is not None and window_days < 0:
+        window_days = None
+    summary = system.get_learning_unit_metrics(window_days=window_days)
+    return summary_to_dict(summary)
 
 
 @app.post("/chat-sessions/{session_id}/promote-to-learning-unit")

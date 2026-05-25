@@ -56,6 +56,10 @@ from learning_agent.learning_agent.learning_unit_store import (
     ActiveUnitExistsError,
     LearningUnitStore,
 )
+from learning_agent.learning_agent.learning_unit_metrics import (
+    LearningUnitMetricsSummary,
+    calculate_metrics_summary,
+)
 from learning_agent.learning_agent.teach_generator import TeachQuestionGenerator
 from learning_agent.learning_agent.teach_judge import TeachJudge
 from learning_agent.learning_agent.mode_service import (
@@ -823,6 +827,48 @@ class LearningAgentSystem:
             source_ref=chat_session_id,
             title=seed_text[:48],
         )
+
+    def record_reuse_feedback(self, unit_id: str, value: str) -> LearningUnit:
+        """M2：用户在反馈卡上点"赞/否"后落事件。
+
+        - ``value`` 只接受 ``"yes"``/``"no"``，其他抛 ``ValueError``。
+        - 仅对 consolidated 的卷有意义；其他阶段抛 ``ValueError`` 让前端反馈
+          状态错误（避免用户误点）。
+        - 不修改卷本身字段——意愿数据走事件流，便于指标按窗口聚合且不需要
+          额外 schema 迁移。
+        """
+        if value not in ("yes", "no"):
+            raise ValueError("reuse feedback value must be 'yes' or 'no'")
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        if not unit.is_terminal():
+            raise ValueError(
+                f"Cannot record reuse feedback in phase {unit.phase!r}; "
+                "only valid once the unit is consolidated."
+            )
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_REUSE_FEEDBACK,
+            extra={"value": value},
+        )
+        return unit
+
+    def get_learning_unit_metrics(
+        self,
+        *,
+        window_days: Optional[int] = 7,
+    ) -> LearningUnitMetricsSummary:
+        """M2：扫所有 session 的事件流，聚合 4 个 P0 指标。
+
+        ``window_days=None`` 用于全量回看；正数限定到最近 N 天。算子在
+        ``learning_unit_metrics`` 模块内部按指标各自决定是否裁窗（TTFV 不裁，
+        其余 3 个裁）。
+        """
+        all_events: list = []
+        for sid in self.file_store.list_sessions():
+            all_events.extend(self.session_event_store.read_events(sid))
+        return calculate_metrics_summary(all_events, window_days=window_days)
 
     async def _run_concept_extraction_tail(
         self,

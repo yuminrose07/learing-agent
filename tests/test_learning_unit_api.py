@@ -40,6 +40,8 @@ def mock_system():
     system.request_alignment = AsyncMock()
     system.accept_assumption = AsyncMock()
     system.refine_objective = AsyncMock()
+    system.record_reuse_feedback = MagicMock()
+    system.get_learning_unit_metrics = MagicMock()
     return system
 
 
@@ -506,3 +508,127 @@ class TestRefineObjective:
                     "lu-x", RefineObjectiveRequest(new_text="x")
                 )
         assert exc_info.value.status_code == 404
+
+
+class TestReuseFeedback:
+    """POST /learning-units/{id}/reuse-feedback — M2 复用意愿轻量问卷。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_yes_returns_unit(self, mock_system):
+        from learning_agent.web.web_server import (
+            ReuseFeedbackRequest,
+            record_learning_unit_reuse_feedback,
+        )
+
+        unit = _make_unit(phase="consolidated")
+        mock_system.record_reuse_feedback.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await record_learning_unit_reuse_feedback(
+                unit.id, ReuseFeedbackRequest(value="yes")
+            )
+
+        assert result["id"] == unit.id
+        mock_system.record_reuse_feedback.assert_called_once_with(unit.id, "yes")
+
+    @pytest.mark.asyncio
+    async def test_invalid_value_returns_400(self, mock_system):
+        from learning_agent.web.web_server import (
+            ReuseFeedbackRequest,
+            record_learning_unit_reuse_feedback,
+        )
+
+        mock_system.record_reuse_feedback.side_effect = ValueError(
+            "reuse feedback value must be 'yes' or 'no'"
+        )
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await record_learning_unit_reuse_feedback(
+                    "lu-x", ReuseFeedbackRequest(value="maybe")
+                )
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import (
+            ReuseFeedbackRequest,
+            record_learning_unit_reuse_feedback,
+        )
+
+        mock_system.record_reuse_feedback.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await record_learning_unit_reuse_feedback(
+                    "lu-x", ReuseFeedbackRequest(value="yes")
+                )
+        assert exc_info.value.status_code == 404
+
+
+class TestMetricsEndpoint:
+    """GET /learning-units/metrics — M2 4 个 P0 指标聚合视图。"""
+
+    @pytest.mark.asyncio
+    async def test_returns_summary_dict(self, mock_system):
+        from learning_agent.learning_agent.learning_unit_metrics import (
+            LearningUnitMetricsSummary,
+            RatioStats,
+            TTFVStats,
+        )
+        from learning_agent.web.web_server import get_learning_unit_metrics
+
+        summary = LearningUnitMetricsSummary(
+            window_days=7,
+            window_start_iso="2026-05-19T12:00:00+00:00",
+            generated_at_iso="2026-05-26T12:00:00+00:00",
+            ttfv=TTFVStats(p50_seconds=5.0, p90_seconds=10.0, sample_size=3),
+            consolidation=RatioStats(numerator=2, denominator=4, ratio=0.5),
+            teach_entry=RatioStats(numerator=3, denominator=4, ratio=0.75),
+            reuse_intent=RatioStats(numerator=2, denominator=3, ratio=2 / 3),
+            diagnostics={"total_events": 50, "learning_unit_events": 20},
+        )
+        mock_system.get_learning_unit_metrics.return_value = summary
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await get_learning_unit_metrics()
+
+        assert result["window_days"] == 7
+        assert result["ttfv"]["p50_seconds"] == 5.0
+        assert result["consolidation_rate"]["ratio"] == 0.5
+        assert result["reuse_intent_rate"]["numerator"] == 2
+        mock_system.get_learning_unit_metrics.assert_called_once_with(window_days=7)
+
+    @pytest.mark.asyncio
+    async def test_negative_window_days_collapses_to_none(self, mock_system):
+        from learning_agent.learning_agent.learning_unit_metrics import (
+            LearningUnitMetricsSummary,
+            RatioStats,
+            TTFVStats,
+        )
+        from learning_agent.web.web_server import get_learning_unit_metrics
+
+        mock_system.get_learning_unit_metrics.return_value = LearningUnitMetricsSummary(
+            window_days=None,
+            window_start_iso=None,
+            generated_at_iso="2026-05-26T12:00:00+00:00",
+            ttfv=TTFVStats(p50_seconds=None, p90_seconds=None, sample_size=0),
+            consolidation=RatioStats(0, 0, None),
+            teach_entry=RatioStats(0, 0, None),
+            reuse_intent=RatioStats(0, 0, None),
+        )
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            await get_learning_unit_metrics(window_days=-1)
+
+        mock_system.get_learning_unit_metrics.assert_called_once_with(window_days=None)
