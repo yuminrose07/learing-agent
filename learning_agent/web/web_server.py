@@ -198,6 +198,22 @@ async def _stream_chat_chunks(
                     "persona_role": chunk_metadata.get("persona_role"),
                     "usage": chunk_metadata.get("usage") or chunk_metadata.get("turn_usage"),
                 }
+                # adaptive alignment §11.3：学习卷专属元数据，前端按此驱动
+                # 目标卡片 + 收窄建议条 + 验收按钮，避免轮询 GET /learning-units/{id}。
+                for key in (
+                    "learning_unit_id",
+                    "learning_unit_phase",
+                    "alignment_state",
+                    "objective_status",
+                    "alignment_reason",
+                    "assumption_note",
+                    "suggested_objective",
+                    "teach_session_id",
+                    "teach_state",
+                ):
+                    value = chunk_metadata.get(key)
+                    if value is not None:
+                        payload[key] = value
                 await queue.put(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
         except ValueError:
             await queue.put(

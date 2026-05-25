@@ -36,6 +36,7 @@ const els = {
     btnModeChat: document.getElementById('btn-mode-chat'),
     btnModeAsk: document.getElementById('btn-mode-ask'),
     btnModeStudy: document.getElementById('btn-mode-study'),
+    btnModeLearning: document.getElementById('btn-mode-learning'),
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
     topbarSubtitle: document.getElementById('topbar-subtitle'),
@@ -455,6 +456,7 @@ function showWelcome() {
     currentPersonaKey = null;
     currentPersonaName = '';
     syncThinkingPickerLabel('neutral');
+    document.dispatchEvent(new CustomEvent('learning-unit:reset'));
     els.messageInput.disabled = false;
     els.btnSend.disabled = false;
     updateAskPlaceholderFromSession(null);
@@ -746,6 +748,10 @@ async function selectSession(id, title) {
         syncTopbarFromSession(session, title || session.title || id);
         await loadSessionHistory(id, session);
         updateAskPlaceholderFromSession(session);
+        // adaptive alignment §11.3: 让学习卷 UI 模块同步目标卡 / 进度 / 建议条。
+        document.dispatchEvent(new CustomEvent('learning-unit:session-loaded', {
+            detail: { session, sessionId: id },
+        }));
     } catch (err) {
         console.error('加载会话失败:', err);
     }
@@ -948,15 +954,25 @@ async function sendMessage(text) {
     if (isStreaming || !text.trim()) return;
 
     if (!currentSessionId) {
-        const session = await createSession();
-        if (!session) return;
-        await selectSession(session.id, session.title || 'New chat');
-        // Carry the welcome-screen persona selection into the freshly-created session.
-        if (currentPersonaKey) {
-            try {
-                await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: currentPersonaKey });
-            } catch (err) {
-                console.warn('绑定思路到新会话失败:', err);
+        // adaptive alignment §6.1: "学习模式" 起手不走普通 POST /sessions —— 而是
+        // POST /learning-units，让后端创建一个挂着 unit 的 session，并把首条用户消息
+        // 作为 seed_text 走 absorbing 阶段。
+        if (currentMode === 'learning' && typeof window.__createLearningUnit === 'function') {
+            const created = await window.__createLearningUnit(text.trim());
+            if (!created || !created.session_id) {
+                return;
+            }
+            await selectSession(created.session_id, created.objective?.text || 'Learning unit');
+        } else {
+            const session = await createSession();
+            if (!session) return;
+            await selectSession(session.id, session.title || 'New chat');
+            if (currentPersonaKey) {
+                try {
+                    await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: currentPersonaKey });
+                } catch (err) {
+                    console.warn('绑定思路到新会话失败:', err);
+                }
             }
         }
     }
@@ -1035,6 +1051,12 @@ async function sendMessage(text) {
                         if (typeof data.content === 'string' && data.content.length > 0) {
                             appendToLastMessage(data.content);
                         }
+                        // adaptive alignment §11.3: 通知学习卷 UI 模块更新目标卡 / 进度 / 建议条。
+                        if (data.learning_unit_id) {
+                            document.dispatchEvent(new CustomEvent('learning-unit:metadata', {
+                                detail: data,
+                            }));
+                        }
                     } catch (e) {
                         if (e instanceof SyntaxError) {
                             console.warn('SSE parse error:', dataStr);
@@ -1111,6 +1133,16 @@ async function switchMode(mode) {
         return;
     }
 
+    // adaptive alignment: "learning" 不是后端 AgentMode；它是"会话挂了一个学习卷"的
+    // 前端语义。新开会话才能创建学习卷，已有会话切到 learning 没意义——
+    // 静默回退到上一个模式，避免出现一个"卡在 learning 但后端没卷"的灰态。
+    if (mode === 'learning') {
+        currentMode = previousMode;
+        updateModeToolbar();
+        updateHomeModeCards();
+        return;
+    }
+
     try {
         await api('PUT', `/sessions/${currentSessionId}/mode`, { mode });
         await updateAskPlaceholder();
@@ -1122,13 +1154,14 @@ async function switchMode(mode) {
 }
 
 function updateModeToolbar() {
-    [els.btnModeChat, els.btnModeAsk, els.btnModeStudy].forEach(btn => {
+    [els.btnModeChat, els.btnModeAsk, els.btnModeStudy, els.btnModeLearning].forEach(btn => {
         if (btn) btn.classList.remove('active');
     });
     const activeBtn = {
         chat: els.btnModeChat,
         ask: els.btnModeAsk,
         study: els.btnModeStudy,
+        learning: els.btnModeLearning,
     }[currentMode];
     if (activeBtn) activeBtn.classList.add('active');
 }
@@ -1177,6 +1210,9 @@ if (els.btnModeChat) {
 }
 if (els.btnModeAsk) {
     els.btnModeAsk.addEventListener('click', () => switchMode('ask'));
+}
+if (els.btnModeLearning) {
+    els.btnModeLearning.addEventListener('click', () => switchMode('learning'));
 }
 document.querySelectorAll('.home-mode-card').forEach(card => {
     if (card.disabled) return;

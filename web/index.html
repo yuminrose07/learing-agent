@@ -6,6 +6,7 @@
     <title>學齋 · Learning Agent</title>
     <link rel="stylesheet" href="static/tokens.css">
     <link rel="stylesheet" href="static/style.css">
+    <link rel="stylesheet" href="static/learning-unit.css">
 </head>
 <body>
     <div id="app">
@@ -77,6 +78,9 @@
 
             <!-- 聊天区域 -->
             <div class="chat-area" id="chat-area">
+                <!-- 学习卷目标卡（仅在 session.learning_unit_id 存在时显示） -->
+                <div id="learning-unit-card" class="hidden" aria-live="polite"></div>
+
                 <!-- 欢迎页 -->
                 <div class="welcome-screen hidden" id="welcome-screen">
                     <div class="welcome-content">
@@ -105,6 +109,11 @@
                                 <span class="home-mode-badge study">预告</span>
                                 <div class="home-mode-title" data-en="Study">研习</div>
                                 <div class="home-mode-desc">由资深学伴主持的深学模式，分章节带你推进，后续开放。</div>
+                            </button>
+                            <button class="home-mode-card" data-mode="learning" type="button">
+                                <span class="home-mode-badge">新</span>
+                                <div class="home-mode-title" data-en="Learning">学习</div>
+                                <div class="home-mode-desc">直接开始学一个概念、模块或设计；如果范围太大，我会帮你逐步收窄。</div>
                             </button>
                         </div>
 
@@ -150,6 +159,10 @@
                 <button id="btn-mode-study" class="btn-mode disabled" data-mode="study" title="Study 研习：深度伴读（即将上线）" aria-label="Study 研习" disabled>
                     <span class="mode-icon">📚</span>
                     <span class="mode-label">Study 研习</span>
+                </button>
+                <button id="btn-mode-learning" class="btn-mode" data-mode="learning" title="Learning 学习：以一个学习卷为单位收束知识" aria-label="Learning 学习">
+                    <span class="mode-icon">🪴</span>
+                    <span class="mode-label">Learning 学习</span>
                 </button>
             </div>
 
@@ -203,5 +216,6 @@
 
     <script src="static/vendor/markdown-it.min.js"></script>
     <script src="static/app.js"></script>
+    <script src="static/learning-unit-ui.js"></script>
 </body>
 </html>
