@@ -84,6 +84,18 @@ class Config:
             or learning_unit_from_file.get("concept_extraction_threshold", "0.6")
         )
 
+        # outputting 阶段 TEACH 链路（B5 E4）。两者皆可为 None，回退到
+        # provider.default_model。建议在 config.yaml 里指向同一颗 cheap-tier
+        # 模型，例如 ``claude-haiku-4-5-20251001``。
+        self.teach_generator_model: Optional[str] = (
+            os.getenv("LA_TEACH_GENERATOR_MODEL")
+            or learning_unit_from_file.get("teach_generator_model")
+        )
+        self.teach_judge_model: Optional[str] = (
+            os.getenv("LA_TEACH_JUDGE_MODEL")
+            or learning_unit_from_file.get("teach_judge_model")
+        )
+
         # Tool Guard 配置
         tool_guard_from_file = file_values.get("tool_guard", {})
         rules_from_file = tool_guard_from_file.get("rules", {})

@@ -35,7 +35,7 @@ def mock_system():
     system.list_learning_units = MagicMock(return_value=[])
     system.get_learning_unit = MagicMock(return_value=None)
     system.confirm_learning_unit_objective = MagicMock()
-    system.advance_learning_unit = MagicMock()
+    system.advance_learning_unit = AsyncMock()
     system.promote_chat_session_to_learning_unit = MagicMock()
     system.request_alignment = AsyncMock()
     system.accept_assumption = AsyncMock()
@@ -229,7 +229,7 @@ class TestAdvance:
             )
 
         assert result["phase"] == "outputting"
-        mock_system.advance_learning_unit.assert_called_once_with(
+        mock_system.advance_learning_unit.assert_awaited_once_with(
             unit.id, "outputting"
         )
 

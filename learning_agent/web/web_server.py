@@ -513,7 +513,7 @@ async def advance_learning_unit(
 ) -> dict[str, Any]:
     system = _get_system()
     try:
-        unit = system.advance_learning_unit(unit_id, req.target_phase)
+        unit = await system.advance_learning_unit(unit_id, req.target_phase)
     except KeyError:
         raise HTTPException(status_code=404, detail="Learning unit not found")
     except ValueError as exc:
