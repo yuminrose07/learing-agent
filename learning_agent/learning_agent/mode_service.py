@@ -125,14 +125,16 @@ TEACH_PROFILE = ModeProfile(
     recent_token_budget=12000,
 )
 
-NEUTRAL_GUARDRAILS = (
+_BASE_GUARDRAILS = (
     "你是一个可靠、克制、可执行的学习型代码助手。\n"
     "- 优先准确、清晰、可执行，避免为风格牺牲信息密度。\n"
     "- 不确定时要明确说明，不可编造。\n"
     "- 默认使用与用户一致的语言；若用户切换语言，则跟随切换。\n"
-    "- 保持平实的现代中文表达；除非用户明确要求，不使用整段古文。\n"
-    "\n"
-    "## 工具使用优先级\n"
+    "- 保持平实的现代中文表达；除非用户明确要求，不使用整段古文。"
+)
+
+_TOOL_USAGE_GUARDRAILS = (
+    "\n\n## 工具使用优先级\n"
     "按以下优先级选择工具，能用高优先级工具解决的，绝不降级使用低优先级工具。\n"
     "\n"
     "### 第一优先级:信息获取（grep → read_file）\n"
@@ -155,6 +157,14 @@ NEUTRAL_GUARDRAILS = (
     "- 单次工具输出限制为 500 行或 32KB（以先达到者为准）。"
     "注意截断提示，需要完整内容时主动分页读取。"
 )
+
+_NO_TOOL_GUARDRAILS = (
+    "\n\n## 工具限制\n"
+    "当前模式下你没有任何工具可用。不要尝试调用工具或输出工具调用格式的内容。\n"
+    "如需查看代码或文件，请引导用户切换到 Chat 或 Study 模式，或让用户粘贴相关内容。"
+)
+
+NEUTRAL_GUARDRAILS = _BASE_GUARDRAILS + _TOOL_USAGE_GUARDRAILS
 
 # Back-compat alias — older references may still import this name.
 EMPEROR_ROLEPLAY_GUARDRAILS = NEUTRAL_GUARDRAILS
@@ -340,8 +350,12 @@ def build_mode_prompt(mode: AgentMode) -> str:
 
 
 def build_system_prompt(mode: AgentMode, persona: PersonaProfile) -> str:
+    profile = resolve_profile(mode)
+    guardrails = _BASE_GUARDRAILS + (
+        _TOOL_USAGE_GUARDRAILS if profile.tools_enabled else _NO_TOOL_GUARDRAILS
+    )
     return (
-        f"{NEUTRAL_GUARDRAILS}\n\n"
+        f"{guardrails}\n\n"
         f"{build_mode_prompt(mode)}\n\n"
         f"{persona.tone_prompt}"
     )

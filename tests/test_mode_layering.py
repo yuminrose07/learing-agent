@@ -25,8 +25,11 @@ from learning_agent.learning_agent.mode_service import (
     ZHU_XI_PERSONA,
     TEACH_MODE_PROMPT,
     TurnExecutionKind,
+    build_system_prompt,
     build_turn_profile,
+    resolve_persona,
 )
+from learning_agent.learning_agent.session_manager import SessionManager
 
 
 def _build_system_stub() -> LearningAgentSystem:
@@ -418,3 +421,59 @@ class TestTeachProtocol:
         # 4) consolidated: 拒绝进一步对话
         with pytest.raises(ValueError):
             await system._prepare_session_turn(session, "再问一个", AgentMode.CHAT)
+
+
+class TestSystemPromptToolGuardrails:
+    """system prompt 的工具段必须与 visible_tools 一致，否则模型会幻觉式输出代码块。"""
+
+    def test_ask_mode_omits_tool_usage_priority_section(self):
+        prompt = build_system_prompt(AgentMode.ASK, resolve_persona(AgentMode.ASK))
+
+        assert "工具使用优先级" not in prompt
+        assert "工具限制" in prompt
+
+    def test_chat_mode_keeps_tool_usage_priority_section(self):
+        prompt = build_system_prompt(AgentMode.CHAT, resolve_persona(AgentMode.CHAT))
+
+        assert "工具使用优先级" in prompt
+        assert "grep" in prompt
+        assert "read_file" in prompt
+
+    def test_teach_mode_omits_tool_usage_priority_section(self):
+        prompt = build_system_prompt(AgentMode.TEACH, resolve_persona(AgentMode.TEACH))
+
+        assert "工具使用优先级" not in prompt
+        assert "工具限制" in prompt
+
+
+class TestPostAskTargetMetadata:
+    """切入 Ask 时必须记录来源 mode，否则确认后会被错误地踢回 CHAT。"""
+
+    def test_entering_ask_records_previous_mode_as_post_ask_target(self):
+        sm = SessionManager()
+        session = sm.create_session()
+        sm.switch_session_mode(session.id, AgentMode.STUDY)
+
+        switched = sm.switch_session_mode(session.id, AgentMode.ASK)
+
+        assert switched.mode == AgentMode.ASK
+        assert switched.mode_metadata["post_ask_target"] == AgentMode.STUDY.value
+
+    def test_leaving_ask_clears_post_ask_target(self):
+        sm = SessionManager()
+        session = sm.create_session()
+        sm.switch_session_mode(session.id, AgentMode.STUDY)
+        sm.switch_session_mode(session.id, AgentMode.ASK)
+
+        switched = sm.switch_session_mode(session.id, AgentMode.CHAT)
+
+        assert switched.mode == AgentMode.CHAT
+        assert "post_ask_target" not in switched.mode_metadata
+
+    def test_entering_ask_from_chat_records_chat(self):
+        sm = SessionManager()
+        session = sm.create_session()  # default mode is CHAT
+
+        switched = sm.switch_session_mode(session.id, AgentMode.ASK)
+
+        assert switched.mode_metadata["post_ask_target"] == AgentMode.CHAT.value

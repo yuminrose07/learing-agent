@@ -585,6 +585,10 @@ class SessionManager:
             "from": from_mode.value,
             "to": mode.value,
         }
+        if mode == AgentMode.ASK and from_mode != AgentMode.ASK:
+            session.mode_metadata["post_ask_target"] = from_mode.value
+        elif mode != AgentMode.ASK:
+            session.mode_metadata.pop("post_ask_target", None)
         session.last_accessed_at = datetime.now(timezone.utc)
         state = self._session_memory_states.get(session_id)
         if state is not None:
