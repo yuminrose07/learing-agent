@@ -353,6 +353,7 @@ def build_turn_profile(
     persona_key: str | None = None,
     turn_kind: TurnExecutionKind | None = None,
     override_system_prompt: str | None = None,
+    system_prompt_addendum: str | None = None,
     override_tools: list[str] | None = None,
     user_message_metadata: dict[str, Any] | None = None,
     assistant_message_metadata: dict[str, Any] | None = None,
@@ -365,10 +366,13 @@ def build_turn_profile(
         "persona_name": persona.display_name,
         "persona_role": persona.role_name,
     }
+    base_prompt = override_system_prompt or build_system_prompt(mode, persona)
+    if system_prompt_addendum:
+        base_prompt = f"{base_prompt}\n\n{system_prompt_addendum}"
     return TurnExecutionProfile(
         mode=profile.mode,
         turn_kind=turn_kind or profile.default_turn_kind,
-        system_prompt=override_system_prompt or build_system_prompt(mode, persona),
+        system_prompt=base_prompt,
         visible_tools=override_tools if override_tools is not None else list(profile.tools_enabled),
         memory_read=profile.memory_read,
         memory_write=profile.memory_write,

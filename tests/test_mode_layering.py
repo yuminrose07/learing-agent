@@ -13,6 +13,7 @@ from learning_agent.ai import (
     ConceptItem,
     LearningSession,
     LearningUnit,
+    MessageRole,
     TeachQuestion,
     TeachSession,
     UnitObjective,
@@ -434,3 +435,101 @@ class TestTeachProtocol:
         # 4) consolidated: 拒绝进一步对话
         with pytest.raises(ValueError):
             await system._prepare_session_turn(session, "再问一个", AgentMode.CHAT)
+
+
+class TestAbsorbingOpeningTemplate:
+    """B3: absorbing 首轮的 system prompt addendum 注入（adaptive alignment §6.1 / §6.2）。"""
+
+    @pytest.mark.asyncio
+    async def test_first_absorbing_turn_injects_opening_template(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+        # session.entries 为空，命中"首轮"
+
+        _, turn = await system._prepare_session_turn(
+            session, "讲讲 BaseModel", AgentMode.CHAT
+        )
+
+        prompt = turn.profile.system_prompt
+        assert "工作目标卡片" in prompt
+        assert "学习地图" in prompt
+        assert "第一段实质讲解" in prompt
+        # 学习目标原文必须被嵌入，供 LLM 复述
+        assert unit.objective.text in prompt
+        # A 档默认不带 suggestion 段
+        assert "收窄建议" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_first_absorbing_turn_with_suggested_appends_narrowing_block(self):
+        """B 档 alignment_state=suggested 时附加收窄建议段。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # "教我整个项目" 命中 too_broad → B 档
+        _, turn = await system._prepare_session_turn(
+            session, "教我整个项目", AgentMode.CHAT
+        )
+
+        assert turn.effective_mode == AgentMode.CHAT
+        assert unit.alignment_state == "suggested"
+        prompt = turn.profile.system_prompt
+        assert "工作目标卡片" in prompt
+        assert "收窄建议" in prompt
+
+    @pytest.mark.asyncio
+    async def test_non_first_absorbing_turn_skips_opening_template(self):
+        """已有 assistant 消息时不再注入开场模板。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+        # 模拟首轮已经发生过一次回答
+        from learning_agent.ai.models import SessionEntry
+
+        session.entries.append(
+            SessionEntry(role=MessageRole.ASSISTANT, content="先前的回答。")
+        )
+
+        _, turn = await system._prepare_session_turn(
+            session, "再讲讲 BaseModel", AgentMode.CHAT
+        )
+
+        assert "工作目标卡片" not in turn.profile.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_ask_overlay_does_not_get_opening_template(self):
+        """C 档（active）走 ASK，开场模板不应注入到 ASK turn 上。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # "讲讲这个" → C 档 → ASK 覆写
+        _, turn = await system._prepare_session_turn(
+            session, "讲讲这个", AgentMode.CHAT
+        )
+
+        assert turn.effective_mode == AgentMode.ASK
+        assert "工作目标卡片" not in turn.profile.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_outputting_turn_has_no_opening_template(self):
+        system = _build_system_stub()
+        teach = TeachSession(
+            questions=[TeachQuestion(concept_id="cpt-1", kind="sa", stem="?")],
+            state="prompted",
+        )
+        unit = _make_unit(phase="outputting", teach_session=teach)
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        _, turn = await system._prepare_session_turn(
+            session, "我准备好答题了", AgentMode.CHAT
+        )
+
+        assert turn.effective_mode == AgentMode.TEACH
+        assert "工作目标卡片" not in turn.profile.system_prompt

@@ -63,6 +63,28 @@ from learning_agent.learning_agent.session_manager import SessionManager
 logger = logging.getLogger(__name__)
 
 
+_ABSORBING_OPENING_TEMPLATE = """\
+本轮是这个学习卷的首轮回答。请严格按以下结构输出，先教再建议：
+
+1. 工作目标卡片（一句话）
+   开头复述："我先按这个目标带你学：<对学习目标的简短复述>"
+   学习目标原文：{objective}
+
+2. 学习地图（3-5 个 bullet）
+   列出本卷会涵盖的模块 / 概念 / 学习顺序。
+
+3. 第一段实质讲解
+   从地图的第一项切口开始，直接给一段有内容的解释——不要只是大纲。
+{suggestion_block}\
+不要先反问、不要先要求确认。"""
+
+_ABSORBING_OPENING_SUGGESTION_BLOCK = """
+4. 收窄建议（仅本轮）
+   在最末尾附一句："如果你想更聚焦，我可以帮你收窄成 <更具体的方向>"。
+"""
+
+
+
 class LearningAgentSystem:
     """
     Product/Application 层主入口。
@@ -574,9 +596,14 @@ class LearningAgentSystem:
             unit_metadata["teach_session_id"] = unit.teach_session.id
             unit_metadata["teach_state"] = unit.teach_session.state
 
+        opening_addendum = self._build_absorbing_opening_addendum(
+            session, unit, decision, effective_mode
+        )
+
         profile = build_turn_profile(
             effective_mode,
             persona_key=self._resolve_session_persona_key(session, effective_mode),
+            system_prompt_addendum=opening_addendum,
             user_message_metadata=dict(unit_metadata),
             assistant_message_metadata=dict(unit_metadata),
         )
@@ -592,6 +619,32 @@ class LearningAgentSystem:
             profile=profile,
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
+        )
+
+    def _build_absorbing_opening_addendum(
+        self,
+        session: LearningSession,
+        unit: LearningUnit,
+        decision: Optional[AlignmentDecision],
+        effective_mode: AgentMode,
+    ) -> Optional[str]:
+        """absorbing 首轮的 system prompt 增量（adaptive alignment §6.1 / §6.2）。
+
+        触发条件：absorbing + CHAT + 本卷此前没有过 assistant 回答。
+        B 档（suggested）追加"收窄建议"段；A 档不附加。C 档走 ASK 不进这里。
+        """
+        if effective_mode != AgentMode.CHAT or unit.phase != "absorbing":
+            return None
+        if any(e.role == MessageRole.ASSISTANT for e in session.entries):
+            return None
+        suggestion_block = (
+            _ABSORBING_OPENING_SUGGESTION_BLOCK
+            if decision is not None and decision.mode == "suggested"
+            else ""
+        )
+        return _ABSORBING_OPENING_TEMPLATE.format(
+            objective=unit.objective.text.strip() or "（待定）",
+            suggestion_block=suggestion_block,
         )
 
     async def _apply_alignment_decision(
