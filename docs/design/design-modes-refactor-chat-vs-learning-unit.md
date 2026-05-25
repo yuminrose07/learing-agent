@@ -5,6 +5,7 @@
 > **文档日期**：2026-05-25
 > **实现状态**：需求已对齐，方案待评审，未开始实现。
 > **取代**：本文档替换 [design-chat-ask-study-modes.md](design-chat-ask-study-modes.md) 中关于产品模式三分的部分；该旧文中关于 Runtime/Product 分层、单一 ReAct 内核、TurnExecutionKind 等基础设施约束**继续生效**。
+> **后续补充**：关于“学习卷是否必须先进入 `aligning -> ASK`”的策略，后续已由 [design-learning-unit-adaptive-alignment.md](design-learning-unit-adaptive-alignment.md) 取代；本文其余关于 Learning Unit、TEACH、概念抽取、持久化与前后端契约的内容继续作为主参考。
 
 ---
 
