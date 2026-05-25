@@ -315,6 +315,62 @@ class TestTeachProtocol:
         assert meta2["alignment_state"] == "idle"
 
     @pytest.mark.asyncio
+    async def test_prepare_session_turn_suggestion_count_bumps_and_caps(self):
+        """§9.3 第 2 条护栏：suggested 写入时 suggestion_count +1，超过 2 后降级为 none。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # 第 1 次 B 档输入：策略判 suggested，counter 0 → 1
+        _, t1 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        assert t1.profile.assistant_message_metadata["alignment_state"] == "suggested"
+        assert unit.suggestion_count == 1
+
+        # 第 2 次：counter 1 → 2，仍 suggested
+        _, t2 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        assert t2.profile.assistant_message_metadata["alignment_state"] == "suggested"
+        assert unit.suggestion_count == 2
+
+        # 第 3 次：counter 已达上限，策略降级为 none → alignment_state 回到 idle
+        _, t3 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        meta3 = t3.profile.assistant_message_metadata
+        assert meta3["alignment_state"] == "idle"
+        assert "alignment_reason" not in meta3  # none 不应暴露原因
+        # counter 不再继续涨
+        assert unit.suggestion_count == 2
+
+    @pytest.mark.asyncio
+    async def test_prepare_session_turn_cooldown_ticks_down_each_absorbing_turn(self):
+        """§9.3 第 3 条护栏：nag_cooldown_remaining 每个 absorbing turn 减 1，期间 B 档降级。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        # 模拟用户已 accept_assumption，进入 3 轮冷静期
+        unit.nag_cooldown_remaining = 3
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # 第 1 轮：B 档输入应被降级；冷静期 3 → 2
+        _, t1 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        assert t1.profile.assistant_message_metadata["alignment_state"] == "idle"
+        assert unit.nag_cooldown_remaining == 2
+
+        # 第 2 轮：仍降级；2 → 1
+        _, t2 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        assert t2.profile.assistant_message_metadata["alignment_state"] == "idle"
+        assert unit.nag_cooldown_remaining == 1
+
+        # 第 3 轮：仍降级；1 → 0
+        _, t3 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        assert t3.profile.assistant_message_metadata["alignment_state"] == "idle"
+        assert unit.nag_cooldown_remaining == 0
+
+        # 第 4 轮：冷静期结束，B 档恢复
+        _, t4 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
+        assert t4.profile.assistant_message_metadata["alignment_state"] == "suggested"
+        assert unit.nag_cooldown_remaining == 0  # 已经触底不再减
+
+    @pytest.mark.asyncio
     async def test_prepare_session_turn_absorbing_phase_yields_chat_mode(self):
         system = _build_system_stub()
         unit = _make_unit(phase="absorbing")

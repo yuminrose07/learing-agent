@@ -552,8 +552,12 @@ class LearningAgentSystem:
         - absorbing → 默认 CHAT；若策略判 active 且未澄清过则覆写为 ASK；
           策略判 suggested 时保留 CHAT 但通过 ``alignment_state`` 让 UI 出建议条。
 
-        adaptive alignment §9.1 / §9.3：单卷启动期阻塞澄清最多 1 次，
-        由 ``unit.clarification_count`` 计数控制；超出时强制走 CHAT。
+        adaptive alignment §9.1 / §9.3：限流由 3 道护栏分摊：
+        - #1 启动期阻塞澄清不超过 1 次（``clarification_count``，本函数内 override）
+        - #2 单卷最多 2 条非阻塞建议（``suggestion_count``，在 ``alignment_policy``
+          内降级）
+        - #3 "先按这个学"后 N 轮冷静期（``nag_cooldown_remaining``，在
+          ``_apply_alignment_decision`` 内递减）
         """
         if unit.is_terminal():
             raise ValueError(
@@ -652,31 +656,35 @@ class LearningAgentSystem:
         unit: LearningUnit,
         decision: AlignmentDecision,
     ) -> None:
-        """把策略结果写回 unit；状态确实变化时持锁 save。
+        """把策略结果写回 unit；同时维护 §9.3 #2/#3 的持久化计数器。
 
         ``alignment_state`` 映射：``none → idle`` / ``suggested → suggested`` /
-        ``active → active``。``active`` 触发 ``clarification_count`` 递增（限流计数）。
+        ``active → active``。
+
+        计数器：
+        - ``active``：``clarification_count += 1`` (§9.3 #1)
+        - ``suggested``：``suggestion_count += 1`` (§9.3 #2)
+        - 每次进入此方法（一次 absorbing turn 入口）：``nag_cooldown_remaining``
+          若大于 0 则减 1 (§9.3 #3)。冷静期与策略判断结果无关，是绝对回合数。
         """
         state_map = {"none": "idle", "suggested": "suggested", "active": "active"}
         new_state = state_map[decision.mode]
-        will_increment = decision.mode == "active"
-
-        if (
-            not will_increment
-            and unit.alignment_state == new_state
-            and unit.alignment_reason == decision.reason
-            and unit.assumption_note == decision.assumption_note
-        ):
-            return
+        will_bump_clarification = decision.mode == "active"
+        will_bump_suggestion = decision.mode == "suggested"
 
         async with self.learning_unit_store.lock(unit.id):
             latest = self.learning_unit_store.get(unit.id) or unit
             latest.alignment_state = new_state
             latest.alignment_reason = decision.reason
             latest.assumption_note = decision.assumption_note
-            if will_increment:
+            if will_bump_clarification:
                 latest.clarification_count += 1
                 latest.last_alignment_at = datetime.now(timezone.utc)
+            if will_bump_suggestion:
+                latest.suggestion_count += 1
+                latest.last_alignment_at = datetime.now(timezone.utc)
+            if latest.nag_cooldown_remaining > 0:
+                latest.nag_cooldown_remaining -= 1
             self.learning_unit_store.save(latest)
             # caller 持有的 unit 与 store 缓存指向同一对象，确保元数据立刻可见
             if latest is not unit:
@@ -684,6 +692,8 @@ class LearningAgentSystem:
                 unit.alignment_reason = latest.alignment_reason
                 unit.assumption_note = latest.assumption_note
                 unit.clarification_count = latest.clarification_count
+                unit.suggestion_count = latest.suggestion_count
+                unit.nag_cooldown_remaining = latest.nag_cooldown_remaining
                 unit.last_alignment_at = latest.last_alignment_at
 
     async def _prepare_session_turn(

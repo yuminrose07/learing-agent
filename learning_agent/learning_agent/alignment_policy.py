@@ -108,6 +108,10 @@ _MULTI_OBJECT_SEPARATORS: tuple[str, ...] = ("、", "；", ";", ",")
 # C 档触发的最小可学习 token 数（中文按字符计，英文按词计）
 _MIN_LEARNABLE_TOKENS = 4
 
+# §9.3 #2：每个 unit 启动期最多弹 ``_MAX_SUGGESTIONS_PER_UNIT`` 条非阻塞建议；
+# 超过后即使 policy 仍判 B 档也会被静默降级为 A 档，避免反复唠叨。
+_MAX_SUGGESTIONS_PER_UNIT = 2
+
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -163,10 +167,17 @@ def should_run_alignment(
     """三档自适应对齐判定（adaptive alignment §5.3）。
 
     判定顺序：先看"完全不能学"(C)，再看"明显过宽"(B)，剩下都视为"能直接学"(A)。
+    最后再叠加 §9.3 限流：suggested 命中上限或冷静期内将被降级为 none。
 
     一阶段限制：只用单轮 user_input + unit.concept_list 做判定；
     ``recent_messages`` 在 B4 之后接入"中途纠偏"路径。
     """
+    decision = _raw_judgment(unit, user_input)
+    return _apply_rate_limits(unit, decision)
+
+
+def _raw_judgment(unit: LearningUnit, user_input: str) -> AlignmentDecision:
+    """启发式分档主体；不感知任何持久化计数器，保证可独立单测。"""
     text = user_input.strip()
 
     # ─── C 档：missing_learnable_target / conflicting_scope ───
@@ -213,6 +224,26 @@ def should_run_alignment(
         mode="none",
         reason="clear_enough",
     )
+
+
+def _apply_rate_limits(
+    unit: LearningUnit, decision: AlignmentDecision
+) -> AlignmentDecision:
+    """§9.3 #2 / #3 限流：suggested 命中上限或冷静期内静默降为 none。
+
+    - #2 ``suggestion_count >= _MAX_SUGGESTIONS_PER_UNIT``：单卷已弹过 2 条建议，
+      不再让 UI 出第三条；目标已经被"宽"了两次，再弹只是噪声。
+    - #3 ``nag_cooldown_remaining > 0``：用户已经按下"先按这个学"，N 轮内豁免建议。
+    其它情形（active、none）保持原状 —— C 档由 ``clarification_count`` 在调度器
+    侧单独限流，A 档本就不打扰。
+    """
+    if decision.mode != "suggested":
+        return decision
+    if unit.suggestion_count >= _MAX_SUGGESTIONS_PER_UNIT:
+        return AlignmentDecision(mode="none", reason="clear_enough")
+    if unit.nag_cooldown_remaining > 0:
+        return AlignmentDecision(mode="none", reason="clear_enough")
+    return decision
 
 
 __all__ = [

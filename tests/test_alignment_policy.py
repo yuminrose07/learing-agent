@@ -178,6 +178,44 @@ class TestConceptListAwareness:
         assert decision.mode == "active"
 
 
+class TestRateLimitDowngrade:
+    """§9.3 #2 / #3：suggested 命中限流时静默降为 none。"""
+
+    def test_suggested_downgraded_after_suggestion_cap(self):
+        unit = _unit()
+        unit.suggestion_count = 2  # 已经弹过 2 条
+        decision = should_run_alignment(unit, "教我整个项目")
+        assert decision.mode == "none"
+        assert decision.reason == "clear_enough"
+
+    def test_suggested_passes_below_suggestion_cap(self):
+        unit = _unit()
+        unit.suggestion_count = 1  # 还有一条额度
+        decision = should_run_alignment(unit, "教我整个项目")
+        assert decision.mode == "suggested"
+
+    def test_suggested_downgraded_during_cooldown(self):
+        unit = _unit()
+        unit.nag_cooldown_remaining = 2
+        decision = should_run_alignment(unit, "教我整个项目")
+        assert decision.mode == "none"
+
+    def test_active_not_affected_by_suggestion_cap(self):
+        # active 由 clarification_count 在调度器侧限流，不在 policy 内降级
+        unit = _unit()
+        unit.suggestion_count = 99
+        unit.nag_cooldown_remaining = 99
+        decision = should_run_alignment(unit, "教")
+        assert decision.mode == "active"
+
+    def test_none_unaffected_by_counters(self):
+        unit = _unit()
+        unit.suggestion_count = 99
+        unit.nag_cooldown_remaining = 99
+        decision = should_run_alignment(unit, "带我理解 compaction 完整流程")
+        assert decision.mode == "none"
+
+
 @pytest.mark.parametrize(
     "text,expected_mode",
     [
