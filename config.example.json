@@ -19,5 +19,24 @@
       "deny": [],
       "ask": []
     }
+  },
+  "web_search": {
+    "enabled": true,
+    "provider": "builtin",
+    "default_top_k": 5,
+    "max_top_k": 10,
+    "default_limit_chars": 12000,
+    "timeout_seconds": 12,
+    "allowed_source_types": [
+      "official_docs",
+      "official_blog",
+      "github_repo",
+      "github_issue",
+      "community_forum",
+      "blog",
+      "paper",
+      "news",
+      "aggregator"
+    ]
   }
 }

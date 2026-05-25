@@ -61,3 +61,23 @@ tool_guard:
   #   ask:
   #     - "bash:git push *"
   #     - "file:write:.gitconfig"
+
+# ─── Web Search 外部知识检索配置 ───
+# 内置 provider 使用轻量 HTML 搜索与正文抓取，适合学习场景 Agent 的外部资料发现。
+web_search:
+  enabled: true
+  provider: builtin
+  default_top_k: 5
+  max_top_k: 10
+  default_limit_chars: 12000
+  timeout_seconds: 12
+  allowed_source_types:
+    - official_docs
+    - official_blog
+    - github_repo
+    - github_issue
+    - community_forum
+    - blog
+    - paper
+    - news
+    - aggregator

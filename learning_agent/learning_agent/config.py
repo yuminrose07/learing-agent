@@ -98,6 +98,53 @@ class Config:
             },
         }
 
+        web_search_from_file = file_values.get("web_search", {})
+        allowed_source_types = os.getenv("LA_WEB_SEARCH_ALLOWED_SOURCE_TYPES")
+        if allowed_source_types:
+            parsed_allowed_source_types = [
+                item.strip() for item in allowed_source_types.split(",") if item.strip()
+            ]
+        else:
+            parsed_allowed_source_types = web_search_from_file.get(
+                "allowed_source_types",
+                [
+                    "official_docs",
+                    "official_blog",
+                    "github_repo",
+                    "github_issue",
+                    "community_forum",
+                    "blog",
+                    "paper",
+                    "news",
+                    "aggregator",
+                ],
+            )
+        self.web_search = {
+            "enabled": (
+                os.getenv("LA_WEB_SEARCH_ENABLED")
+                or str(web_search_from_file.get("enabled", True))
+            ).lower() == "true",
+            "provider": os.getenv("LA_WEB_SEARCH_PROVIDER")
+            or web_search_from_file.get("provider", "builtin"),
+            "default_top_k": int(
+                os.getenv("LA_WEB_SEARCH_DEFAULT_TOP_K")
+                or web_search_from_file.get("default_top_k", "5")
+            ),
+            "max_top_k": int(
+                os.getenv("LA_WEB_SEARCH_MAX_TOP_K")
+                or web_search_from_file.get("max_top_k", "10")
+            ),
+            "default_limit_chars": int(
+                os.getenv("LA_WEB_FETCH_DEFAULT_LIMIT_CHARS")
+                or web_search_from_file.get("default_limit_chars", "12000")
+            ),
+            "timeout_seconds": float(
+                os.getenv("LA_WEB_SEARCH_TIMEOUT_SECONDS")
+                or web_search_from_file.get("timeout_seconds", "12")
+            ),
+            "allowed_source_types": parsed_allowed_source_types,
+        }
+
     def _load_config_file(self, config_path: Optional[str]) -> dict[str, Any]:
         """尝试加载配置文件，返回解析后的字典。"""
         paths = []
@@ -202,4 +249,5 @@ class Config:
             "auto_confirm_knowledge": self.auto_confirm_knowledge,
             "log_level": self.log_level,
             "tool_guard": self.tool_guard,
+            "web_search": self.web_search,
         }
