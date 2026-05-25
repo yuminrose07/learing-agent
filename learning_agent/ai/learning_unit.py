@@ -125,6 +125,21 @@ class TeachSession(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class TeachFeedbackCard(BaseModel):
+    """consolidated 阶段的"掌握度"反馈卡片（task breakdown B5 §4）。
+
+    三块固定字段供 F5 反馈卡片直接渲染：
+    - ``mastered``：本卷已经掌握的概念短语（≤ concept_list.name 集合）
+    - ``gaps``：仍有空缺、需要补强的概念短语
+    - ``next_topic_suggestion``：基于 gaps 给出的一句话下一步建议
+    所有字段都默认为空，便于"卷尚未完成评判"时的兜底渲染。
+    """
+
+    mastered: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    next_topic_suggestion: str = ""
+
+
 _PHASE_ORDER: tuple[LearningUnitPhase, ...] = (
     "absorbing",
     "outputting",
@@ -170,6 +185,8 @@ class LearningUnit(BaseModel):
 
     teach_session: Optional[TeachSession] = None
     verification_status: Optional[VerificationStatus] = None
+    # B5: consolidated 阶段写入；UI 用作"掌握度反馈卡"。卷未完成时保持 None。
+    feedback_card: Optional[TeachFeedbackCard] = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -213,6 +230,7 @@ __all__ = [
     "TeachQuestion",
     "TeachSession",
     "TeachSessionState",
+    "TeachFeedbackCard",
     "QuestionKind",
     "QuestionVerdict",
     "VerificationStatus",

@@ -300,6 +300,38 @@ class TestLegacyMigration:
         assert reloaded.is_terminal()
 
 
+class TestFeedbackCardRoundTrip:
+    """B5 E1：consolidated 反馈卡字段 round-trip 与默认行为。"""
+
+    def test_feedback_card_defaults_to_none(self, file_store: FileStore):
+        store = LearningUnitStore(file_store)
+        unit = store.create(session_id="sess-fb", objective_text="t")
+        assert unit.feedback_card is None
+        # 旧 JSON 缺该键也应兜底
+        raw = file_store.load_learning_unit(unit.id)
+        assert raw.get("feedback_card") is None
+
+    def test_feedback_card_round_trips_after_write(self, file_store: FileStore):
+        from learning_agent.ai.learning_unit import TeachFeedbackCard
+
+        store = LearningUnitStore(file_store)
+        unit = store.create(session_id="sess-fb2", objective_text="t")
+        unit.feedback_card = TeachFeedbackCard(
+            mastered=["BaseModel", "field validator"],
+            gaps=["ConfigDict 高阶用法"],
+            next_topic_suggestion="可以接着学 model_validator 的多字段联动",
+        )
+        store.save(unit)
+
+        fresh = LearningUnitStore(file_store)
+        reloaded = fresh.get(unit.id)
+        assert reloaded is not None
+        assert reloaded.feedback_card is not None
+        assert reloaded.feedback_card.mastered == ["BaseModel", "field validator"]
+        assert reloaded.feedback_card.gaps == ["ConfigDict 高阶用法"]
+        assert "model_validator" in reloaded.feedback_card.next_topic_suggestion
+
+
 class TestAlignmentCountersRoundTrip:
     """B4 D1：§9.3 #2/#3 新增字段必须能落盘并 reload。"""
 
