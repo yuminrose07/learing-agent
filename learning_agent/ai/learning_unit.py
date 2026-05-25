@@ -187,6 +187,10 @@ class LearningUnit(BaseModel):
     verification_status: Optional[VerificationStatus] = None
     # B5: consolidated 阶段写入；UI 用作"掌握度反馈卡"。卷未完成时保持 None。
     feedback_card: Optional[TeachFeedbackCard] = None
+    # M1：本卷首条 absorbing 阶段 assistant 消息成功 finalize 的时间戳，用作
+    # ``learning_unit.first_value_delivered`` 事件的 once-only 守卫与
+    # "首个学习价值时间 (TTFV)" 指标的 t0。None = 尚未投出首条价值。
+    first_value_delivered_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 

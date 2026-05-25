@@ -65,6 +65,7 @@ from learning_agent.learning_agent.mode_service import (
     is_confirmation_message,
 )
 from learning_agent.learning_agent.session_event_store import SessionEventStore
+from learning_agent.learning_agent.session_events import SessionEventType
 from learning_agent.learning_agent.session_migration import migrate_all_sessions
 from learning_agent.learning_agent.session_manager import SessionManager
 
@@ -447,6 +448,42 @@ class LearningAgentSystem:
     def list_learning_units(self) -> list[LearningUnit]:
         return self.learning_unit_store.list()
 
+    def _emit_unit_event(
+        self,
+        unit: LearningUnit,
+        event_type: str,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """M1：把学习卷产品事件写进 ``sessions/<id>.events.jsonl``。
+
+        Payload 最小集（adaptive alignment §12.2）：
+        ``{learning_unit_id, phase, alignment_state, objective_status,
+        alignment_reason, clarification_count}``。
+
+        失败仅记日志：事件用于观测/指标，不应阻塞产品主流。``extra`` 用于
+        给特定事件补字段（如 PHASE_CHANGED 的 ``from``/``to``，CONSOLIDATED
+        的 ``verification_status``）。
+        """
+        store = getattr(self, "session_event_store", None)
+        if store is None:
+            return
+        payload: dict[str, Any] = {
+            "learning_unit_id": unit.id,
+            "phase": unit.phase,
+            "alignment_state": unit.alignment_state,
+            "objective_status": unit.objective_status,
+            "alignment_reason": unit.alignment_reason or "",
+            "clarification_count": unit.clarification_count,
+        }
+        if extra:
+            payload.update(extra)
+        try:
+            store.append_event(unit.session_id, event_type, payload=payload)
+        except Exception:
+            logger.exception(
+                f"[System] Failed to emit {event_type} for unit {unit.id}"
+            )
+
     def create_learning_unit(
         self,
         *,
@@ -475,6 +512,11 @@ class LearningAgentSystem:
 
         session.learning_unit_id = unit.id
         session.mode = AgentMode.CHAT
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_CREATED,
+            extra={"source": source, "seed_text": seed_text[:200]},
+        )
         return session, unit
 
     def confirm_learning_unit_objective(self, unit_id: str) -> LearningUnit:
@@ -496,6 +538,10 @@ class LearningAgentSystem:
         B5 E4：在 ``transition_to`` 之前 eager 调用 ``TeachQuestionGenerator``，
         让前端拿到的卷一上手就带题目。生成失败（0 题）则视为"无可评估概念"，
         直接 ``verification_status="skipped"`` 并跳过 outputting 直接 consolidate。
+
+        M1：每次实际 phase 变更触发 ``LEARNING_UNIT_PHASE_CHANGED``；
+        进入 outputting/consolidated 同时分别触发 ``TEACH_ENTERED`` /
+        ``CONSOLIDATED`` 标记事件（便于指标查询不必扫 phase 变更对）。
         """
         unit = self.learning_unit_store.get(unit_id)
         if unit is None:
@@ -506,14 +552,78 @@ class LearningAgentSystem:
             if unit.verification_status == "skipped":
                 # 没有可评估的概念 → 跨过 outputting 收束（不能直接跳，
                 # 状态机要求 absorbing→outputting→consolidated）。
+                prev = unit.phase
                 unit.transition_to("outputting")
+                self._emit_unit_event(
+                    unit,
+                    SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+                    extra={"from": prev, "to": "outputting", "skipped_teach": True},
+                )
+                self._emit_unit_event(
+                    unit,
+                    SessionEventType.LEARNING_UNIT_TEACH_ENTERED,
+                    extra={"skipped": True, "question_total": 0},
+                )
                 self._finalize_consolidation(unit)
                 unit.transition_to("consolidated")
                 self.learning_unit_store.save(unit)
+                self._emit_unit_event(
+                    unit,
+                    SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+                    extra={"from": "outputting", "to": "consolidated"},
+                )
+                self._emit_unit_event(
+                    unit,
+                    SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                    extra={
+                        "verification_status": unit.verification_status,
+                        "mastered_count": (
+                            len(unit.feedback_card.mastered)
+                            if unit.feedback_card else 0
+                        ),
+                        "gaps_count": (
+                            len(unit.feedback_card.gaps)
+                            if unit.feedback_card else 0
+                        ),
+                    },
+                )
                 return unit
 
+        prev = unit.phase
         unit.transition_to(target_phase)  # 非法过渡抛 ValueError
         self.learning_unit_store.save(unit)
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+            extra={"from": prev, "to": target_phase},
+        )
+        if target_phase == "outputting":
+            self._emit_unit_event(
+                unit,
+                SessionEventType.LEARNING_UNIT_TEACH_ENTERED,
+                extra={
+                    "question_total": (
+                        len(unit.teach_session.questions)
+                        if unit.teach_session is not None else 0
+                    ),
+                },
+            )
+        elif target_phase == "consolidated":
+            self._emit_unit_event(
+                unit,
+                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                extra={
+                    "verification_status": unit.verification_status,
+                    "mastered_count": (
+                        len(unit.feedback_card.mastered)
+                        if unit.feedback_card else 0
+                    ),
+                    "gaps_count": (
+                        len(unit.feedback_card.gaps)
+                        if unit.feedback_card else 0
+                    ),
+                },
+            )
         return unit
 
     async def _start_teach_session(self, unit: LearningUnit) -> None:
@@ -619,6 +729,11 @@ class LearningAgentSystem:
             latest.assumption_note = ""
             latest.last_alignment_at = datetime.now(timezone.utc)
             self.learning_unit_store.save(latest)
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ALIGNMENT_STARTED,
+                extra={"trigger": "user_request"},
+            )
             return latest
 
     async def accept_assumption(self, unit_id: str) -> LearningUnit:
@@ -641,6 +756,16 @@ class LearningAgentSystem:
             latest.nag_cooldown_remaining = COOLDOWN_AFTER_ACCEPT_ASSUMPTION
             latest.last_alignment_at = datetime.now(timezone.utc)
             self.learning_unit_store.save(latest)
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ASSUMPTION_ACCEPTED,
+                extra={"cooldown": latest.nag_cooldown_remaining},
+            )
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ALIGNMENT_SKIPPED,
+                extra={"trigger": "user_accept_assumption"},
+            )
             return latest
 
     async def refine_objective(
@@ -665,6 +790,7 @@ class LearningAgentSystem:
             )
         async with self.learning_unit_store.lock(unit_id):
             latest = self.learning_unit_store.get(unit_id) or unit
+            old_text = latest.objective.text
             latest.objective.text = cleaned
             latest.objective_status = "refined"
             latest.alignment_state = "resolved"
@@ -672,6 +798,14 @@ class LearningAgentSystem:
             latest.assumption_note = ""
             latest.last_alignment_at = datetime.now(timezone.utc)
             self.learning_unit_store.save(latest)
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_OBJECTIVE_REFINED,
+                extra={
+                    "old_text": old_text[:200],
+                    "new_text": cleaned[:200],
+                },
+            )
             return latest
 
     def promote_chat_session_to_learning_unit(
@@ -908,6 +1042,33 @@ class LearningAgentSystem:
                 unit.nag_cooldown_remaining = latest.nag_cooldown_remaining
                 unit.last_alignment_at = latest.last_alignment_at
 
+        # M1：把策略结果翻译成产品事件。idle 静默；user_request 在本轮被消费
+        # 为 resolved，发 RESOLVED；suggested 发 SUGGESTED；其余 active 发 STARTED。
+        if is_user_request:
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ALIGNMENT_RESOLVED,
+                extra={"trigger": "user_request_consumed"},
+            )
+        elif decision.mode == "suggested":
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ALIGNMENT_SUGGESTED,
+                extra={
+                    "suggested_objective": decision.suggested_objective or "",
+                    "suggestion_count": latest.suggestion_count,
+                },
+            )
+        elif decision.mode == "active":
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ALIGNMENT_STARTED,
+                extra={
+                    "trigger": decision.reason or "policy",
+                    "clarification_count": latest.clarification_count,
+                },
+            )
+
     async def _prepare_session_turn(
         self,
         session: LearningSession,
@@ -1087,6 +1248,52 @@ class LearningAgentSystem:
         self._extraction_tasks.add(task)
         task.add_done_callback(self._extraction_tasks.discard)
 
+    def _maybe_emit_first_value(
+        self,
+        session: LearningSession,
+        prepared_turn: PreparedSessionTurn,
+        response_text: str,
+    ) -> None:
+        """M1：absorbing 阶段首次成功产生非空 assistant 回答时发 FIRST_VALUE_DELIVERED。
+
+        守卫顺序（任一失败则跳过）：
+        - 响应非空
+        - 会话挂着 learning_unit
+        - 本轮 effective_mode 是 CHAT（teach/ask 不算"学习价值"）
+        - 卷处于 absorbing
+        - 卷的 ``first_value_delivered_at`` 仍为 None（once-only）
+        """
+        if not response_text.strip():
+            return
+        unit_id = session.learning_unit_id
+        if not unit_id:
+            return
+        if prepared_turn.effective_mode != AgentMode.CHAT:
+            return
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            return
+        if unit.phase != "absorbing":
+            return
+        if unit.first_value_delivered_at is not None:
+            return
+        unit.first_value_delivered_at = datetime.now(timezone.utc)
+        try:
+            self.learning_unit_store.save(unit)
+        except Exception:
+            logger.exception(
+                f"[System] Failed to persist first_value_delivered_at for unit {unit_id}"
+            )
+            return
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_FIRST_VALUE_DELIVERED,
+            extra={
+                "delivered_at": unit.first_value_delivered_at.isoformat(),
+                "response_chars": len(response_text),
+            },
+        )
+
     async def _stream_teach_answer_flow(
         self,
         session: LearningSession,
@@ -1109,6 +1316,21 @@ class LearningAgentSystem:
             self._finalize_consolidation(unit)
             unit.transition_to("consolidated")
             self.learning_unit_store.save(unit)
+            self._emit_unit_event(
+                unit,
+                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+                extra={"from": "outputting", "to": "consolidated", "reason": "no_questions"},
+            )
+            self._emit_unit_event(
+                unit,
+                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                extra={
+                    "verification_status": unit.verification_status,
+                    "mastered_count": 0,
+                    "gaps_count": 0,
+                    "reason": "no_questions",
+                },
+            )
             text = "本卷未能生成可评估题目，已自动收束。"
             self._record_teach_turn(session, unit, user_input, text)
             yield ChatChunk(
@@ -1123,6 +1345,26 @@ class LearningAgentSystem:
             self._finalize_consolidation(unit)
             unit.transition_to("consolidated")
             self.learning_unit_store.save(unit)
+            self._emit_unit_event(
+                unit,
+                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+                extra={"from": "outputting", "to": "consolidated", "reason": "already_answered"},
+            )
+            self._emit_unit_event(
+                unit,
+                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                extra={
+                    "verification_status": unit.verification_status,
+                    "mastered_count": (
+                        len(unit.feedback_card.mastered)
+                        if unit.feedback_card else 0
+                    ),
+                    "gaps_count": (
+                        len(unit.feedback_card.gaps)
+                        if unit.feedback_card else 0
+                    ),
+                },
+            )
             text = self._render_feedback_card(unit)
             self._record_teach_turn(session, unit, user_input, text)
             yield ChatChunk(
@@ -1168,6 +1410,28 @@ class LearningAgentSystem:
             else:
                 latest_ts.state = "prompted"
             self.learning_unit_store.save(latest)
+
+        if done:
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+                extra={"from": "outputting", "to": "consolidated"},
+            )
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                extra={
+                    "verification_status": latest.verification_status,
+                    "mastered_count": (
+                        len(latest.feedback_card.mastered)
+                        if latest.feedback_card else 0
+                    ),
+                    "gaps_count": (
+                        len(latest.feedback_card.gaps)
+                        if latest.feedback_card else 0
+                    ),
+                },
+            )
 
         # 渲染响应文本
         verdict_glyph = "✓" if verdict == "passed" else "✗"
@@ -1303,6 +1567,9 @@ class LearningAgentSystem:
                         session,
                         prepared_turn,
                         "".join(response_parts),
+                    )
+                    self._maybe_emit_first_value(
+                        session, prepared_turn, "".join(response_parts)
                     )
                     self._maybe_fire_concept_extraction(
                         session, prepared_turn, "".join(response_parts)
