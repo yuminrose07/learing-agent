@@ -42,6 +42,10 @@ from learning_agent.learning_agent.session_event_store import filter_events
 
 logger = logging.getLogger(__name__)
 
+# SSE 心跳间隔：静默期内每隔多少秒发一行 SSE 注释（": ping"），
+# 用于穿透浏览器/反向代理的空闲超时（典型默认 30s/60s）。
+_SSE_HEARTBEAT_SECONDS = 15.0
+
 # ───────────────────────────────
 # 请求/响应模型
 # ───────────────────────────────
@@ -159,29 +163,68 @@ async def _stream_chat_chunks(
     message: str,
     mode: AgentMode = AgentMode.CHAT,
 ) -> AsyncGenerator[str, None]:
-    """将产品层对话流转换为 SSE 格式。"""
+    """将产品层对话流转换为 SSE 格式，并在静默期发心跳防止超时断流。
+
+    上游 ``stream_session_chat`` 会先做一次同步重的准备
+    （compaction plan / 首 token 预热），期间没有数据下行。
+    用 ``asyncio.Queue`` 把生产与消费解耦，消费侧每
+    ``_SSE_HEARTBEAT_SECONDS`` 秒没拿到新数据就发一行 SSE 注释
+    （前端 parser 会忽略 ``:`` 开头的行），避免被反向代理或浏览器
+    判定为空闲连接而 RST。
+    """
+    # 立刻送一行注释，触发 Starlette 把响应头 flush 出去，
+    # 使前端的 fetch().response 尽早 resolve，避免 TTFB 阶段被代理切断。
+    yield ": stream-open\n\n"
+
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+    async def _producer() -> None:
+        try:
+            async for chunk in system.stream_session_chat(session_id, message, mode=mode):
+                chunk_metadata = dict(chunk.metadata)
+                payload = {
+                    "content": chunk.content,
+                    "tool_call": chunk.tool_call,
+                    "finish_reason": chunk.finish_reason,
+                    "mode": chunk_metadata.get("mode", mode.value),
+                    "alignment": chunk_metadata.get("alignment", mode == AgentMode.ASK),
+                    "persona_key": chunk_metadata.get("persona_key"),
+                    "persona_name": chunk_metadata.get("persona_name"),
+                    "persona_role": chunk_metadata.get("persona_role"),
+                    "usage": chunk_metadata.get("usage") or chunk_metadata.get("turn_usage"),
+                }
+                await queue.put(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        except ValueError:
+            await queue.put(
+                f"data: {json.dumps({'error': f'Session {session_id} not found'}, ensure_ascii=False)}\n\n"
+            )
+        except Exception as e:
+            logger.exception(f"[Web] Chat stream error: {e}")
+            await queue.put(
+                f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            )
+        finally:
+            await queue.put(None)
+
+    producer_task = asyncio.create_task(_producer())
     try:
-        async for chunk in system.stream_session_chat(session_id, message, mode=mode):
-            chunk_metadata = dict(chunk.metadata)
-            payload = {
-                "content": chunk.content,
-                "tool_call": chunk.tool_call,
-                "finish_reason": chunk.finish_reason,
-                "mode": chunk_metadata.get("mode", mode.value),
-                "alignment": chunk_metadata.get("alignment", mode == AgentMode.ASK),
-                "persona_key": chunk_metadata.get("persona_key"),
-                "persona_name": chunk_metadata.get("persona_name"),
-                "persona_role": chunk_metadata.get("persona_role"),
-                "usage": chunk_metadata.get("usage") or chunk_metadata.get("turn_usage"),
-            }
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-    except ValueError:
-        yield f"data: {json.dumps({'error': f'Session {session_id} not found'}, ensure_ascii=False)}\n\n"
-    except Exception as e:
-        logger.exception(f"[Web] Chat stream error: {e}")
-        yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-    finally:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=_SSE_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
+            if item is None:
+                break
+            yield item
         yield "data: [DONE]\n\n"
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 # ───────────────────────────────
@@ -263,6 +306,13 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
         return StreamingResponse(
             _stream_chat_chunks(system, session_id, req.message, mode=req.mode),
             media_type="text/event-stream",
+            headers={
+                # 禁掉所有可能的缓冲/转换：浏览器缓存、nginx proxy_buffering、
+                # 任何会改 body 的中间件（如 gzip 重分块）。
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
     else:
         try:
