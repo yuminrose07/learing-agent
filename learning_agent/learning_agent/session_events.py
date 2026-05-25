@@ -31,6 +31,21 @@ class SessionEventType:
     COMPACTION_SUMMARY_ADDED = "compaction.summary_added"
     COMPACTION_ANCHOR_MOVED = "compaction.anchor_moved"
     COMPACTION_REBASE_COMPLETED = "compaction.rebase_completed"
+    # 学习卷产品事件（adaptive alignment §12.2）。visibility=AGENT，参与时间轴重建。
+    # Payload 最小集：{learning_unit_id, phase, alignment_state, objective_status,
+    # reason, clarification_count}。
+    LEARNING_UNIT_CREATED = "learning_unit.created"
+    LEARNING_UNIT_PHASE_CHANGED = "learning_unit.phase_changed"
+    LEARNING_UNIT_ALIGNMENT_SUGGESTED = "learning_unit.alignment_suggested"
+    LEARNING_UNIT_ALIGNMENT_STARTED = "learning_unit.alignment_started"
+    LEARNING_UNIT_ALIGNMENT_RESOLVED = "learning_unit.alignment_resolved"
+    LEARNING_UNIT_ALIGNMENT_SKIPPED = "learning_unit.alignment_skipped"
+    LEARNING_UNIT_OBJECTIVE_REFINED = "learning_unit.objective_refined"
+    LEARNING_UNIT_ASSUMPTION_ACCEPTED = "learning_unit.assumption_accepted"
+    LEARNING_UNIT_FIRST_VALUE_DELIVERED = "learning_unit.first_value_delivered"
+    LEARNING_UNIT_TEACH_ENTERED = "learning_unit.teach_entered"
+    LEARNING_UNIT_CONSOLIDATED = "learning_unit.consolidated"
+    LEARNING_UNIT_REUSE_FEEDBACK = "learning_unit.reuse_feedback"
 
 
 class EventVisibility:
