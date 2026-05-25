@@ -37,6 +37,9 @@ def mock_system():
     system.confirm_learning_unit_objective = MagicMock()
     system.advance_learning_unit = MagicMock()
     system.promote_chat_session_to_learning_unit = MagicMock()
+    system.request_alignment = AsyncMock()
+    system.accept_assumption = AsyncMock()
+    system.refine_objective = AsyncMock()
     return system
 
 
@@ -348,3 +351,158 @@ class TestPromoteFromChatSession:
 
         body = json.loads(response.body)
         assert body["active_unit_id"] == "lu-existing"
+
+
+class TestRequestAlignment:
+    """POST /learning-units/{id}/align — adaptive alignment §6.3。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_active_user_request(self, mock_system):
+        from learning_agent.web.web_server import request_learning_unit_alignment
+
+        unit = _make_unit()
+        unit.alignment_state = "active"
+        unit.alignment_reason = "user_request"
+        mock_system.request_alignment.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await request_learning_unit_alignment(unit.id)
+
+        assert result["alignment_state"] == "active"
+        assert result["alignment_reason"] == "user_request"
+        mock_system.request_alignment.assert_awaited_once_with(unit.id)
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import request_learning_unit_alignment
+
+        mock_system.request_alignment.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await request_learning_unit_alignment("lu-x")
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_wrong_phase_returns_400(self, mock_system):
+        from learning_agent.web.web_server import request_learning_unit_alignment
+
+        mock_system.request_alignment.side_effect = ValueError(
+            "Cannot request alignment in phase 'outputting'"
+        )
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await request_learning_unit_alignment("lu-x")
+        assert exc_info.value.status_code == 400
+
+
+class TestAcceptAssumption:
+    """POST /learning-units/{id}/accept-assumption — §6.3 / §9.3 #3。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_skipped_with_cooldown(self, mock_system):
+        from learning_agent.web.web_server import accept_learning_unit_assumption
+
+        unit = _make_unit()
+        unit.alignment_state = "skipped"
+        unit.nag_cooldown_remaining = 3
+        mock_system.accept_assumption.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await accept_learning_unit_assumption(unit.id)
+
+        assert result["alignment_state"] == "skipped"
+        assert result["nag_cooldown_remaining"] == 3
+        mock_system.accept_assumption.assert_awaited_once_with(unit.id)
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import accept_learning_unit_assumption
+
+        mock_system.accept_assumption.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await accept_learning_unit_assumption("lu-x")
+        assert exc_info.value.status_code == 404
+
+
+class TestRefineObjective:
+    """POST /learning-units/{id}/refine-objective — §6.3 / §11.2。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_replaces_text_and_marks_refined(self, mock_system):
+        from learning_agent.web.web_server import (
+            RefineObjectiveRequest,
+            refine_learning_unit_objective,
+        )
+
+        unit = _make_unit(text="原目标")
+        unit.objective.text = "理解 BaseModel 校验流程"
+        unit.objective_status = "refined"
+        unit.alignment_state = "resolved"
+        mock_system.refine_objective.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await refine_learning_unit_objective(
+                unit.id,
+                RefineObjectiveRequest(new_text="理解 BaseModel 校验流程"),
+            )
+
+        assert result["objective"]["text"] == "理解 BaseModel 校验流程"
+        assert result["objective_status"] == "refined"
+        assert result["alignment_state"] == "resolved"
+        mock_system.refine_objective.assert_awaited_once_with(
+            unit.id, "理解 BaseModel 校验流程"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_text_returns_400(self, mock_system):
+        from learning_agent.web.web_server import (
+            RefineObjectiveRequest,
+            refine_learning_unit_objective,
+        )
+
+        mock_system.refine_objective.side_effect = ValueError(
+            "Objective text cannot be empty."
+        )
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await refine_learning_unit_objective(
+                    "lu-x", RefineObjectiveRequest(new_text="   ")
+                )
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import (
+            RefineObjectiveRequest,
+            refine_learning_unit_objective,
+        )
+
+        mock_system.refine_objective.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await refine_learning_unit_objective(
+                    "lu-x", RefineObjectiveRequest(new_text="x")
+                )
+        assert exc_info.value.status_code == 404

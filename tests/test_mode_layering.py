@@ -589,3 +589,160 @@ class TestAbsorbingOpeningTemplate:
 
         assert turn.effective_mode == AgentMode.TEACH
         assert "工作目标卡片" not in turn.profile.system_prompt
+
+
+class TestNarrowingActions:
+    """B4 D3: 三个收窄动作端点 (request_alignment / accept_assumption / refine_objective)。
+
+    系统层方法的纯逻辑测试 —— 不验 HTTP 层，只验 unit 状态变更与持锁/落盘。
+    """
+
+    def _wire_store_for_unit(self, system: LearningAgentSystem, unit: LearningUnit):
+        """让 store.get(unit.id) 返回真实 unit，save 收 unit 引用。"""
+        system.learning_unit_store.get = MagicMock(
+            side_effect=lambda uid: unit if uid == unit.id else None
+        )
+        system.learning_unit_store.save = MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_request_alignment_pulls_to_active_user_request(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        self._wire_store_for_unit(system, unit)
+
+        result = await system.request_alignment(unit.id)
+
+        assert result is unit
+        assert unit.alignment_state == "active"
+        assert unit.alignment_reason == "user_request"
+        assert unit.assumption_note == ""
+        assert unit.last_alignment_at is not None
+        system.learning_unit_store.save.assert_called_once_with(unit)
+
+    @pytest.mark.asyncio
+    async def test_request_alignment_unknown_unit_raises_keyerror(self):
+        system = _build_system_stub()
+        system.learning_unit_store.get = MagicMock(return_value=None)
+        with pytest.raises(KeyError):
+            await system.request_alignment("lu-missing")
+
+    @pytest.mark.asyncio
+    async def test_request_alignment_rejected_in_outputting_phase(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="outputting")
+        self._wire_store_for_unit(system, unit)
+        with pytest.raises(ValueError, match="absorbing"):
+            await system.request_alignment(unit.id)
+
+    @pytest.mark.asyncio
+    async def test_accept_assumption_sets_skipped_with_cooldown(self):
+        from learning_agent.learning_agent.alignment_policy import (
+            COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
+        )
+
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        unit.alignment_state = "suggested"  # 模拟 UI 上正显示建议条
+        self._wire_store_for_unit(system, unit)
+
+        result = await system.accept_assumption(unit.id)
+
+        assert result is unit
+        assert unit.alignment_state == "skipped"
+        assert unit.nag_cooldown_remaining == COOLDOWN_AFTER_ACCEPT_ASSUMPTION
+        system.learning_unit_store.save.assert_called_once_with(unit)
+
+    @pytest.mark.asyncio
+    async def test_refine_objective_replaces_text_and_marks_refined(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        self._wire_store_for_unit(system, unit)
+
+        result = await system.refine_objective(unit.id, "  专注 BaseModel 校验链  ")
+
+        assert result is unit
+        assert unit.objective.text == "专注 BaseModel 校验链"  # strip 过
+        assert unit.objective_status == "refined"
+        assert unit.alignment_state == "resolved"
+        assert unit.alignment_reason == "user_request"
+        assert unit.assumption_note == ""
+        system.learning_unit_store.save.assert_called_once_with(unit)
+
+    @pytest.mark.asyncio
+    async def test_refine_objective_empty_text_raises_valueerror(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        self._wire_store_for_unit(system, unit)
+        with pytest.raises(ValueError, match="empty"):
+            await system.refine_objective(unit.id, "   ")
+        # 不应触碰 unit
+        system.learning_unit_store.save.assert_not_called()
+
+
+class TestUserRequestedAlignmentFlow:
+    """B4 D3: /align 之后的下一轮调度 —— 必须走 ASK，本轮结束后转 resolved。"""
+
+    @pytest.mark.asyncio
+    async def test_next_turn_after_request_alignment_yields_ask(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        # 模拟 /align 端点写入的状态
+        unit.alignment_state = "active"
+        unit.alignment_reason = "user_request"
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # 下一轮即便是清晰输入，也应被强制 ASK
+        _, turn = await system._prepare_session_turn(
+            session, "讲讲 BaseModel", AgentMode.CHAT
+        )
+
+        assert turn.effective_mode == AgentMode.ASK
+        meta = turn.profile.assistant_message_metadata
+        assert meta["alignment"] is True
+        assert meta["alignment_reason"] == "user_request"
+        # 一次性消费：apply 后 state → resolved，clarification_count 未递增
+        assert unit.alignment_state == "resolved"
+        assert unit.clarification_count == 0
+
+    @pytest.mark.asyncio
+    async def test_third_turn_after_request_alignment_returns_to_heuristic(self):
+        """user_request 是一次性的：下一轮立即消费，再下一轮走 heuristic。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        unit.alignment_state = "active"
+        unit.alignment_reason = "user_request"
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        # 第 1 轮：消费 user_request → ASK，state 转 resolved
+        _, t1 = await system._prepare_session_turn(
+            session, "讲讲 BaseModel", AgentMode.CHAT
+        )
+        assert t1.effective_mode == AgentMode.ASK
+
+        # 第 2 轮：state 已 resolved，正常走 heuristic；清晰输入 → CHAT
+        _, t2 = await system._prepare_session_turn(
+            session, "讲讲 BaseModel", AgentMode.CHAT
+        )
+        assert t2.effective_mode == AgentMode.CHAT
+        assert unit.alignment_state == "idle"
+
+    @pytest.mark.asyncio
+    async def test_user_request_bypasses_clarification_rate_limit(self):
+        """即便启动期已经用掉 1 次澄清额度，/align 仍应触发 ASK。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        unit.clarification_count = 1  # 已经被系统打断过一次
+        unit.alignment_state = "active"
+        unit.alignment_reason = "user_request"
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        _, turn = await system._prepare_session_turn(
+            session, "讲讲 BaseModel", AgentMode.CHAT
+        )
+
+        assert turn.effective_mode == AgentMode.ASK
+        # 不计入限流额度
+        assert unit.clarification_count == 1

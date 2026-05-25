@@ -42,6 +42,7 @@ from learning_agent.ai.file_store import FileStore
 from learning_agent.ai.openai_provider import OpenAIProvider
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
+    COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
     should_run_alignment,
 )
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
@@ -480,6 +481,82 @@ class LearningAgentSystem:
         self.learning_unit_store.save(unit)
         return unit
 
+    async def request_alignment(self, unit_id: str) -> LearningUnit:
+        """用户主动点"帮我收窄"：把卷拉成 (active + user_request)，下一轮走 ASK。
+
+        adaptive alignment §6.3。绕过 §9.3 #1 限流（用户显式请求不计入系统主动澄清额度）。
+        必须处于 ``absorbing``；outputting/consolidated 阶段没有"对齐"语义。
+        """
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        if unit.phase != "absorbing":
+            raise ValueError(
+                f"Cannot request alignment in phase {unit.phase!r}; "
+                "alignment only applies during absorbing."
+            )
+        async with self.learning_unit_store.lock(unit_id):
+            latest = self.learning_unit_store.get(unit_id) or unit
+            latest.alignment_state = "active"
+            latest.alignment_reason = "user_request"
+            latest.assumption_note = ""
+            latest.last_alignment_at = datetime.now(timezone.utc)
+            self.learning_unit_store.save(latest)
+            return latest
+
+    async def accept_assumption(self, unit_id: str) -> LearningUnit:
+        """用户点"先按这个学"：消除建议条，进入 N 轮冷静期。
+
+        adaptive alignment §6.3 / §9.3 #3。状态置 ``skipped``，
+        ``nag_cooldown_remaining`` 重置为 ``COOLDOWN_AFTER_ACCEPT_ASSUMPTION``。
+        """
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        if unit.phase != "absorbing":
+            raise ValueError(
+                f"Cannot accept assumption in phase {unit.phase!r}; "
+                "only meaningful during absorbing."
+            )
+        async with self.learning_unit_store.lock(unit_id):
+            latest = self.learning_unit_store.get(unit_id) or unit
+            latest.alignment_state = "skipped"
+            latest.nag_cooldown_remaining = COOLDOWN_AFTER_ACCEPT_ASSUMPTION
+            latest.last_alignment_at = datetime.now(timezone.utc)
+            self.learning_unit_store.save(latest)
+            return latest
+
+    async def refine_objective(
+        self,
+        unit_id: str,
+        new_text: str,
+    ) -> LearningUnit:
+        """用户主动改写工作目标：替换 objective.text，状态推到 (resolved + refined)。
+
+        adaptive alignment §6.3 / §11.2。``new_text`` 必须非空。
+        """
+        cleaned = new_text.strip()
+        if not cleaned:
+            raise ValueError("Objective text cannot be empty.")
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        if unit.phase != "absorbing":
+            raise ValueError(
+                f"Cannot refine objective in phase {unit.phase!r}; "
+                "only meaningful during absorbing."
+            )
+        async with self.learning_unit_store.lock(unit_id):
+            latest = self.learning_unit_store.get(unit_id) or unit
+            latest.objective.text = cleaned
+            latest.objective_status = "refined"
+            latest.alignment_state = "resolved"
+            latest.alignment_reason = "user_request"
+            latest.assumption_note = ""
+            latest.last_alignment_at = datetime.now(timezone.utc)
+            self.learning_unit_store.save(latest)
+            return latest
+
     def promote_chat_session_to_learning_unit(
         self,
         chat_session_id: str,
@@ -566,13 +643,26 @@ class LearningAgentSystem:
             )
 
         if unit.phase == "absorbing":
-            decision = should_run_alignment(unit, user_input)
-            # §9.3 第 1 条护栏：启动期阻塞澄清不超过 1 次
-            if decision.mode == "active" and unit.clarification_count >= 1:
+            # /align 端点会把 unit 提前置为 (active + user_request)。这种"用户主动
+            # 触发"的对齐绕过 §9.3 #1 限流，但只生效本轮（在 _apply 中消费为 resolved）。
+            user_initiated_alignment = (
+                unit.alignment_state == "active"
+                and unit.alignment_reason == "user_request"
+            )
+            if user_initiated_alignment:
                 decision = AlignmentDecision(
-                    mode="none",
-                    reason="clear_enough",
+                    mode="active",
+                    reason="user_request",
+                    assumption_note=unit.assumption_note or "用户主动请求对齐。",
                 )
+            else:
+                decision = should_run_alignment(unit, user_input)
+                # §9.3 第 1 条护栏：启动期阻塞澄清不超过 1 次
+                if decision.mode == "active" and unit.clarification_count >= 1:
+                    decision = AlignmentDecision(
+                        mode="none",
+                        reason="clear_enough",
+                    )
             await self._apply_alignment_decision(unit, decision)
             effective_mode = (
                 AgentMode.ASK if decision.mode == "active" else AgentMode.CHAT
@@ -659,17 +749,22 @@ class LearningAgentSystem:
         """把策略结果写回 unit；同时维护 §9.3 #2/#3 的持久化计数器。
 
         ``alignment_state`` 映射：``none → idle`` / ``suggested → suggested`` /
-        ``active → active``。
+        ``active → active``。``user_request`` 是一次性消费：本轮以 active 表达，
+        但 apply 时立刻转入 ``resolved``，不参与 §9.3 #1 限流计数。
 
         计数器：
-        - ``active``：``clarification_count += 1`` (§9.3 #1)
+        - ``active`` 且非 ``user_request``：``clarification_count += 1`` (§9.3 #1)
         - ``suggested``：``suggestion_count += 1`` (§9.3 #2)
         - 每次进入此方法（一次 absorbing turn 入口）：``nag_cooldown_remaining``
           若大于 0 则减 1 (§9.3 #3)。冷静期与策略判断结果无关，是绝对回合数。
         """
         state_map = {"none": "idle", "suggested": "suggested", "active": "active"}
         new_state = state_map[decision.mode]
-        will_bump_clarification = decision.mode == "active"
+        is_user_request = decision.reason == "user_request"
+        if is_user_request:
+            # 用户主动触发的对齐本轮即被消费，下一轮回归 heuristic
+            new_state = "resolved"
+        will_bump_clarification = decision.mode == "active" and not is_user_request
         will_bump_suggestion = decision.mode == "suggested"
 
         async with self.learning_unit_store.lock(unit.id):

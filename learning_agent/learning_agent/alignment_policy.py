@@ -108,9 +108,13 @@ _MULTI_OBJECT_SEPARATORS: tuple[str, ...] = ("、", "；", ";", ",")
 # C 档触发的最小可学习 token 数（中文按字符计，英文按词计）
 _MIN_LEARNABLE_TOKENS = 4
 
-# §9.3 #2：每个 unit 启动期最多弹 ``_MAX_SUGGESTIONS_PER_UNIT`` 条非阻塞建议；
+# §9.3 #2：每个 unit 启动期最多弹 ``MAX_SUGGESTIONS_PER_UNIT`` 条非阻塞建议；
 # 超过后即使 policy 仍判 B 档也会被静默降级为 A 档，避免反复唠叨。
-_MAX_SUGGESTIONS_PER_UNIT = 2
+MAX_SUGGESTIONS_PER_UNIT = 2
+
+# §9.3 #3：用户点过"先按这个学"之后，本卷接下来 N 个 absorbing turn 不再
+# 主动弹收窄建议。每个 absorbing turn 入口减 1，归零后恢复。
+COOLDOWN_AFTER_ACCEPT_ASSUMPTION = 3
 
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -239,7 +243,7 @@ def _apply_rate_limits(
     """
     if decision.mode != "suggested":
         return decision
-    if unit.suggestion_count >= _MAX_SUGGESTIONS_PER_UNIT:
+    if unit.suggestion_count >= MAX_SUGGESTIONS_PER_UNIT:
         return AlignmentDecision(mode="none", reason="clear_enough")
     if unit.nag_cooldown_remaining > 0:
         return AlignmentDecision(mode="none", reason="clear_enough")
@@ -251,4 +255,6 @@ __all__ = [
     "AlignmentMode",
     "AlignmentReason",
     "should_run_alignment",
+    "MAX_SUGGESTIONS_PER_UNIT",
+    "COOLDOWN_AFTER_ACCEPT_ASSUMPTION",
 ]

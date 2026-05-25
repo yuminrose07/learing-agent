@@ -101,6 +101,10 @@ class PromoteSessionRequest(BaseModel):
     seed_text: str
 
 
+class RefineObjectiveRequest(BaseModel):
+    new_text: str
+
+
 # ───────────────────────────────
 # 生命周期 & 全局系统实例
 # ───────────────────────────────
@@ -510,6 +514,47 @@ async def advance_learning_unit(
     system = _get_system()
     try:
         unit = system.advance_learning_unit(unit_id, req.target_phase)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/align")
+async def request_learning_unit_alignment(unit_id: str) -> dict[str, Any]:
+    """adaptive alignment §6.3：用户主动点"帮我收窄"。"""
+    system = _get_system()
+    try:
+        unit = await system.request_alignment(unit_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/accept-assumption")
+async def accept_learning_unit_assumption(unit_id: str) -> dict[str, Any]:
+    """adaptive alignment §6.3：用户点"先按这个学"消除建议条。"""
+    system = _get_system()
+    try:
+        unit = await system.accept_assumption(unit_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/refine-objective")
+async def refine_learning_unit_objective(
+    unit_id: str, req: RefineObjectiveRequest
+) -> dict[str, Any]:
+    """adaptive alignment §6.3：用户改写工作目标。"""
+    system = _get_system()
+    try:
+        unit = await system.refine_objective(unit_id, req.new_text)
     except KeyError:
         raise HTTPException(status_code=404, detail="Learning unit not found")
     except ValueError as exc:
