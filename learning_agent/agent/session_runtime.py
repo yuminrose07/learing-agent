@@ -753,7 +753,10 @@ class AgentLoopSession:
                             yield chunk
                     except Exception as final_e:
                         logger.exception(f"[AgentLoop] Finalize LLM failed: {final_e}")
-                        yield ChatChunk(content="\n[Error] Unable to continue. Please try again later.\n")
+                        yield ChatChunk(
+                            content="\n[Error] Unable to continue. Please try again later.\n",
+                            metadata={"stream_error": True, "stream_error_reason": "finalize_failed"},
+                        )
                         finalized = False
                         self._set_state(AgentState.ERROR)
 
@@ -998,7 +1001,10 @@ class AgentLoopSession:
                 async for chunk in self.provider.stream_chat(final_params):
                     yield chunk
             except Exception:
-                yield ChatChunk(content="\n[Error] Unable to continue. Please try again later.\n")
+                yield ChatChunk(
+                    content="\n[Error] Unable to continue. Please try again later.\n",
+                    metadata={"stream_error": True, "stream_error_reason": "unhandled_error"},
+                )
 
             self._set_state(AgentState.ERROR)
             logger.exception(f"[AgentLoop] Unhandled error: {e}")
@@ -1076,7 +1082,10 @@ class AgentLoopSession:
                 str(e),
                 metadata={"mode": profile.mode.value, "phase": "single_pass"},
             )
-            yield ChatChunk(content=f"\n[Error] Single-pass turn failed: {e}")
+            yield ChatChunk(
+                content=f"\n[Error] Single-pass turn failed: {e}",
+                metadata={"stream_error": True, "stream_error_reason": "single_pass_failed"},
+            )
             if llm_span:
                 llm_span.error = str(e)
         finally:

@@ -110,6 +110,61 @@ _SAFE_FALLBACK_ANSWER = (
 )
 
 
+# 视为"承诺下文却没有下文"的悬挂结尾标点。正常答案极少以这些字符收尾。
+_DANGLING_TAILS = ("：", ":", "，", ",", "、", "；", ";", "…", "—", "－", "-")
+# 残句判定的长度上限：超过则认为是正常长答案，不因结尾标点误判。
+_INCOMPLETE_MAX_LEN = 48
+# 流错误后"部分片段"判定的长度上限：短于此且本轮发生过系统级流错误，视为被截断。
+_PARTIAL_AFTER_ERROR_MAX_LEN = 120
+
+
+def _classify_incomplete_answer(visible_text: str) -> Optional[str]:
+    """对已流式输出的可见答案做"是否是可用答案"判定。
+
+    返回非 None 的 reason_code 表示判定为"对用户不可用"、需要 rescue 收口；
+    返回 None 表示是可用答案。
+
+    保守策略：只命中高置信信号，避免误伤正常答案。
+    - 空：完全没有可见内容。
+    - 残句：很短且以悬挂标点（冒号/逗号/顿号/破折号等）收尾，例如
+      "让我尝试其他来源："——模型承诺下文却以无工具调用的纯文本收场，
+      ReAct 循环把它当成最终答案提前终止。
+    """
+    stripped = visible_text.strip()
+    if not stripped:
+        return "empty_stream"
+    if len(stripped) <= _INCOMPLETE_MAX_LEN and stripped[-1] in _DANGLING_TAILS:
+        return "incomplete_answer"
+    return None
+
+
+def _final_answer_verdict(
+    *,
+    visible_text: str,
+    stream_error_reason: Optional[str],
+    inner_reason: Optional[str],
+) -> Optional[str]:
+    """综合判定本轮是否需要 rescue 收口，返回 reason_code 或 None（可用答案）。
+
+    判定顺序（保守优先）：
+    1. 完全无可见输出（含被抑制的系统错误 chunk / inner 异常）→ 必然 rescue。
+    2. 有可见输出但是残句/截断 → rescue。
+    3. 有可见输出、本轮发生过系统级流错误、且可见内容很短（疑似被截断的片段）→ rescue。
+    4. 其余视为可用答案，不 rescue。
+
+    第 3 条带长度上限，避免把"完整长答案 + 末尾一次延迟流错误"误判成需要兜底。
+    """
+    stripped = visible_text.strip()
+    if not stripped:
+        return stream_error_reason or inner_reason or "empty_stream"
+    incomplete = _classify_incomplete_answer(stripped)
+    if incomplete:
+        return incomplete
+    if stream_error_reason is not None and len(stripped) <= _PARTIAL_AFTER_ERROR_MAX_LEN:
+        return stream_error_reason
+    return None
+
+
 class LearningAgentSystem:
     """
     Product/Application 层主入口。
@@ -1650,15 +1705,41 @@ class LearningAgentSystem:
                 rescue_reason = "inner_exception"
                 rescue_detail = f"{type(exc).__name__}: {exc}"
 
+        visible_parts: list[str] = []
+        stream_error_reason: Optional[str] = None
+        stream_error_detail: Optional[str] = None
+
         async for chunk in _inner():
+            md = chunk.metadata or {}
+            if md.get("stream_error"):
+                # 系统自己产生的错误 chunk（provider 4xx、finalize / single-pass 失败、
+                # context limit 等）。绝不转发给上游——否则用户会看到 "[Error] ..." 原始串。
+                # 记录原因，交由下方 verdict 统一用 rescue 收口。
+                if stream_error_reason is None:
+                    stream_error_reason = str(md.get("stream_error_reason") or "stream_error")
+                    stream_error_detail = (chunk.content or "").strip() or None
+                continue
             if chunk.content:
                 visible_chars += len(chunk.content)
+                visible_parts.append(chunk.content)
             yield chunk
 
-        if visible_chars == 0:
-            # Final Answer Guarantee：本轮对用户完全没有可见输出 —— 必须由系统兜底。
-            reason = rescue_reason or "empty_stream"
-            detail = rescue_detail or "stream produced no visible content"
+        visible_text = "".join(visible_parts)
+        verdict_reason = _final_answer_verdict(
+            visible_text=visible_text,
+            stream_error_reason=stream_error_reason,
+            inner_reason=rescue_reason,
+        )
+
+        if verdict_reason is not None:
+            # Final Answer Guarantee：本轮没有给用户一个"可用答案"（空 / 残句 /
+            # 被抑制的系统错误 / 流错误后的短片段）—— 必须由系统兜底。
+            reason = verdict_reason
+            detail = (
+                stream_error_detail
+                or rescue_detail
+                or "final answer guard: visible answer not usable"
+            )
             try:
                 rescue_text, rescue_via = await self._build_rescue_answer(
                     session_id=session_id,
@@ -1680,7 +1761,11 @@ class LearningAgentSystem:
                     message=detail,
                     user_input=user_input,
                     rescue_used=True,
-                    extra={"rescue_via": rescue_via, "mode": mode.value},
+                    extra={
+                        "rescue_via": rescue_via,
+                        "mode": mode.value,
+                        "visible_chars": visible_chars,
+                    },
                 )
             except Exception:
                 logger.exception(
@@ -1695,6 +1780,23 @@ class LearningAgentSystem:
                     "rescue_via": rescue_via,
                 },
             )
+        elif stream_error_reason is not None:
+            # 答案可用（前面已有足够内容），但本轮确实发生过一次系统级流错误。
+            # 不打扰用户，但要落账本，供后续优化定位。
+            try:
+                await self.unresolved_failure_logger.record(
+                    session_id=session_id,
+                    layer="stream_session_chat",
+                    reason_code=stream_error_reason,
+                    message=stream_error_detail or "stream error occurred but answer was usable",
+                    user_input=user_input,
+                    rescue_used=False,
+                    extra={"mode": mode.value, "visible_chars": visible_chars},
+                )
+            except Exception:
+                logger.exception(
+                    "[System] unresolved_failure_logger.record failed (non-fatal)"
+                )
 
     async def _build_rescue_answer(
         self,
