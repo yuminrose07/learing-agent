@@ -21,7 +21,6 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import LearningSession
 from learning_agent.ai.learning_unit import LearningUnit, UnitObjective

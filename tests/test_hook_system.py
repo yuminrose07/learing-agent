@@ -4,7 +4,6 @@ import sys
 
 import pytest
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.ai import (

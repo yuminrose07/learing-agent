@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai.file_store import FileStore
 from learning_agent.learning_agent.learning_unit_store import (

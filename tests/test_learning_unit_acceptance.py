@@ -20,14 +20,11 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
 import pytest
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import (
     AgentMode,

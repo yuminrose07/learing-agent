@@ -13,7 +13,6 @@ from __future__ import annotations
 import sys
 from typing import Any, Optional
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import ToolCall
 from learning_agent.agent.tool_executor import ToolExecutor

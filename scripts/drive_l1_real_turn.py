@@ -16,11 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 import tempfile
 from pathlib import Path
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai.models import AgentMode  # noqa: E402
 from learning_agent.config import Config  # noqa: E402

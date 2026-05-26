@@ -11,7 +11,6 @@ from typing import Any, AsyncIterable
 
 import pytest
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.agent.agent_loop import AgentLoop
 from learning_agent.agent.event_bus import EventBus

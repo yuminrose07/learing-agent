@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.agent.agent_loop import AgentLoop
 from learning_agent.agent.event_bus import EventBus

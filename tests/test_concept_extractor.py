@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai.learning_unit import ConceptItem, TangentNote
 from learning_agent.ai.models import ChatChunk, ChatParams

@@ -4,7 +4,6 @@ import asyncio
 import re
 import sys
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import MessageRole
 from learning_agent.ai.file_store import FileStore

@@ -11,10 +11,6 @@ ForgeStagePlan 的最小契约：
 
 from __future__ import annotations
 
-import sys
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
-
 from learning_agent.ai.learning_unit import LearningUnit, UnitObjective
 from learning_agent.learning_agent.forge_policy import (
     ForgeStagePlan,

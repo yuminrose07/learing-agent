@@ -23,12 +23,9 @@ objective_status, alignment_reason, clarification_count}``，由共享断言守�
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import (
     AgentMode,

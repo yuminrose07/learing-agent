@@ -27,13 +27,10 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import (
     AgentMode,

@@ -6,11 +6,7 @@
 
 from __future__ import annotations
 
-import sys
-
 import pytest
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai.learning_unit import ConceptItem, LearningUnit, UnitObjective
 from learning_agent.learning_agent.alignment_policy import (

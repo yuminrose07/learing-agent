@@ -14,13 +14,10 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
-
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import LearningUnit, UnitObjective
 from learning_agent.learning_agent.learning_unit_metrics import (

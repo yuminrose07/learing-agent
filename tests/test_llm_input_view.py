@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 
-sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import MessageRole, ToolCall
 from learning_agent.ai.file_store import FileStore
