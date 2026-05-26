@@ -8,7 +8,6 @@ from typing import Any
 
 from learning_agent.ai import (
     AgentMode,
-    AskState,
     EntryType,
     LearningSession,
     MessageRole,
@@ -25,10 +24,10 @@ logger = logging.getLogger(__name__)
 class AgentSnapshot:
     session_id: str
     objective_id: str | None = None
+    learning_unit_id: str | None = None
     title: str | None = None
     status: SessionStatus = SessionStatus.ACTIVE
     mode: AgentMode = AgentMode.CHAT
-    ask_state: AskState = field(default_factory=AskState)
     mode_metadata: dict[str, Any] = field(default_factory=dict)
     messages: list[SessionEntry] = field(default_factory=list)
     compact_metadata: CompactMetadata | None = None
@@ -49,6 +48,7 @@ class AgentSnapshot:
         return LearningSession(
             id=self.session_id,
             objective_id=self.objective_id,
+            learning_unit_id=self.learning_unit_id,
             title=self.title,
             root_entry_id=None,
             current_leaf_id=last_entry_id,
@@ -58,7 +58,6 @@ class AgentSnapshot:
             created_at=self.created_at,
             last_accessed_at=self.last_accessed_at,
             entries=[entry.model_copy(deep=True) for entry in self.messages],
-            ask_state=self.ask_state.model_copy(deep=True),
         )
 
 
@@ -125,7 +124,6 @@ def project_legacy_session(session: LearningSession) -> AgentSnapshot:
         title=session.title,
         status=session.status,
         mode=session.mode,
-        ask_state=session.ask_state.model_copy(deep=True),
         mode_metadata=dict(session.mode_metadata),
         messages=messages,
         compact_metadata=CompactMetadata(session_id=session.id),
@@ -144,6 +142,7 @@ def _apply_event(
     if event.type == SessionEventType.SESSION_CREATED:
         snapshot.session_id = event.session_id
         snapshot.objective_id = payload.get("objective_id")
+        snapshot.learning_unit_id = payload.get("learning_unit_id")
         snapshot.title = payload.get("title")
         if payload.get("mode"):
             snapshot.mode = AgentMode(payload["mode"])
@@ -151,10 +150,12 @@ def _apply_event(
             snapshot.status = SessionStatus(payload["status"])
         if isinstance(payload.get("mode_metadata"), dict):
             snapshot.mode_metadata = dict(payload["mode_metadata"])
-        if isinstance(payload.get("ask_state"), dict):
-            snapshot.ask_state = AskState.model_validate(payload["ask_state"])
         snapshot.created_at = _parse_datetime(payload.get("created_at")) or event.ts
         snapshot.last_accessed_at = _parse_datetime(payload.get("last_accessed_at")) or event.ts
+        return
+
+    if event.type == SessionEventType.SESSION_LEARNING_UNIT_BOUND:
+        snapshot.learning_unit_id = payload.get("learning_unit_id")
         return
 
     if event.type in {
@@ -183,11 +184,6 @@ def _apply_event(
             snapshot.mode = AgentMode(mode_value)
         if isinstance(payload.get("mode_metadata"), dict):
             snapshot.mode_metadata.update(payload["mode_metadata"])
-        return
-
-    if event.type == SessionEventType.SESSION_ASK_STATE_UPDATED:
-        if isinstance(payload.get("ask_state"), dict):
-            snapshot.ask_state = AskState.model_validate(payload["ask_state"])
         return
 
     if event.type == SessionEventType.SESSION_TITLE_UPDATED:

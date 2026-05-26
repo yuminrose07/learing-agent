@@ -205,19 +205,17 @@ class TestSessionEndpointsUseSystemApi:
     async def test_update_mode_endpoint_uses_system_api(self, mock_system):
         from learning_agent.web.web_server import update_session_mode, UpdateModeRequest
 
-        switched = LearningSession(id="sess-mode", mode=AgentMode.ASK)
-        switched.ask_state.status = "aligning"
+        switched = LearningSession(id="sess-mode", mode=AgentMode.STUDY)
         mock_system.update_session_mode.return_value = switched
 
         with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
-            result = await update_session_mode("sess-mode", UpdateModeRequest(mode=AgentMode.ASK))
+            result = await update_session_mode("sess-mode", UpdateModeRequest(mode=AgentMode.STUDY))
 
         assert result == {
             "session_id": "sess-mode",
-            "mode": "ask",
-            "ask_state": "aligning",
+            "mode": "study",
         }
-        mock_system.update_session_mode.assert_called_once_with("sess-mode", AgentMode.ASK)
+        mock_system.update_session_mode.assert_called_once_with("sess-mode", AgentMode.STUDY)
 
     @pytest.mark.asyncio
     async def test_confirm_knowledge_uses_system_api(self, mock_system):

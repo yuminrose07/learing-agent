@@ -18,6 +18,7 @@ let currentMode = 'chat';
 let currentView = 'home';
 let currentPersonaKey = null;
 let currentPersonaName = '';
+let currentLearningPhase = null;
 
 // ─── DOM 元素 ───
 const els = {
@@ -34,8 +35,6 @@ const els = {
     btnMemory: document.getElementById('btn-memory'),
     btnSave: document.getElementById('btn-save'),
     btnModeChat: document.getElementById('btn-mode-chat'),
-    btnModeAsk: document.getElementById('btn-mode-ask'),
-    btnModeStudy: document.getElementById('btn-mode-study'),
     btnModeLearning: document.getElementById('btn-mode-learning'),
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
@@ -49,6 +48,12 @@ const els = {
     memoryModal: document.getElementById('memory-modal'),
     memoryContent: document.getElementById('memory-content'),
     deleteModal: document.getElementById('delete-modal'),
+    learningStopModal: document.getElementById('learning-stop-modal'),
+    learningStopModalTitle: document.getElementById('learning-stop-modal-title'),
+    learningStopModalText: document.getElementById('learning-stop-modal-text'),
+    learningStopModalObjective: document.getElementById('learning-stop-modal-objective'),
+    btnStayLearningStop: document.getElementById('btn-stay-learning-stop'),
+    btnNewTopicAfterStop: document.getElementById('btn-new-topic-after-stop'),
     btnCancelDelete: document.getElementById('btn-cancel-delete'),
     btnConfirmDelete: document.getElementById('btn-confirm-delete'),
 };
@@ -68,6 +73,30 @@ const PHILOSOPHER_ORDER = ['socrates', 'feynman', 'montaigne', 'zhu_xi', 'descar
 
 // Populated from GET /personas at init. Falls back to PERSONA_META above.
 let personaCatalog = null;
+
+const FRONTEND_MODES = new Set(['chat', 'learning']);
+
+function normalizeFrontendMode(mode) {
+    return FRONTEND_MODES.has(mode) ? mode : 'chat';
+}
+
+function modeFromSession(session) {
+    return session?.learning_unit_id ? 'learning' : 'chat';
+}
+
+function backendModeForFrontendMode(_mode) {
+    // "learning" is a product/UI mode. The backend chooses its internal turn type
+    // from the learning_unit_id on the session, so chat is the only public mode
+    // this two-button frontend needs to send.
+    return 'chat';
+}
+
+const LEARNING_PHASE_LABELS = {
+    absorbing: '研习中',
+    outputting: '复述检验',
+    consolidated: '已收束',
+    stopped: '已停止',
+};
 
 // ─── 聊天气泡渲染器（弱化文档感，保留必要 Markdown） ───
 
@@ -213,10 +242,15 @@ function resolvePersonaKeyForMode(_mode, session = null) {
 
 function getModeLabel(mode) {
     return {
-        chat: 'Chat 模式',
-        ask: 'Ask 模式',
-        study: 'Study 模式',
-    }[mode] || '对话模式';
+        chat: '闲谈',
+        learning: '研习',
+    }[normalizeFrontendMode(mode)] || '闲谈';
+}
+
+function getSessionTypeTitle(mode) {
+    return normalizeFrontendMode(mode) === 'learning'
+        ? '研习会话'
+        : '闲谈会话';
 }
 
 function parseUsageNumber(value) {
@@ -319,13 +353,10 @@ function upsertAssistantUsage(content, rawUsage) {
 }
 
 function getHomeSubtitle(mode) {
-    if (mode === 'ask') {
-        return '问道模式：先与你对齐目标，再开始作答。';
+    if (normalizeFrontendMode(mode) === 'learning') {
+        return '研习：围绕一个主题开研习卷，先收束目标，再推进讲讲看与反馈。';
     }
-    if (mode === 'study') {
-        return '研习模式：由资深学伴主持，深度展开（即将上线）。';
-    }
-    return '直接输入即可开新一卷。';
+    return '闲谈：直接输入即可开始轻量对话。';
 }
 
 // ─── API ───
@@ -339,7 +370,10 @@ async function api(method, path, body = null) {
     const res = await fetch(API_BASE + path, opts);
     if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: '未知错误' }));
-        throw new Error(err.detail || `HTTP ${res.status}`);
+        const error = new Error(err.detail || `HTTP ${res.status}`);
+        error.status = res.status;
+        error.payload = err;
+        throw error;
     }
     return res.status === 204 ? null : res.json();
 }
@@ -446,6 +480,7 @@ async function saveState() {
 
 function showWelcome() {
     currentView = 'home';
+    currentLearningPhase = null;
     updateViewTheme('home');
     els.welcomeScreen.classList.remove('hidden');
     els.messages.innerHTML = '';
@@ -459,10 +494,26 @@ function showWelcome() {
     document.dispatchEvent(new CustomEvent('learning-unit:reset'));
     els.messageInput.disabled = false;
     els.btnSend.disabled = false;
-    updateAskPlaceholderFromSession(null);
+    updateInputPlaceholderFromSession(null);
     updateModeToolbar();
     updateHomeModeCards();
     els.messageInput.focus();
+}
+
+function closeLearningStopModal() {
+    if (!els.learningStopModal) return;
+    els.learningStopModal.classList.add('hidden');
+    els.learningStopModal.setAttribute('aria-hidden', 'true');
+}
+
+function openLearningStopModal(detail = {}) {
+    if (!els.learningStopModal) return;
+    const objective = (detail.objectiveText || '').trim() || '当前研习主题';
+    els.learningStopModalTitle.textContent = '这一卷先学到这里';
+    els.learningStopModalText.textContent = '本卷内容会保留在历史中。你可以留在这里回看，也可以现在直接开始一个新主题。';
+    els.learningStopModalObjective.textContent = objective;
+    els.learningStopModal.classList.remove('hidden');
+    els.learningStopModal.setAttribute('aria-hidden', 'false');
 }
 
 function hideWelcome() {
@@ -482,9 +533,12 @@ function updateTopbarPersona(personaKey, _mode = currentMode) {
 
 function syncTopbarFromSession(session, title) {
     els.topbarTitle.textContent = title || session?.title || currentSessionTitle || '學齋';
-    const personaKey = resolvePersonaKeyForMode(session?.mode || currentMode, session);
-    updateTopbarPersona(personaKey, session?.mode || currentMode);
-    els.topbarSubtitle.textContent = currentSessionTitle || title || '';
+    const semanticMode = session ? modeFromSession(session) : currentMode;
+    const personaKey = resolvePersonaKeyForMode(semanticMode, session);
+    updateTopbarPersona(personaKey, semanticMode);
+    els.topbarSubtitle.textContent = semanticMode === 'learning'
+        ? '研习中 · 正在加载研习卷'
+        : (currentSessionTitle || title || '');
 }
 
 function updateHomeModeCards() {
@@ -642,15 +696,25 @@ function renderSessionList(sessions) {
         ul.className = 'session-list';
 
         for (const s of items) {
+            const sessionMode = modeFromSession(s);
+            const sessionModeLabel = getModeLabel(sessionMode);
             const li = document.createElement('li');
-            li.className = 'session-item';
+            li.className = `session-item session-item-${sessionMode}`;
             li.dataset.id = s.id;
+            li.dataset.mode = sessionMode;
             if (s.id === currentSessionId) li.classList.add('active');
 
             // 图标
             li.innerHTML = `
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-                <span class="session-title">${escapeHtml(s.title || s.id)}</span>
+                <span class="session-icon" aria-hidden="true">
+                    ${sessionMode === 'learning'
+                        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>'
+                        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>'}
+                </span>
+                <span class="session-main">
+                    <span class="session-title">${escapeHtml(s.title || s.id)}</span>
+                    <span class="session-mode-badge session-mode-${sessionMode}" title="${getSessionTypeTitle(sessionMode)}">${sessionModeLabel}</span>
+                </span>
                 <div class="session-actions">
                     <button class="btn-edit" title="重命名">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
@@ -742,13 +806,13 @@ async function selectSession(id, title) {
 
     try {
         const session = await api('GET', `/sessions/${id}`);
-        currentMode = session.mode || 'chat';
+        currentMode = modeFromSession(session);
         updateModeToolbar();
         updateHomeModeCards();
         syncTopbarFromSession(session, title || session.title || id);
         await loadSessionHistory(id, session);
-        updateAskPlaceholderFromSession(session);
-        // adaptive alignment §11.3: 让学习卷 UI 模块同步目标卡 / 进度 / 建议条。
+        updateInputPlaceholderFromSession(session);
+        // adaptive alignment §11.3: 让研习卷 UI 模块同步目标卡 / 进度 / 建议条。
         document.dispatchEvent(new CustomEvent('learning-unit:session-loaded', {
             detail: { session, sessionId: id },
         }));
@@ -781,7 +845,7 @@ async function loadSessionHistory(sessionId, sessionData = null) {
 
 function renderHistoryMessage(role, text, metadata = {}) {
     addMessage(role, text, {
-        mode: metadata.mode || 'chat',
+        mode: metadata.learning_unit_id ? 'learning' : normalizeFrontendMode(metadata.mode),
         alignment: Boolean(metadata.alignment),
         personaKey: metadata.persona_key || '',
         personaName: metadata.persona_name || '',
@@ -796,11 +860,8 @@ function clearMessages() {
 function addMessage(role, text, options = {}) {
     const msg = document.createElement('div');
     msg.className = `message ${role}`;
-    if (options.mode === 'ask') {
-        msg.classList.add('ask-mode');
-    }
-    if (options.mode === 'study') {
-        msg.classList.add('study-mode');
+    if (options.mode === 'learning') {
+        msg.classList.add('learning-mode');
     }
     if (options.alignment) {
         msg.classList.add('alignment');
@@ -836,14 +897,6 @@ function addMessage(role, text, options = {}) {
         upsertAssistantUsage(content, options.usage || null);
     } else {
         content.innerHTML = renderPlainText(text);
-    }
-
-    // Ask 模式标签
-    if (role === 'user' && options.mode === 'ask') {
-        const badge = document.createElement('span');
-        badge.className = 'ask-badge';
-        badge.textContent = 'Ask';
-        content.insertBefore(badge, content.firstChild);
     }
 
     msg.appendChild(avatar);
@@ -948,39 +1001,61 @@ function showToast(message) {
     setTimeout(() => toast.remove(), 2000);
 }
 
+if (typeof window !== 'undefined') {
+    window.__appShowToast = showToast;
+}
+
 // ─── SSE 对话 ───
 
 async function sendMessage(text) {
     if (isStreaming || !text.trim()) return;
 
+    const requestedMode = normalizeFrontendMode(currentMode);
+    const requestedPersonaKey = currentPersonaKey;
+
     if (!currentSessionId) {
-        // adaptive alignment §6.1: "学习模式" 起手不走普通 POST /sessions —— 而是
+        // adaptive alignment §6.1: "研习" 起手不走普通 POST /sessions —— 而是
         // POST /learning-units，让后端创建一个挂着 unit 的 session，并把首条用户消息
         // 作为 seed_text 走 absorbing 阶段。
-        if (currentMode === 'learning' && typeof window.__createLearningUnit === 'function') {
+        if (requestedMode === 'learning') {
+            if (typeof window.__createLearningUnit !== 'function') {
+                showToast('研习模块尚未加载完成，请稍后再试', 'error');
+                return;
+            }
             const created = await window.__createLearningUnit(text.trim());
             if (!created || !created.session_id) {
                 return;
             }
-            await selectSession(created.session_id, created.objective?.text || 'Learning unit');
+            await selectSession(created.session_id, created.objective?.text || '研习');
+            if (created.reused_active_unit) {
+                els.messageInput.value = text.trim();
+                autoResizeTextarea();
+                showToast('已有未停止的研习卷；先学到这里后再发送新主题');
+                return;
+            }
         } else {
             const session = await createSession();
             if (!session) return;
             await selectSession(session.id, session.title || 'New chat');
-            if (currentPersonaKey) {
-                try {
-                    await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: currentPersonaKey });
-                } catch (err) {
-                    console.warn('绑定思路到新会话失败:', err);
-                }
+        }
+        if (requestedPersonaKey) {
+            try {
+                await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: requestedPersonaKey });
+                updateTopbarPersona(requestedPersonaKey, currentMode);
+            } catch (err) {
+                console.warn('绑定思路到新会话失败:', err);
             }
         }
     }
 
     const isFirstMessage = els.messages.children.length === 0;
+    const uiMode = normalizeFrontendMode(currentMode);
+    const backendMode = backendModeForFrontendMode(uiMode);
+    const personaKey = resolvePersonaKeyForMode(uiMode);
+    const personaName = getPersonaMeta(personaKey)?.name || '';
 
     hideWelcome();
-    addMessage('user', text.trim(), { mode: currentMode });
+    addMessage('user', text.trim(), { mode: uiMode });
 
     // 如果是第一条消息，自动用消息内容填充会话标题
     if (isFirstMessage) {
@@ -996,10 +1071,10 @@ async function sendMessage(text) {
 
     // 对齐轮用特殊样式
     addMessage('assistant', '', {
-        mode: currentMode,
-        alignment: currentMode === 'ask',
-        personaKey: resolvePersonaKeyForMode(currentMode),
-        personaName: getPersonaMeta(resolvePersonaKeyForMode(currentMode))?.name || '',
+        mode: uiMode,
+        alignment: false,
+        personaKey,
+        personaName,
     });
 
     try {
@@ -1008,7 +1083,7 @@ async function sendMessage(text) {
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text.trim(), stream: true, mode: currentMode }),
+                body: JSON.stringify({ message: text.trim(), stream: true, mode: backendMode }),
             }
         );
 
@@ -1042,6 +1117,11 @@ async function sendMessage(text) {
                         if (data.persona_key || data.persona_name) {
                             setLastAssistantPersona(data.persona_key, data.persona_name);
                         }
+                        if (data.alignment) {
+                            const messages = els.messages.querySelectorAll('.message.assistant');
+                            const lastMessage = messages[messages.length - 1];
+                            if (lastMessage) lastMessage.classList.add('alignment');
+                        }
                         if (data.usage) {
                             const contents = els.messages.querySelectorAll('.message.assistant .message-content');
                             if (contents.length > 0) {
@@ -1051,7 +1131,7 @@ async function sendMessage(text) {
                         if (typeof data.content === 'string' && data.content.length > 0) {
                             appendToLastMessage(data.content);
                         }
-                        // adaptive alignment §11.3: 通知学习卷 UI 模块更新目标卡 / 进度 / 建议条。
+                        // adaptive alignment §11.3: 通知研习卷 UI 模块更新目标卡 / 进度 / 建议条。
                         if (data.learning_unit_id) {
                             document.dispatchEvent(new CustomEvent('learning-unit:metadata', {
                                 detail: data,
@@ -1068,8 +1148,8 @@ async function sendMessage(text) {
             }
         }
 
-        // 流结束后同步服务端 ask 状态与当前模式
-        await updateAskPlaceholder();
+        // 流结束后同步服务端状态与当前前端模式
+        await updateInputPlaceholder();
 
     } catch (err) {
         appendToLastMessage(`\n\n**错误：** ${err.message}`);
@@ -1083,84 +1163,78 @@ async function sendMessage(text) {
     }
 }
 
-async function updateAskPlaceholder() {
+async function updateInputPlaceholder() {
     if (!currentSessionId) return;
     try {
         const session = await api('GET', `/sessions/${currentSessionId}`);
-        updateAskPlaceholderFromSession(session);
+        updateInputPlaceholderFromSession(session);
     } catch (err) {
-        console.warn('更新 ask placeholder 失败:', err);
+        console.warn('更新输入提示失败:', err);
     }
 }
 
-function updateAskPlaceholderFromSession(session) {
+function updateInputPlaceholderFromSession(session) {
     if (session) {
-        currentMode = session.mode || 'chat';
+        currentMode = modeFromSession(session);
     }
     updateModeToolbar();
     updateHomeModeCards();
     if (!session) {
-        if (currentMode === 'ask') {
-            els.messageInput.placeholder = '描述想做的事，先与你对齐目标再展开...';
+        if (currentMode === 'learning') {
+            els.messageInput.placeholder = '输入想研习的主题、概念或材料...';
         } else {
-            els.messageInput.placeholder = '向学伴提问，直接开始吧...';
+            els.messageInput.placeholder = '随便聊点什么，直接开始吧...';
         }
         return;
     }
-    const askStatus = session.ask_state?.status;
-    if (askStatus === 'aligning') {
-        els.messageInput.placeholder = '请确认或修正上述理解…（回复”确认”开始回答）';
+    if (currentMode === 'learning' && currentLearningPhase === 'stopped') {
+        els.messageInput.placeholder = '这卷已先学到这里。新建研习主题即可继续...';
+    } else if (currentMode === 'learning' && currentLearningPhase === 'consolidated') {
+        els.messageInput.placeholder = '这卷已收束。可以新建研习主题继续...';
+    } else if (currentMode === 'learning') {
+        els.messageInput.placeholder = '继续围绕这一卷研习...';
     } else {
-        els.messageInput.placeholder = currentMode === 'ask'
-            ? '继续补充需要对齐的要求...'
-            : '向学伴提问，直接开始吧...';
+        els.messageInput.placeholder = '继续闲谈...';
     }
 }
 
 async function switchMode(mode) {
-    if (currentMode === mode) return;
+    mode = normalizeFrontendMode(mode);
+    if (currentMode === mode) {
+        if (currentSessionId && mode === 'learning') {
+            localStorage.removeItem('lastSessionId');
+            document.querySelectorAll('.session-item').forEach(li => li.classList.remove('active'));
+            showWelcome();
+        }
+        return;
+    }
 
-    const previousMode = currentMode;
     currentMode = mode;
     updateModeToolbar();
     updateHomeModeCards();
 
     if (!currentSessionId) {
-        updateAskPlaceholderFromSession(null);
+        updateInputPlaceholderFromSession(null);
         if (currentView !== 'chat') {
             els.topbarSubtitle.textContent = getHomeSubtitle(mode);
         }
         return;
     }
 
-    // adaptive alignment: "learning" 不是后端 AgentMode；它是"会话挂了一个学习卷"的
-    // 前端语义。新开会话才能创建学习卷，已有会话切到 learning 没意义——
-    // 静默回退到上一个模式，避免出现一个"卡在 learning 但后端没卷"的灰态。
-    if (mode === 'learning') {
-        currentMode = previousMode;
-        updateModeToolbar();
-        updateHomeModeCards();
-        return;
-    }
-
-    try {
-        await api('PUT', `/sessions/${currentSessionId}/mode`, { mode });
-        await updateAskPlaceholder();
-    } catch (err) {
-        currentMode = previousMode;
-        updateModeToolbar();
-        alert('切换模式失败: ' + err.message);
-    }
+    // The toolbar chooses what the next conversation should be. Existing
+    // sessions keep their own learning_unit_id/mode history, so switching
+    // between 闲谈 and 研习 starts from a clean composer.
+    localStorage.removeItem('lastSessionId');
+    document.querySelectorAll('.session-item').forEach(li => li.classList.remove('active'));
+    showWelcome();
 }
 
 function updateModeToolbar() {
-    [els.btnModeChat, els.btnModeAsk, els.btnModeStudy, els.btnModeLearning].forEach(btn => {
+    [els.btnModeChat, els.btnModeLearning].forEach(btn => {
         if (btn) btn.classList.remove('active');
     });
     const activeBtn = {
         chat: els.btnModeChat,
-        ask: els.btnModeAsk,
-        study: els.btnModeStudy,
         learning: els.btnModeLearning,
     }[currentMode];
     if (activeBtn) activeBtn.classList.add('active');
@@ -1208,9 +1282,6 @@ els.messageInput.addEventListener('input', autoResizeTextarea);
 if (els.btnModeChat) {
     els.btnModeChat.addEventListener('click', () => switchMode('chat'));
 }
-if (els.btnModeAsk) {
-    els.btnModeAsk.addEventListener('click', () => switchMode('ask'));
-}
 if (els.btnModeLearning) {
     els.btnModeLearning.addEventListener('click', () => switchMode('learning'));
 }
@@ -1219,18 +1290,39 @@ document.querySelectorAll('.home-mode-card').forEach(card => {
     card.addEventListener('click', () => switchMode(card.dataset.mode));
 });
 
+document.addEventListener('learning-unit:state', (ev) => {
+    const detail = ev.detail || {};
+    if (detail.sessionId && detail.sessionId !== currentSessionId) return;
+    if (!detail.unitId) {
+        currentLearningPhase = null;
+        return;
+    }
+    currentLearningPhase = detail.phase || null;
+    if (currentMode !== 'learning') return;
+    const phaseLabel = LEARNING_PHASE_LABELS[currentLearningPhase] || '研习中';
+    const objective = detail.objectiveText || '研习卷';
+    els.topbarSubtitle.textContent = `${phaseLabel} · ${objective}`;
+    if (currentLearningPhase === 'stopped') {
+        els.messageInput.placeholder = '这卷已先学到这里。新建研习主题即可继续...';
+    } else if (currentLearningPhase === 'consolidated') {
+        els.messageInput.placeholder = '这卷已收束。可以新建研习主题继续...';
+    }
+});
+
+document.addEventListener('learning-unit:stopped', (ev) => {
+    const detail = ev.detail || {};
+    if (detail.sessionId && detail.sessionId !== currentSessionId) return;
+    currentMode = 'learning';
+    currentLearningPhase = 'stopped';
+    openLearningStopModal(detail);
+});
+
 // 建议卡片
 document.querySelectorAll('.suggestion-card').forEach(card => {
-    card.addEventListener('click', () => {
-        const mode = card.dataset.mode;
+    card.addEventListener('click', async () => {
+        const mode = normalizeFrontendMode(card.dataset.mode);
         if (mode) {
-            currentMode = mode;
-            updateModeToolbar();
-            updateHomeModeCards();
-            updateAskPlaceholderFromSession(null);
-            if (currentView !== 'chat') {
-                els.topbarSubtitle.textContent = getHomeSubtitle(mode);
-            }
+            await switchMode(mode);
         }
         const text = card.dataset.text;
         if (text) sendMessage(text);
@@ -1240,12 +1332,19 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
 // (visibility-change avatar refresh removed along with external avatar fetch.)
 
 // 弹窗关闭
-[els.memoryModal, els.deleteModal].forEach(modal => {
+[els.memoryModal, els.deleteModal, els.learningStopModal].forEach(modal => {
+    if (!modal) return;
     modal.querySelector('.modal-overlay').addEventListener('click', () => {
         modal.classList.add('hidden');
+        if (modal === els.learningStopModal) {
+            modal.setAttribute('aria-hidden', 'true');
+        }
     });
     modal.querySelector('.btn-close').addEventListener('click', () => {
         modal.classList.add('hidden');
+        if (modal === els.learningStopModal) {
+            modal.setAttribute('aria-hidden', 'true');
+        }
     });
 });
 
@@ -1253,6 +1352,21 @@ els.btnCancelDelete.addEventListener('click', () => {
     els.deleteModal.classList.add('hidden');
     deleteTargetId = null;
 });
+
+if (els.btnStayLearningStop) {
+    els.btnStayLearningStop.addEventListener('click', () => {
+        closeLearningStopModal();
+    });
+}
+
+if (els.btnNewTopicAfterStop) {
+    els.btnNewTopicAfterStop.addEventListener('click', () => {
+        closeLearningStopModal();
+        localStorage.removeItem('lastSessionId');
+        document.querySelectorAll('.session-item').forEach(li => li.classList.remove('active'));
+        showWelcome();
+    });
+}
 
 els.btnConfirmDelete.addEventListener('click', () => {
     if (deleteTargetId) {

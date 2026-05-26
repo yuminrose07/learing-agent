@@ -16,7 +16,6 @@ from typing import Any, Callable, Optional
 from learning_agent.ai.file_store import FileStore
 from learning_agent.ai import (
     AgentMode,
-    AskState,
     EntryType,
     Event,
     LearningSession,
@@ -110,7 +109,6 @@ class SessionManager:
                 "mode": session.mode.value,
                 "status": session.status.value,
                 "mode_metadata": dict(session.mode_metadata),
-                "ask_state": session.ask_state.model_dump(mode="json"),
                 "created_at": session.created_at.isoformat(),
                 "last_accessed_at": session.last_accessed_at.isoformat(),
             },
@@ -148,17 +146,6 @@ class SessionManager:
         self._session_memory_states[session_id] = state
         self._persist_session_memory_state(session_id)
 
-    def persist_ask_state(self, session_id: str) -> None:
-        session = self._sessions.get(session_id)
-        if session is None:
-            return
-        self._append_session_event(
-            session_id,
-            SessionEventType.SESSION_ASK_STATE_UPDATED,
-            {"ask_state": session.ask_state.model_dump(mode="json")},
-            visibility="system",
-        )
-
     def persist_mode_metadata(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
         if session is None:
@@ -173,6 +160,29 @@ class SessionManager:
             },
             visibility="system",
         )
+
+    def bind_learning_unit(self, session_id: str, learning_unit_id: str) -> bool:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        if session.learning_unit_id == learning_unit_id:
+            return True
+        session.learning_unit_id = learning_unit_id
+        self._append_session_event(
+            session_id,
+            SessionEventType.SESSION_LEARNING_UNIT_BOUND,
+            {"learning_unit_id": learning_unit_id},
+            visibility="system",
+        )
+        self._emit_event(
+            "session.scalarChanged",
+            {
+                "session_id": session_id,
+                "path": "learning_unit_id",
+                "value": learning_unit_id,
+            },
+        )
+        return True
 
     def get_compact_metadata(self, session_id: str) -> CompactMetadata | None:
         if self._event_store is not None:
@@ -514,33 +524,12 @@ class SessionManager:
             return True
         return False
 
-    def clear_ask_state(self, session_id: str) -> bool:
-        """清除会话的 Ask 对齐状态。"""
-        session = self._sessions.get(session_id)
-        if not session:
-            return False
-        session.ask_state = AskState()
-        logger.info(f"[SessionManager] Cleared ask_state for session {session_id}")
-        self._append_session_event(
-            session_id,
-            SessionEventType.SESSION_ASK_STATE_UPDATED,
-            {"ask_state": session.ask_state.model_dump(mode="json")},
-            visibility="system",
-        )
-        self._emit_event(
-            "session.scalarChanged",
-            {"session_id": session_id, "path": "ask_state", "value": session.ask_state.model_dump()},
-        )
-        return True
-
     def switch_session_mode(
         self,
         session_id: str,
         mode: AgentMode,
-        *,
-        clear_ask_state: bool = True,
     ) -> LearningSession:
-        """切换会话模式，并在需要时清理 Ask 临时状态。"""
+        """切换会话模式。"""
         session = self._sessions.get(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
@@ -548,9 +537,6 @@ class SessionManager:
         from_mode = session.mode
         if from_mode == mode:
             return session
-
-        if clear_ask_state and from_mode == AgentMode.ASK and mode != AgentMode.ASK:
-            session.ask_state = AskState()
 
         session.mode = mode
         session.mode_metadata["last_mode_switch"] = {
@@ -579,13 +565,6 @@ class SessionManager:
             },
             visibility="system",
         )
-        if clear_ask_state:
-            self._append_session_event(
-                session_id,
-                SessionEventType.SESSION_ASK_STATE_UPDATED,
-                {"ask_state": session.ask_state.model_dump(mode="json")},
-                visibility="system",
-            )
         self._emit_event(
             "session.scalarChanged",
             {"session_id": session_id, "path": "mode", "value": mode.value},

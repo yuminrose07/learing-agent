@@ -66,7 +66,6 @@ from learning_agent.learning_agent.mode_service import (
     PreparedSessionTurn,
     TurnExecutionProfile,
     build_turn_profile,
-    is_confirmation_message,
 )
 from learning_agent.learning_agent.session_event_store import SessionEventStore
 from learning_agent.learning_agent.session_events import SessionEventType
@@ -245,10 +244,27 @@ class LearningAgentSystem:
                 logger.warning("[System] Session event log has corrupt events: %s", snapshot.corrupt_events)
             self.session_manager.add_snapshot(snapshot)
 
+        self._backfill_learning_unit_session_links()
+
     async def _save_state(self) -> None:
         """保存非 session-event-log 的产品状态。Session 事实源已实时 append。"""
         self.file_store.save_knowledge_graph(self.memory_manager.kg.to_dict())
         logger.info("[System] Durable state saved. Session event logs are append-only.")
+
+    def _backfill_learning_unit_session_links(self) -> None:
+        """为旧数据追加 session <-> learning_unit 绑定事件，不回写既有事实。"""
+        for unit in self.learning_unit_store.list():
+            session = self.session_manager.get_session(unit.session_id)
+            if session is None:
+                continue
+            if session.learning_unit_id == unit.id:
+                continue
+            logger.info(
+                "[System] Backfilling learning unit link: session=%s unit=%s",
+                session.id,
+                unit.id,
+            )
+            self.session_manager.bind_learning_unit(session.id, unit.id)
 
     async def _on_state_snapshot(self, event: Event) -> None:
         """运行时快照进入 observability，不再触发持久化层 compact。"""
@@ -353,14 +369,8 @@ class LearningAgentSystem:
         self,
         session_id: str,
         mode: AgentMode,
-        *,
-        clear_ask_state: bool = True,
     ) -> LearningSession:
-        return self.session_manager.switch_session_mode(
-            session_id,
-            mode,
-            clear_ask_state=clear_ask_state,
-        )
+        return self.session_manager.switch_session_mode(session_id, mode)
 
     async def save_state(self) -> None:
         await self._save_state()
@@ -514,6 +524,9 @@ class LearningAgentSystem:
             self.session_manager.delete_session(session.id)
             raise
 
+        bind_learning_unit = getattr(self.session_manager, "bind_learning_unit", None)
+        if callable(bind_learning_unit):
+            bind_learning_unit(session.id, unit.id)
         session.learning_unit_id = unit.id
         session.mode = AgentMode.CHAT
         self._emit_unit_event(
@@ -530,6 +543,48 @@ class LearningAgentSystem:
         unit.objective.confirmed = True
         unit.objective_status = "confirmed"
         self.learning_unit_store.save(unit)
+        return unit
+
+    def stop_learning_unit(
+        self,
+        unit_id: str,
+        *,
+        reason: str = "user_stopped",
+    ) -> LearningUnit:
+        """用户显式结束当前研习卷：进入 stopped 终态并释放单卷互斥。
+
+        ``stopped`` 与 ``consolidated`` 都是 terminal，但语义不同：
+        - consolidated：完成验收，计入完成率。
+        - stopped：用户选择"先学到这里"，保留历史，不计入完成率。
+        """
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            raise KeyError(unit_id)
+        if unit.phase in {"stopped", "consolidated"}:
+            return unit
+
+        prev = unit.phase
+        safe_reason = (reason or "user_stopped").strip() or "user_stopped"
+        unit.transition_to("stopped")
+        unit.stop_reason = safe_reason
+        unit.stopped_at = datetime.now(timezone.utc)
+        unit.alignment_state = "skipped"
+        unit.assumption_note = ""
+        self.learning_unit_store.save(unit)
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
+            extra={"from": prev, "to": "stopped", "reason": safe_reason},
+        )
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_STOPPED,
+            extra={
+                "from": prev,
+                "stop_reason": safe_reason,
+                "stopped_at": unit.stopped_at.isoformat(),
+            },
+        )
         return unit
 
     async def advance_learning_unit(
@@ -812,22 +867,6 @@ class LearningAgentSystem:
             )
             return latest
 
-    def promote_chat_session_to_learning_unit(
-        self,
-        chat_session_id: str,
-        *,
-        seed_text: str,
-    ) -> tuple[LearningSession, LearningUnit]:
-        """把闲聊会话升格为学习卷：创建一条 **新** 会话，原 chat 会话不动（§3.6）。"""
-        if self.session_manager.get_session(chat_session_id) is None:
-            raise KeyError(chat_session_id)
-        return self.create_learning_unit(
-            seed_text=seed_text,
-            source="promoted_from_chat",
-            source_ref=chat_session_id,
-            title=seed_text[:48],
-        )
-
     def record_reuse_feedback(self, unit_id: str, value: str) -> LearningUnit:
         """M2：用户在反馈卡上点"赞/否"后落事件。
 
@@ -935,7 +974,7 @@ class LearningAgentSystem:
         """
         if unit.is_terminal():
             raise ValueError(
-                f"Learning unit {unit.id} is consolidated (read-only); "
+                f"Learning unit {unit.id} is terminal ({unit.phase}); "
                 "no further turns can be prepared."
             )
 
@@ -946,11 +985,23 @@ class LearningAgentSystem:
                 unit.alignment_state == "active"
                 and unit.alignment_reason == "user_request"
             )
+            legacy_pending_alignment = (
+                unit.alignment_state == "active"
+                and not unit.alignment_reason
+                and unit.clarification_count == 0
+            )
             if user_initiated_alignment:
                 decision = AlignmentDecision(
                     mode="active",
                     reason="user_request",
                     assumption_note=unit.assumption_note or "用户主动请求对齐。",
+                )
+            elif legacy_pending_alignment:
+                decision = AlignmentDecision(
+                    mode="active",
+                    reason="missing_learnable_target",
+                    assumption_note=unit.assumption_note
+                    or "旧学习卷需要先确认学习目标。",
                 )
             else:
                 decision = should_run_alignment(unit, user_input)
@@ -1123,7 +1174,7 @@ class LearningAgentSystem:
     ) -> tuple[LearningSession, PreparedSessionTurn]:
         """
         在 Product/Application 层收口模式语义，生成 Runtime 可执行的 turn 计划。
-        Runtime 不直接判断 Ask 确认、模式切换或 ask_state 推进。
+        Runtime 不直接判断模式切换。
         """
         if session.learning_unit_id:
             unit = self.get_learning_unit(session.learning_unit_id)
@@ -1132,68 +1183,13 @@ class LearningAgentSystem:
                     session, unit, user_input
                 )
 
-        if (
-            session.mode == AgentMode.ASK
-            and session.ask_state.status == "aligning"
-            and requested_mode == AgentMode.ASK
-            and is_confirmation_message(user_input)
-        ):
-            target_mode = AgentMode(session.mode_metadata.get("post_ask_target", AgentMode.CHAT.value))
-            confirmed_input = session.ask_state.confirmed_input or user_input
-            session.ask_state.status = "idle"
-            session.ask_state.confirmed_input = ""
-            if hasattr(self, "session_manager"):
-                self.session_manager.persist_ask_state(session.id)
-            if target_mode != session.mode:
-                session = self.update_session_mode(
-                    session.id,
-                    target_mode,
-                    clear_ask_state=False,
-                )
-            profile = build_turn_profile(
-                target_mode,
-                persona_key=self._resolve_session_persona_key(session, target_mode),
-            )
-            compaction_plan = await self._build_compaction_plan(
-                session,
-                confirmed_input,
-                profile,
-                allow_full_compact=False,
-            )
-            return session, PreparedSessionTurn(
-                effective_mode=target_mode,
-                runtime_input=confirmed_input,
-                profile=profile,
-                stream_metadata=dict(profile.assistant_message_metadata),
-                compaction_plan=compaction_plan,
-            )
+        # ASK 不再作为独立可选模式（学习卷对齐门在 _prepare_learning_unit_turn
+        # 内部消费 AgentMode.ASK，不经过这里）。非学习卷会话归一到 CHAT。
+        if requested_mode == AgentMode.ASK:
+            requested_mode = AgentMode.CHAT
 
         if session.mode != requested_mode:
             session = self.update_session_mode(session.id, requested_mode)
-
-        if requested_mode == AgentMode.ASK:
-            session.ask_state.status = "aligning"
-            if hasattr(self, "session_manager"):
-                self.session_manager.persist_ask_state(session.id)
-            profile = build_turn_profile(
-                AgentMode.ASK,
-                user_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
-                assistant_message_metadata={"mode": AgentMode.ASK.value, "alignment": True},
-            )
-            compaction_plan = await self._build_compaction_plan(
-                session,
-                user_input,
-                profile,
-                allow_full_compact=False,
-            )
-            return session, PreparedSessionTurn(
-                effective_mode=AgentMode.ASK,
-                runtime_input=user_input,
-                profile=profile,
-                stream_metadata=dict(profile.assistant_message_metadata),
-                capture_response_as_confirmed_input=True,
-                compaction_plan=compaction_plan,
-            )
 
         profile = build_turn_profile(
             requested_mode,
@@ -1252,17 +1248,6 @@ class LearningAgentSystem:
         if isinstance(persona_key, str) and persona_key:
             return persona_key
         return None
-
-    def _finalize_prepared_turn(
-        self,
-        session: LearningSession,
-        prepared_turn: PreparedSessionTurn,
-        response_text: str,
-    ) -> None:
-        if prepared_turn.capture_response_as_confirmed_input:
-            session.ask_state.confirmed_input = response_text
-            if hasattr(self, "session_manager"):
-                self.session_manager.persist_ask_state(session.id)
 
     def _maybe_fire_concept_extraction(
         self,
@@ -1609,11 +1594,6 @@ class LearningAgentSystem:
         finally:
             try:
                 if completed:
-                    self._finalize_prepared_turn(
-                        session,
-                        prepared_turn,
-                        "".join(response_parts),
-                    )
                     self._maybe_emit_first_value(
                         session, prepared_turn, "".join(response_parts)
                     )

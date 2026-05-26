@@ -10,7 +10,6 @@ sys.path.insert(0, "/Users/roseannk/my-agent")
 
 from learning_agent.ai import (
     AgentMode,
-    ChatChunk,
     ConceptItem,
     LearningSession,
     LearningUnit,
@@ -76,6 +75,20 @@ def _make_session_with_unit(unit: LearningUnit) -> LearningSession:
 
 
 class TestModeLayering:
+    def test_build_turn_profile_chat_exposes_web_search_tools(self):
+        profile = build_turn_profile(AgentMode.CHAT)
+
+        assert profile.turn_kind == TurnExecutionKind.REACT
+        assert "web_search" in profile.visible_tools
+        assert "web_fetch" in profile.visible_tools
+
+    def test_build_turn_profile_study_exposes_web_search_tools(self):
+        profile = build_turn_profile(AgentMode.STUDY)
+
+        assert profile.turn_kind == TurnExecutionKind.REACT
+        assert "web_search" in profile.visible_tools
+        assert "web_fetch" in profile.visible_tools
+
     def test_build_turn_profile_defaults_to_neutral_persona(self):
         profile = build_turn_profile(
             AgentMode.ASK,
@@ -140,95 +153,34 @@ class TestModeLayering:
         assert turn.profile.assistant_message_metadata["persona_name"] == FEYNMAN_PERSONA.display_name
 
     @pytest.mark.asyncio
-    async def test_prepare_session_turn_carries_persona_across_mode_switch(self):
+    async def test_prepare_session_turn_normalizes_ask_to_chat(self):
+        """身份 1（独立 ASK 模式）已移除：非学习卷会话收到 mode=ASK 时归一为 CHAT。
+
+        学习卷内部的 alignment 门（身份 2）走 _prepare_learning_unit_turn，
+        不经过这里，因此这条归一对它没有影响。
+        """
         system = _build_system_stub()
         session = LearningSession(
-            id="sess-chat-reuse",
-            mode=AgentMode.ASK,
+            id="sess-ask-normalize",
+            mode=AgentMode.CHAT,
             mode_metadata={"chat_persona_key": ZHU_XI_PERSONA.key},
         )
-        session.ask_state.status = "aligning"
-        session.ask_state.confirmed_input = "继续回答我刚才的问题"
 
         switched_session = session.model_copy(deep=True)
-        switched_session.mode = AgentMode.CHAT
         system.update_session_mode.return_value = switched_session
 
         prepared_session, prepared_turn = await system._prepare_session_turn(
             session,
-            "确认，开始吧",
+            "随便问点啥",
             AgentMode.ASK,
         )
 
-        assert prepared_session.mode == AgentMode.CHAT
-        assert prepared_session.mode_metadata["chat_persona_key"] == ZHU_XI_PERSONA.key
-        assert prepared_turn.profile.assistant_message_metadata["persona_key"] == ZHU_XI_PERSONA.key
-        assert prepared_turn.profile.assistant_message_metadata["persona_name"] == ZHU_XI_PERSONA.display_name
-
-    @pytest.mark.asyncio
-    async def test_prepare_session_turn_keeps_ask_confirmation_in_product_layer(self):
-        system = _build_system_stub()
-
-        session = LearningSession(id="sess-ask", mode=AgentMode.ASK)
-        session.ask_state.status = "aligning"
-        session.ask_state.confirmed_input = "请先审查 runtime 与 product 的分层边界"
-
-        switched_session = session.model_copy(deep=True)
-        switched_session.mode = AgentMode.CHAT
-        system.update_session_mode.return_value = switched_session
-
-        prepared_session, prepared_turn = await system._prepare_session_turn(
-            session,
-            "好的，开始吧",
-            AgentMode.ASK,
-        )
-
-        assert prepared_session.mode == AgentMode.CHAT
         assert prepared_turn.effective_mode == AgentMode.CHAT
-        assert prepared_turn.runtime_input == "请先审查 runtime 与 product 的分层边界"
         assert prepared_turn.profile.turn_kind == TurnExecutionKind.REACT
-        assert prepared_turn.compaction_plan is not None
-        assert prepared_turn.compaction_plan.use_micro_compact is False
-        assert prepared_turn.compaction_plan.use_full_compact is False
-        assert session.ask_state.status == "idle"
-        assert session.ask_state.confirmed_input == ""
-        system.update_session_mode.assert_called_once_with(
-            "sess-ask",
-            AgentMode.CHAT,
-            clear_ask_state=False,
-        )
-
-    @pytest.mark.asyncio
-    async def test_stream_session_chat_captures_alignment_output_in_product_layer(self):
-        system = _build_system_stub()
-
-        session = LearningSession(id="sess-align", mode=AgentMode.ASK)
-        system.get_session.return_value = session
-
-        async def _runtime_chunks():
-            yield ChatChunk(content="我理解你的目标是先完成")
-            yield ChatChunk(content="分层审查，再决定是否实现。")
-
-        system.agent_loop.run.return_value = _runtime_chunks()
-
-        chunks = []
-        async for chunk in system.stream_session_chat("sess-align", "帮我先对齐目标", mode=AgentMode.ASK):
-            chunks.append(chunk)
-
-        assert "".join(chunk.content for chunk in chunks) == "我理解你的目标是先完成分层审查，再决定是否实现。"
-        assert session.ask_state.status == "aligning"
-        assert session.ask_state.confirmed_input == "我理解你的目标是先完成分层审查，再决定是否实现。"
-        assert chunks[0].metadata["mode"] == "ask"
-        assert chunks[0].metadata["alignment"] is True
-        # default ASK now uses NEUTRAL persona, not a fixed harem persona
-        assert chunks[0].metadata["persona_key"] == NEUTRAL_PERSONA.key
-        assert chunks[0].metadata["persona_name"] == NEUTRAL_PERSONA.display_name
-
-        _, run_kwargs = system.agent_loop.run.call_args
-        assert run_kwargs["profile"].turn_kind == TurnExecutionKind.SINGLE_PASS
-        assert run_kwargs["compaction_plan"].use_micro_compact is False
-        assert run_kwargs["compaction_plan"].use_full_compact is False
-        system.save_session.assert_not_called()
+        assert prepared_turn.runtime_input == "随便问点啥"
+        # persona 仍按 session metadata 透传
+        assert prepared_turn.profile.assistant_message_metadata["persona_key"] == ZHU_XI_PERSONA.key
+        assert prepared_session.mode_metadata["chat_persona_key"] == ZHU_XI_PERSONA.key
 
 
 class TestTeachProtocol:
@@ -262,6 +214,17 @@ class TestTeachProtocol:
         unit.transition_to("absorbing")
         assert unit.phase == "absorbing"
 
+        # absorbing → stopped OK (用户显式先学到这里)
+        unit.transition_to("stopped")
+        assert unit.phase == "stopped"
+        assert unit.is_terminal()
+        with pytest.raises(ValueError):
+            unit.transition_to("outputting")
+
+        unit = LearningUnit(
+            session_id="sess-y",
+            objective=UnitObjective(text="t"),
+        )
         # absorbing → consolidated 必须经过 outputting
         with pytest.raises(ValueError):
             unit.transition_to("consolidated")
@@ -271,7 +234,7 @@ class TestTeachProtocol:
         unit.transition_to("consolidated")
         assert unit.is_terminal()
 
-        # consolidated 是终态，任何过渡都拒绝
+        # consolidated 也是终态，任何过渡都拒绝
         with pytest.raises(ValueError):
             unit.transition_to("absorbing")
 
@@ -294,6 +257,25 @@ class TestTeachProtocol:
         assert meta["alignment_reason"] == "missing_learnable_target"
         # unit 状态写回 + 限流计数 +1
         assert unit.alignment_state == "active"
+        assert unit.clarification_count == 1
+
+    @pytest.mark.asyncio
+    async def test_legacy_active_alignment_state_yields_one_ask(self):
+        """旧 phase=aligning 投影出的 active 状态仍应保留一次 ASK 语义。"""
+        system = _build_system_stub()
+        unit = _make_unit(phase="absorbing")
+        unit.alignment_state = "active"
+        unit.alignment_reason = ""
+        unit.clarification_count = 0
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        _, turn = await system._prepare_session_turn(
+            session, "讲讲 BaseModel", AgentMode.CHAT
+        )
+
+        assert turn.effective_mode == AgentMode.ASK
+        assert turn.profile.assistant_message_metadata["alignment_state"] == "active"
         assert unit.clarification_count == 1
 
     @pytest.mark.asyncio
@@ -428,6 +410,18 @@ class TestTeachProtocol:
     async def test_prepare_session_turn_consolidated_phase_raises(self):
         system = _build_system_stub()
         unit = _make_unit(phase="consolidated")
+        _attach_unit(system, unit)
+        session = _make_session_with_unit(unit)
+
+        with pytest.raises(ValueError):
+            await system._prepare_session_turn(
+                session, "再问一个问题", AgentMode.CHAT
+            )
+
+    @pytest.mark.asyncio
+    async def test_prepare_session_turn_stopped_phase_raises(self):
+        system = _build_system_stub()
+        unit = _make_unit(phase="stopped")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
@@ -1155,4 +1149,3 @@ class TestFinalizeConsolidation:
         assert unit.teach_session.state == "passed"
         assert unit.teach_session.aggregate_passed is True
         assert unit.verification_status == "passed"
-

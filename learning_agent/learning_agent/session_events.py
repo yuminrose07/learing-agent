@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 class SessionEventType:
     SESSION_CREATED = "session.created"
+    SESSION_LEARNING_UNIT_BOUND = "session.learning_unit_bound"
     MESSAGE_USER_APPENDED = "message.user_appended"
     MESSAGE_ASSISTANT_STARTED = "message.assistant_started"
     MESSAGE_END = "message_end"
@@ -16,7 +17,6 @@ class SessionEventType:
     MESSAGE_INTERRUPTED = "message.interrupted"
     MESSAGE_PATCH = "message.patch"
     SESSION_MODE_CHANGED = "session.mode_changed"
-    SESSION_ASK_STATE_UPDATED = "session.ask_state_updated"
     SESSION_TITLE_UPDATED = "session.title_updated"
     SESSION_STATUS_CHANGED = "session.status_changed"
     TOOL_CALL_STARTED = "tool.call_started"
@@ -45,6 +45,7 @@ class SessionEventType:
     LEARNING_UNIT_FIRST_VALUE_DELIVERED = "learning_unit.first_value_delivered"
     LEARNING_UNIT_TEACH_ENTERED = "learning_unit.teach_entered"
     LEARNING_UNIT_CONSOLIDATED = "learning_unit.consolidated"
+    LEARNING_UNIT_STOPPED = "learning_unit.stopped"
     LEARNING_UNIT_REUSE_FEEDBACK = "learning_unit.reuse_feedback"
 
 

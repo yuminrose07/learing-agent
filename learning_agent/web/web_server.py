@@ -90,16 +90,11 @@ class CreateLearningUnitRequest(BaseModel):
         "ai_distilled",
         "user_written",
         "material_imported",
-        "promoted_from_chat",
     ] = "ai_distilled"
 
 
 class AdvanceLearningUnitRequest(BaseModel):
     target_phase: Literal["absorbing", "outputting", "consolidated"]
-
-
-class PromoteSessionRequest(BaseModel):
-    seed_text: str
 
 
 class RefineObjectiveRequest(BaseModel):
@@ -108,6 +103,10 @@ class RefineObjectiveRequest(BaseModel):
 
 class ReuseFeedbackRequest(BaseModel):
     value: str  # "yes" | "no"
+
+
+class StopLearningUnitRequest(BaseModel):
+    reason: str = "user_stopped"
 
 
 # ───────────────────────────────
@@ -210,6 +209,10 @@ async def _stream_chat_chunks(
                     "suggested_objective",
                     "teach_session_id",
                     "teach_state",
+                    "question_index",
+                    "question_total",
+                    "verdict",
+                    "feedback_card",
                 ):
                     value = chunk_metadata.get(key)
                     if value is not None:
@@ -363,7 +366,6 @@ async def update_session_mode(session_id: str, req: UpdateModeRequest) -> dict[s
     return {
         "session_id": session.id,
         "mode": session.mode.value,
-        "ask_state": session.ask_state.status,
     }
 
 
@@ -376,7 +378,6 @@ async def get_session_mode(session_id: str) -> dict[str, Any]:
     return {
         "session_id": session.id,
         "mode": session.mode.value,
-        "ask_state": session.ask_state.status,
     }
 
 
@@ -507,6 +508,22 @@ async def list_learning_units() -> list[dict[str, Any]]:
     return [_learning_unit_payload(unit) for unit in system.list_learning_units()]
 
 
+@app.get("/learning-units/metrics")
+async def get_learning_unit_metrics(
+    window_days: Optional[int] = 7,
+) -> dict[str, Any]:
+    """M2：返回 4 个 P0 指标（TTFV / consolidation / teach-entry / reuse）。
+
+    ``window_days=0`` 表示当天，``None`` 走全量回看（前端可以传 ``window_days=-1``
+    或省略该参数）。
+    """
+    system = _get_system()
+    if window_days is not None and window_days < 0:
+        window_days = None
+    summary = system.get_learning_unit_metrics(window_days=window_days)
+    return summary_to_dict(summary)
+
+
 @app.get("/learning-units/{unit_id}")
 async def get_learning_unit(unit_id: str) -> dict[str, Any]:
     system = _get_system()
@@ -535,6 +552,23 @@ async def advance_learning_unit(
     system = _get_system()
     try:
         unit = await system.advance_learning_unit(unit_id, req.target_phase)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/stop")
+async def stop_learning_unit(
+    unit_id: str, req: StopLearningUnitRequest | None = None
+) -> dict[str, Any]:
+    system = _get_system()
+    try:
+        unit = system.stop_learning_unit(
+            unit_id,
+            reason=(req.reason if req is not None else "user_stopped"),
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="Learning unit not found")
     except ValueError as exc:
@@ -599,44 +633,6 @@ async def record_learning_unit_reuse_feedback(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _learning_unit_payload(unit)
-
-
-@app.get("/learning-units/metrics")
-async def get_learning_unit_metrics(
-    window_days: Optional[int] = 7,
-) -> dict[str, Any]:
-    """M2：返回 4 个 P0 指标（TTFV / consolidation / teach-entry / reuse）。
-
-    ``window_days=0`` 表示当天，``None`` 走全量回看（前端可以传 ``window_days=-1``
-    或省略该参数）。
-    """
-    system = _get_system()
-    if window_days is not None and window_days < 0:
-        window_days = None
-    summary = system.get_learning_unit_metrics(window_days=window_days)
-    return summary_to_dict(summary)
-
-
-@app.post("/chat-sessions/{session_id}/promote-to-learning-unit")
-async def promote_chat_session_to_learning_unit(
-    session_id: str, req: PromoteSessionRequest
-) -> dict[str, Any]:
-    system = _get_system()
-    try:
-        session, unit = system.promote_chat_session_to_learning_unit(
-            session_id, seed_text=req.seed_text
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Chat session not found")
-    except ActiveUnitExistsError as exc:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": "An active learning unit already exists; close it first.",
-                "active_unit_id": exc.active_unit_id,
-            },
-        )
-    return _learning_unit_payload(unit, session_id=session.id)
 
 
 # ───────────────────────────────
