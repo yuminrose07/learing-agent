@@ -33,7 +33,7 @@ from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
 from learning_agent.learning_agent.learning_unit_store import ActiveUnitExistsError
 from learning_agent.learning_agent.learning_unit_metrics import summary_to_dict
-from learning_agent.learning_agent.main import LearningAgentSystem
+from learning_agent.learning_agent.main import LearningAgentSystem, SessionNotFoundError
 from learning_agent.learning_agent.mode_service import (
     NEUTRAL_PERSONA,
     PHILOSOPHER_PERSONAS,
@@ -217,15 +217,41 @@ async def _stream_chat_chunks(
                     value = chunk_metadata.get(key)
                     if value is not None:
                         payload[key] = value
+                # Final Answer Guarantee 标记：让前端可以选择性渲染（仍是正常 content）
+                if chunk_metadata.get("rescue"):
+                    payload["rescue"] = True
                 await queue.put(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
-        except ValueError:
+        except SessionNotFoundError:
             await queue.put(
                 f"data: {json.dumps({'error': f'Session {session_id} not found'}, ensure_ascii=False)}\n\n"
             )
         except Exception as e:
-            logger.exception(f"[Web] Chat stream error: {e}")
+            # 工具调用成功导向架构：理论上 stream_session_chat 已经自带兜底，
+            # 这里只可能命中 BaseException 子类或上游初始化期错误（如 system 未启动）。
+            # 仍然不能让前端拿到无 content 的流，输出一条静态兜底文本。
+            logger.exception(f"[Web] Chat stream outer-guard error: {e}")
+            try:
+                await system.unresolved_failure_logger.record(
+                    session_id=session_id,
+                    layer="web_server_stream_outer",
+                    reason_code=type(e).__name__,
+                    message=str(e),
+                    user_input=message,
+                    rescue_used=True,
+                    extra={"mode": mode.value},
+                )
+            except Exception:
+                logger.exception("[Web] unresolved_failure_logger.record failed (non-fatal)")
+            fallback_payload = {
+                "content": (
+                    "我这边暂时没办法完成这条请求——你能再描述一次或换个角度问我吗？"
+                ),
+                "rescue": True,
+                "rescue_reason": "web_outer_exception",
+                "mode": mode.value,
+            }
             await queue.put(
-                f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                f"data: {json.dumps(fallback_payload, ensure_ascii=False)}\n\n"
             )
         finally:
             await queue.put(None)
@@ -345,11 +371,27 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
                 req.message,
                 mode=req.mode,
             )
-        except ValueError:
+        except SessionNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")
         except Exception as e:
+            # 工具调用成功导向架构：collect_session_chat 自带兜底，
+            # 这里只可能命中初始化期或框架级错误。仍然不向用户暴露原始错误信息。
             logger.exception(f"[Web] Chat error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            try:
+                await system.unresolved_failure_logger.record(
+                    session_id=session_id,
+                    layer="web_server_collect_outer",
+                    reason_code=type(e).__name__,
+                    message=str(e),
+                    user_input=req.message,
+                    rescue_used=True,
+                    extra={"mode": req.mode.value},
+                )
+            except Exception:
+                logger.exception("[Web] unresolved_failure_logger.record failed (non-fatal)")
+            content = (
+                "我这边暂时没办法完成这条请求——你能再描述一次或换个角度问我吗？"
+            )
         return {
             "session_id": session_id,
             "content": content,

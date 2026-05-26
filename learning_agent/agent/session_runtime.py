@@ -142,6 +142,7 @@ class AgentLoopSession:
             observability=self.obs,
             is_retryable_fn=self.agent_loop._is_retryable_tool_error,
             event_writer=getattr(self.agent_loop, "event_writer", None),
+            unresolved_failure_logger=getattr(self.agent_loop, "unresolved_failure_logger", None),
         )
 
     # ── 共享依赖快捷访问 ──

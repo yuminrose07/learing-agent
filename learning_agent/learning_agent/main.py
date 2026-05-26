@@ -22,6 +22,7 @@ from learning_agent.agent.event_bus import EventBus
 from learning_agent.learning_agent.extension_manager import ExtensionManager
 from learning_agent.agent.hook_system import HookSystem
 from learning_agent.agent.observability import ObservabilityCollector
+from learning_agent.agent.unresolved_failure_logger import UnresolvedFailureLogger
 from learning_agent.learning_agent.extensions.built_in import create_builtin_extensions
 from learning_agent.learning_agent.tool_registry import ToolRegistry
 from learning_agent.memory.memory_manager import MemoryManager
@@ -96,6 +97,18 @@ _ABSORBING_OPENING_SUGGESTION_BLOCK = """
 """
 
 
+class SessionNotFoundError(LookupError):
+    """指定 session_id 不存在。与其他业务 ValueError 区分，避免
+    web 层一刀切误把"学习卷已 consolidated"映射成"session 不存在"。"""
+
+
+# Final Answer Guarantee 的最终静态兜底文本。仅在 rescue LLM 也失败时使用，
+# 不可包含任何"错误 / 重试 / 失败"字样。保持中性，让用户可以继续对话。
+_SAFE_FALLBACK_ANSWER = (
+    "我这边暂时没有抓到你需要的具体信息——能再告诉我一些上下文吗？"
+    "比如你想了解的方向、目标场景，或者你已经看过的资料，我会基于这些继续帮你梳理。"
+)
+
 
 class LearningAgentSystem:
     """
@@ -113,6 +126,11 @@ class LearningAgentSystem:
         # Layer 4: Infrastructure
         self.file_store = FileStore(self.config.data_dir)
         self.session_event_store = SessionEventStore(self.file_store)
+        # 工具调用成功导向架构：不可恢复失败的内部账本（仅用于内部诊断和后续优化）
+        from pathlib import Path
+        self.unresolved_failure_logger = UnresolvedFailureLogger(
+            Path(self.config.data_dir) / "unresolved_failures.jsonl"
+        )
         # Layer 3: Agent Runtime cross-cutting support
         self.event_bus = EventBus()
         self.hook_system = HookSystem()
@@ -191,6 +209,7 @@ class LearningAgentSystem:
             observability=self.observability,
             max_react_turns=10,
             event_writer=self.session_event_store,
+            unresolved_failure_logger=self.unresolved_failure_logger,
         )
         self.compaction_coordinator = CompactionCoordinator(
             self.session_manager,
@@ -1553,55 +1572,176 @@ class LearningAgentSystem:
         user_input: str,
         mode: AgentMode = AgentMode.CHAT,
     ) -> AsyncGenerator[ChatChunk, None]:
-        """将产品级聊天请求路由到指定 session runtime。"""
+        """将产品级聊天请求路由到指定 session runtime。
+
+        契约（工具调用成功导向架构 / Final Answer Guarantee）：
+        本生成器面向 web/CLI 上游，任何分支（chat / outputting / agent_loop）
+        在内部失败时都不应让上游拿到"空内容"。生成器自身吞掉所有非
+        BaseException 的失败，未输出可见 content 时由 rescue answer 兜底。
+        """
         if self.agent_loop is None:
             raise RuntimeError("Agent loop is not initialized")
 
         session = self.get_session(session_id)
         if session is None:
-            raise ValueError(f"Session {session_id} not found")
+            raise SessionNotFoundError(f"Session {session_id} not found")
 
-        # B5 E4：outputting 阶段绕开 agent_loop，由 _stream_teach_answer_flow
-        # 直接消费 user_input 为答题 + judge + 渲染下一题或反馈卡。
-        if session.learning_unit_id:
-            unit = self.learning_unit_store.get(session.learning_unit_id)
-            if unit is not None and unit.phase == "outputting":
-                async for chunk in self._stream_teach_answer_flow(
-                    session, unit, user_input
-                ):
-                    yield chunk
-                return
+        visible_chars = 0
+        rescue_reason: Optional[str] = None
+        rescue_detail: Optional[str] = None
 
-        session, prepared_turn = await self._prepare_session_turn(session, user_input, mode)
-        response_parts: list[str] = []
-        completed = False
-
-        try:
-            async for chunk in self.agent_loop.run(
-                session,
-                prepared_turn.runtime_input,
-                profile=prepared_turn.profile,
-                compaction_plan=prepared_turn.compaction_plan,
-            ):
-                if chunk.content:
-                    response_parts.append(chunk.content)
-                merged_metadata = dict(prepared_turn.stream_metadata)
-                merged_metadata.update(dict(chunk.metadata))
-                if "turn_usage" in merged_metadata and "usage" not in merged_metadata:
-                    merged_metadata["usage"] = merged_metadata["turn_usage"]
-                yield chunk.model_copy(update={"metadata": merged_metadata})
-            completed = True
-        finally:
+        async def _inner() -> AsyncGenerator[ChatChunk, None]:
+            nonlocal rescue_reason, rescue_detail
             try:
-                if completed:
-                    self._maybe_emit_first_value(
-                        session, prepared_turn, "".join(response_parts)
-                    )
-                    self._maybe_fire_concept_extraction(
-                        session, prepared_turn, "".join(response_parts)
-                    )
+                # B5 E4：outputting 阶段绕开 agent_loop，由 _stream_teach_answer_flow
+                # 直接消费 user_input 为答题 + judge + 渲染下一题或反馈卡。
+                if session.learning_unit_id:
+                    unit = self.learning_unit_store.get(session.learning_unit_id)
+                    if unit is not None and unit.phase == "outputting":
+                        async for chunk in self._stream_teach_answer_flow(
+                            session, unit, user_input
+                        ):
+                            yield chunk
+                        return
+
+                prepared_session, prepared_turn = await self._prepare_session_turn(
+                    session, user_input, mode
+                )
+                response_parts: list[str] = []
+                completed = False
+
+                try:
+                    async for chunk in self.agent_loop.run(
+                        prepared_session,
+                        prepared_turn.runtime_input,
+                        profile=prepared_turn.profile,
+                        compaction_plan=prepared_turn.compaction_plan,
+                    ):
+                        if chunk.content:
+                            response_parts.append(chunk.content)
+                        merged_metadata = dict(prepared_turn.stream_metadata)
+                        merged_metadata.update(dict(chunk.metadata))
+                        if "turn_usage" in merged_metadata and "usage" not in merged_metadata:
+                            merged_metadata["usage"] = merged_metadata["turn_usage"]
+                        yield chunk.model_copy(update={"metadata": merged_metadata})
+                    completed = True
+                finally:
+                    try:
+                        if completed:
+                            self._maybe_emit_first_value(
+                                prepared_session, prepared_turn, "".join(response_parts)
+                            )
+                            self._maybe_fire_concept_extraction(
+                                prepared_session, prepared_turn, "".join(response_parts)
+                            )
+                    except Exception:
+                        logger.exception(
+                            f"[System] Failed to finalize turn for session {session_id}"
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 任何模式下，pre-turn 准备 / teach flow / agent_loop 的未捕获异常
+                # 都不能让 SSE 上游拿到空响应。统一打 rescue 通道。
+                logger.exception(
+                    "[System] stream_session_chat inner failure for session %s",
+                    session_id,
+                )
+                rescue_reason = "inner_exception"
+                rescue_detail = f"{type(exc).__name__}: {exc}"
+
+        async for chunk in _inner():
+            if chunk.content:
+                visible_chars += len(chunk.content)
+            yield chunk
+
+        if visible_chars == 0:
+            # Final Answer Guarantee：本轮对用户完全没有可见输出 —— 必须由系统兜底。
+            reason = rescue_reason or "empty_stream"
+            detail = rescue_detail or "stream produced no visible content"
+            try:
+                rescue_text, rescue_via = await self._build_rescue_answer(
+                    session_id=session_id,
+                    user_input=user_input,
+                    reason=reason,
+                    detail=detail,
+                )
             except Exception:
-                logger.exception(f"[System] Failed to finalize turn for session {session_id}")
+                logger.exception(
+                    "[System] rescue answer build raised for session %s", session_id
+                )
+                rescue_text = _SAFE_FALLBACK_ANSWER
+                rescue_via = "static_fallback"
+            try:
+                await self.unresolved_failure_logger.record(
+                    session_id=session_id,
+                    layer="stream_session_chat",
+                    reason_code=reason,
+                    message=detail,
+                    user_input=user_input,
+                    rescue_used=True,
+                    extra={"rescue_via": rescue_via, "mode": mode.value},
+                )
+            except Exception:
+                logger.exception(
+                    "[System] unresolved_failure_logger.record failed (non-fatal)"
+                )
+            yield ChatChunk(
+                content=rescue_text,
+                metadata={
+                    "mode": mode.value,
+                    "rescue": True,
+                    "rescue_reason": reason,
+                    "rescue_via": rescue_via,
+                },
+            )
+
+    async def _build_rescue_answer(
+        self,
+        *,
+        session_id: str,
+        user_input: str,
+        reason: str,
+        detail: str,
+    ) -> tuple[str, str]:
+        """生成最终兜底回答。不允许把内部错误暴露给用户。
+
+        优先：让 provider 基于 user_input 直接给一个不依赖工具的中性回答。
+        次级：返回一段中性静态文本，仍保证 content 非空。
+        """
+        if self.provider is not None:
+            try:
+                prompt = (
+                    "You are answering a user in a personal learning assistant. "
+                    "Earlier internal tools or data lookups did not yield a usable answer, "
+                    "but the user must receive a helpful, self-contained reply. "
+                    "Do NOT mention any internal tools, errors, retries, or system state. "
+                    "Do NOT apologize for technical issues. "
+                    "If you genuinely need more information, ask one concise clarifying question. "
+                    "Otherwise, give a useful answer based on general knowledge. "
+                    "Match the user's language (Chinese or English) automatically.\n\n"
+                    f"User message:\n{user_input}"
+                )
+                chunk = await self.provider.chat(
+                    ChatParams(
+                        model=self.provider.default_model,
+                        messages=[
+                            ChatMessage(role=MessageRole.USER, content=prompt),
+                        ],
+                        temperature=0.4,
+                        stream=False,
+                        max_tokens=800,
+                    )
+                )
+                text = (chunk.content or "").strip()
+                if text:
+                    return text, "rescue_llm"
+            except Exception:
+                logger.exception(
+                    "[System] rescue LLM call failed for session %s (reason=%s)",
+                    session_id, reason,
+                )
+        return _SAFE_FALLBACK_ANSWER, "static_fallback"
 
     async def collect_session_chat(
         self,
