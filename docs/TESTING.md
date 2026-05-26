@@ -243,3 +243,251 @@ python3 tests/render_compaction_dataset_report.py scripted
 5. 修复当前已暴露的两个真实问题：summary 中的智能引号污染、重复条目
 6. 拓宽 compaction case 维度覆盖：短任务 / 异常恢复 / 工具穿插 / 中英混合
 7. 在 CI 中按 marker 分阶段跑：`pytest -m "unit or integration"` → `pytest -m e2e` → `pytest -m slow`
+
+***
+
+## 十一、真实数据集 E2E 规范
+
+本节适用于**真实 Web Server + 真实前端 / 真实 API + 真实外部依赖**的端到端测试。
+
+目标不是替代 `tests/e2e/scenarios/*.yaml` 这类脚本化回放，而是建立一套后续长期复用的**真实数据集、真实运行结果、证据包与基线**管理方式。
+
+### 11.1 适用场景
+
+- 验证 `前端 -> Web Server -> Agent Runtime -> Tools -> Session/Event Log` 的真实链路。
+- 复现线上或手工发现的真实问题，例如：
+  - 空返回
+  - 半句返回 / 过渡句被当最终答案
+  - rescue 兜底缺失
+  - `web_search` / `web_fetch` 降级失效
+  - 前端展示与服务端最终消息不一致
+- 评估“修复后是否真的在真实环境稳定生效”。
+
+### 11.2 与脚本化 E2E 的分工
+
+- `tests/e2e/scenarios/*.yaml`
+  - 用于可控、可回放、CI 友好的脚本化 E2E。
+  - 默认不依赖真实网络、真实 LLM、真实浏览器。
+- `真实数据集 E2E`
+  - 用于验证真实环境中的实际用户路径和真实外部依赖。
+  - 允许存在网络波动，但必须留痕并分类。
+
+二者都属于 L3 端到端，只是**一个偏确定性回放，一个偏真实世界验收**。
+
+### 11.3 本地目录约定
+
+真实数据集 E2E 统一使用以下目录：
+
+```text
+tests/e2e/real_datasets/
+  <suite>.json                 # 数据集定义，长期保留
+
+tests/e2e/real_baselines/
+  <suite>.baseline.json        # 期望统计、历史锚点、允许波动说明
+
+.test_artifacts/e2e_real_runs/
+  <suite>/
+    latest -> <run_id>/        # 最新一次运行的软链接或约定别名
+    <run_id>/
+      manifest.json            # 本次运行元信息
+      summary.json             # 总结：pass/fail、新增失败、回归失败
+      results.jsonl            # 每条 case 一条结构化结果
+      cases/
+        <case_id>/
+          request.json
+          response.json
+          session.json
+          events.jsonl
+          frontend.png
+          unresolved_failures.jsonl
+```
+
+说明：
+
+- `tests/e2e/real_datasets/`：放**长期复用的真实样本定义**，属于仓库内容，应纳入版本管理。
+- `tests/e2e/real_baselines/`：放**基线和棘轮**，用于比较“这次比上次更好还是更差”。
+- `.test_artifacts/e2e_real_runs/`：放**每次真实运行结果和证据包**，默认不入库，供本地排查和离线回放。
+
+### 11.4 命名规则
+
+- `suite`：使用 kebab-case，例如 `web-search-regression`、`frontend-rescue-guard`
+- `case_id`：必须全局唯一，推荐 `e2e-<topic>-<risk>`
+- `run_id`：必须包含日期时间，推荐：
+
+```text
+YYYY-MM-DDTHHMMSSZ_<suite>_<mode>
+```
+
+示例：
+
+```text
+2026-05-27T103000Z_web-search-regression_manual
+```
+
+### 11.5 数据集文件规范
+
+每个数据集文件至少包含：
+
+- `suite_id`
+- `description`
+- `owner`
+- `cases`
+
+每条 case 至少包含：
+
+- `id`
+- `title`
+- `source`
+- `tags`
+- `setup`
+- `input`
+- `expect`
+- `forbid`
+- `evidence_required`
+- `severity`
+
+推荐结构：
+
+```json
+{
+  "suite_id": "web-search-regression",
+  "description": "真实搜索、抓取、降级、兜底回归集",
+  "owner": "learning-agent",
+  "cases": [
+    {
+      "id": "e2e-python-312-half-answer",
+      "title": "Python 3.12 搜索不能停在过渡句",
+      "source": "historical_bug",
+      "tags": ["web_search", "multi_turn", "regression"],
+      "setup": {
+        "reuse_session": true,
+        "prior_turns": [
+          "请访问 https://httpstat.us/503 并告诉我返回什么内容，这是一个测试503错误的网站"
+        ]
+      },
+      "input": "请搜索 Python 3.12 的新特性",
+      "expect": {
+        "non_empty_response": true,
+        "allow_rescue": true,
+        "frontend_backend_consistent": true
+      },
+      "forbid": {
+        "contains": [
+          "让我尝试其他来源：",
+          "让我换个来源试试。先搜索一些更容易获取的技术博客内容。"
+        ],
+        "empty_response": true
+      },
+      "evidence_required": [
+        "response.json",
+        "session.json",
+        "events.jsonl",
+        "frontend.png"
+      ],
+      "severity": "blocker"
+    }
+  ]
+}
+```
+
+### 11.6 真实运行必须保存什么
+
+每次真实 E2E 运行结束后，至少保存：
+
+- `manifest.json`
+  - `run_id`
+  - `suite_id`
+  - 启动时间 / 结束时间
+  - 端口
+  - 模型
+  - 关键配置
+  - 是否前端模式 / API 模式
+- `summary.json`
+  - 总 case 数
+  - pass / fail / flaky 数
+  - 新增失败
+  - 已知失败
+  - 回归失败
+- `results.jsonl`
+  - 每条 case 一条结构化结果
+- `cases/<case_id>/...`
+  - 本 case 的完整证据包
+
+### 11.7 结果判定规则
+
+先判**硬规则**，再看软质量。
+
+硬规则命中任一条，case 直接失败：
+
+- 最终用户可见内容为空
+- 最终内容只包含过渡句、规划句、未完成句
+- 前端展示与服务端最终消息不一致
+- 工具失败后没有形成有效兜底或有效回答
+- 失败发生后没有留下应有证据
+- 已知回归 case 再次出现同类问题
+
+推荐失败分类：
+
+- `empty_response`
+- `incomplete_transition_answer`
+- `tool_denied_no_recovery`
+- `tool_failed_no_rescue`
+- `frontend_backend_mismatch`
+- `missing_evidence`
+- `external_dependency_unstable`
+- `unexpected_internal_error`
+
+### 11.8 基线与棘轮
+
+真实数据集 E2E 也要维护“质量只能上、不能下”的棘轮：
+
+- `tests/e2e/real_baselines/<suite>.baseline.json` 记录：
+  - 当前允许的失败 case 白名单
+  - 每类失败最大数量
+  - 必须始终通过的 blocker case
+  - 外部依赖波动说明
+- 修复某个历史问题并稳定通过后，应同步收紧 baseline：
+  - 从允许失败白名单移除
+  - 或把允许失败数量下调
+
+### 11.9 执行要求
+
+以后凡是“构造真实数据集并跑真实 E2E”，默认都必须遵守：
+
+1. 先选定数据集 `suite`
+2. 明确本次运行模式：`manual` / `nightly` / `pre-release`
+3. 启动真实 Web Server，并记录端口与配置
+4. 对每条 case 保存请求、响应、session、events、截图
+5. 输出 `summary.json` 与 `results.jsonl`
+6. 与对应 baseline 对比，标记：
+   - `new_failure`
+   - `known_failure`
+   - `regression`
+   - `pass`
+
+### 11.10 何时更新数据集
+
+以下场景必须补充或更新真实数据集：
+
+- 出现新的真实用户可见问题
+- 修复了一个线上 / 手工复现问题
+- 新增了一个高风险工具路径
+- 修改了降级 / rescue / 前端消息拼装逻辑
+- 修改了 `web_search`、`web_fetch`、tool budget guard、session replay 等关键路径
+
+### 11.11 何时更适合模块，而不是 skill
+
+本项目推荐把这套规范放在仓库内，作为：
+
+- `AGENTS.testing.md` 入口模块
+- `docs/TESTING.md` 完整规范
+
+而不是单独做成 skill。
+
+原因：
+
+- skill 更偏“助手能力”
+- 仓库规范更适合约束“以后所有真实 E2E 都必须怎么跑、怎么存、怎么留痕”
+- 仓库内文档更容易和代码、测试、变更记录一起演进
+
+只有当你希望“跨仓库复用同一套真实 E2E 流程”时，才值得再抽成通用 skill。
