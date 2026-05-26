@@ -106,12 +106,12 @@ class LearningObjective(BaseModel):
     source: Literal["ai_distilled",        # MVP 唯一实现
                     "user_written",        # 预留
                     "material_imported",   # 预留（从 PDF/链接/文本导入）
-                    "promoted_from_chat"]  # 预留（从闲聊一键升格）
+                    "promoted_from_chat"]  # 旧数据兼容；现阶段不暴露闲聊升格
     source_ref: Optional[str] = None       # material_imported 时指向上传文件 id
-                                           # promoted_from_chat 时指向 chat session 片段
+                                           # promoted_from_chat 仅用于读取历史实验数据
 ```
 
-API 层只暴露 `source="ai_distilled"`；其他枚举值在 Schema 中**已经存在**，但服务端拒绝接受——这样未来加新路径时**只改实现，不改 schema**。
+API 层不再暴露 `promoted_from_chat`，也不提供闲聊会话升格入口；闲聊和研习通过不同创建入口开始，已有会话类型不可互转。
 
 **对齐节奏（落实 C3）**：
 
@@ -245,8 +245,8 @@ class LearningObjective(BaseModel):
     source: Literal["ai_distilled",                # MVP 唯一支持
                     "user_written",                # 预留
                     "material_imported",           # 预留
-                    "promoted_from_chat"]          # 预留
-    source_ref: Optional[str] = None               # material 时指向上传文件 id；promoted 时指向 chat 片段
+                    "promoted_from_chat"]          # 旧数据兼容；现阶段不暴露闲聊升格
+    source_ref: Optional[str] = None               # material 时指向上传文件 id；promoted 仅用于历史实验数据
     confirmed: bool = False                        # 用户点「确认开始」后置 True（C4）
 
 
@@ -339,7 +339,7 @@ class ChatSession(BaseModel):
   - `POST /learning-units/{id}/confirm-objective` 确认目标，phase 进入 `absorbing`。
   - `POST /learning-units/{id}/advance` 手动推进阶段（带 `target_phase` 参数）。
   - `GET /learning-units/{id}` 读卷（含 objective、concept_list、phase）。
-  - `POST /chat-sessions/{id}/promote-to-learning-unit` 闲聊升格入口。
+  - 不暴露 `POST /chat-sessions/{id}/promote-to-learning-unit`；现阶段闲聊和研习不可互转。
   - 现有 `/sessions` API 中，学习卷会话沿用相同的会话存储，仅多一个 `learning_unit_id` 关联字段；前端按字段判断走哪种 UI。
 - `mode_service.build_turn_profile` 扩展，理解 `TEACH` 协议；TEACH 也走 `TurnExecutionKind.SINGLE_PASS`（与 ASK 同构）。
 - 现有 `/objectives` 端点：评估是直接复用为学习卷的 objective 持久化，还是另起一张表。**建议**：复用 `Objective` 概念，但语义收紧到「一卷一目标」；不重新发明轮子。在 §六实现计划里会再确认。

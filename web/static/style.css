@@ -171,7 +171,7 @@ body.chat-view { /* in-conversation */ }
     align-items: center;
     gap: 10px;
     margin-bottom: 1px;
-    padding: 9px 38px 9px 12px;
+    padding: 9px 82px 9px 12px;
     border-left: 2px solid transparent;
     color: var(--ink-2);
     cursor: pointer;
@@ -187,13 +187,34 @@ body.chat-view { /* in-conversation */ }
     border-left-color: var(--vermillion);
 }
 
-.session-item svg {
+.session-item-chat.active {
+    border-left-color: var(--indigo);
+}
+.session-item-learning.active {
+    border-left-color: var(--vermillion);
+}
+
+.session-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+}
+.session-item .session-icon svg {
     width: 14px;
     height: 14px;
     color: var(--ink-4);
 }
-.session-item.active svg { color: var(--vermillion); }
+.session-item-chat.active .session-icon svg { color: var(--indigo); }
+.session-item-learning.active .session-icon svg { color: var(--vermillion); }
+
+.session-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 
 .session-title {
     flex: 1;
@@ -204,6 +225,27 @@ body.chat-view { /* in-conversation */ }
     font-size: 13px;
     font-weight: 500;
     user-select: none;
+}
+
+.session-mode-badge {
+    flex-shrink: 0;
+    padding: 2px 4px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    font-size: 10px;
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+.session-mode-chat {
+    color: var(--indigo);
+    background: var(--indigo-soft);
+    border-color: var(--indigo-line);
+}
+.session-mode-learning {
+    color: var(--vermillion-deep);
+    background: var(--vermillion-soft);
+    border-color: var(--vermillion-line);
 }
 .session-title input {
     width: 100%;
@@ -234,6 +276,10 @@ body.chat-view { /* in-conversation */ }
     justify-content: center;
     border-radius: var(--r-xs);
     color: var(--ink-4);
+}
+.session-actions button svg {
+    width: 12px;
+    height: 12px;
 }
 .session-actions button:hover {
     background: var(--paper-3);
@@ -526,7 +572,7 @@ body.chat-view { /* in-conversation */ }
 /* Mode cards: editorial — left vermillion margin index, no rounded blobs */
 .home-mode-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0;
     margin-bottom: 40px;
     border-top: 1px solid var(--ink);
@@ -557,8 +603,7 @@ body.chat-view { /* in-conversation */ }
     letter-spacing: 0.1em;
     color: var(--ink-4);
 }
-.home-mode-card[data-mode="ask"]::before   { content: "02"; }
-.home-mode-card[data-mode="study"]::before { content: "03"; }
+.home-mode-card[data-mode="learning"]::before { content: "02"; }
 
 .home-mode-card:hover:not(:disabled):not(.disabled) {
     background: var(--paper-2);
@@ -592,7 +637,7 @@ body.chat-view { /* in-conversation */ }
     margin-bottom: 6px;
     letter-spacing: 0.02em;
 }
-.home-mode-title::after {
+.home-mode-title[data-en]:not([data-en=""])::after {
     content: attr(data-en);
     margin-left: 8px;
     font-family: var(--font-mono);
@@ -764,22 +809,16 @@ body.chat-view { /* in-conversation */ }
     background: var(--surface-raised);
 }
 
-/* Ask mode / study mode / alignment — left rule accent in palette */
-.message.user.ask-mode .message-content,
+/* Alignment turns use a subtle left rule without exposing internal mode names. */
 .message.assistant.alignment .message-content {
     border-left: 3px solid var(--vermillion);
-}
-.message.user.study-mode .message-content,
-.message.assistant.study-mode .message-content {
-    border-left: 3px solid var(--ochre);
 }
 
 .message-body { display: block; }
 .message-body > :last-child { margin-bottom: 0; }
 
 
-/* Inline badges (ask / persona) — wax-stamp style */
-.ask-badge,
+/* Inline persona badge — wax-stamp style */
 .persona-badge {
     display: inline-flex;
     align-items: center;
@@ -793,11 +832,6 @@ body.chat-view { /* in-conversation */ }
     margin-right: 8px;
     margin-bottom: 10px;
     border: 1px solid;
-}
-.ask-badge {
-    color: var(--vermillion);
-    border-color: var(--vermillion-line);
-    background: var(--vermillion-soft);
 }
 .persona-badge {
     color: var(--indigo);
@@ -1015,10 +1049,6 @@ body.chat-view { /* in-conversation */ }
 .btn-mode:hover { color: var(--ink); }
 .btn-mode.active { color: var(--vermillion); }
 .btn-mode.active::after { background: var(--vermillion); }
-.btn-mode.active[data-mode="ask"]   { color: var(--vermillion); }
-.btn-mode.active[data-mode="ask"]::after   { background: var(--vermillion); }
-.btn-mode.active[data-mode="study"] { color: var(--ochre); }
-.btn-mode.active[data-mode="study"]::after { background: var(--ochre); }
 
 .btn-mode.disabled,
 .btn-mode:disabled {
@@ -1026,7 +1056,14 @@ body.chat-view { /* in-conversation */ }
     pointer-events: none;
 }
 
-.mode-icon { display: none; }   /* drop emoji, keep label */
+.mode-icon {
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+    align-items: center;
+    justify-content: center;
+}
+.mode-icon svg { display: block; }
 .mode-label { font-weight: 600; letter-spacing: 0.18em; }
 
 

@@ -226,6 +226,24 @@ class TestAdvanceLearningUnitEvents:
         assert len(consolidated) == 1
 
 
+class TestStopLearningUnitEvents:
+    def test_absorbing_to_stopped_emits_phase_changed_and_stopped(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        _wire_store(system, unit)
+
+        result = system.stop_learning_unit(unit.id, reason="user_stopped")
+
+        assert result.phase == "stopped"
+        phase = _calls_for(system.session_event_store, "learning_unit.phase_changed")
+        assert any(p["from"] == "absorbing" and p["to"] == "stopped" for p in phase)
+        stopped = _calls_for(system.session_event_store, "learning_unit.stopped")
+        assert len(stopped) == 1
+        _assert_payload_complete(stopped[0], unit.id)
+        assert stopped[0]["stop_reason"] == "user_stopped"
+        assert stopped[0]["stopped_at"]
+
+
 class TestAlignmentEvents:
     @pytest.mark.asyncio
     async def test_request_alignment_emits_started(self):

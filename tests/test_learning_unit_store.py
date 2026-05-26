@@ -146,6 +146,14 @@ class TestActiveUnitInvariant:
 
         assert store.find_active() is None
 
+    def test_find_active_skips_stopped(self, file_store: FileStore):
+        store = LearningUnitStore(file_store)
+        unit = store.create(session_id="sess-a", objective_text="t")
+        unit.transition_to("stopped")
+        store.save(unit)
+
+        assert store.find_active() is None
+
     def test_create_raises_when_active_unit_exists(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
         first = store.create(session_id="sess-1", objective_text="t1")
@@ -159,6 +167,16 @@ class TestActiveUnitInvariant:
         first = store.create(session_id="sess-1", objective_text="t1")
         first.transition_to("outputting")
         first.transition_to("consolidated")
+        store.save(first)
+
+        second = store.create(session_id="sess-2", objective_text="t2")
+        assert second.id != first.id
+        assert second.phase == "absorbing"
+
+    def test_create_allowed_after_stop(self, file_store: FileStore):
+        store = LearningUnitStore(file_store)
+        first = store.create(session_id="sess-1", objective_text="t1")
+        first.transition_to("stopped")
         store.save(first)
 
         second = store.create(session_id="sess-2", objective_text="t2")

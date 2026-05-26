@@ -202,6 +202,31 @@ class TestRatioMetrics:
         assert stats.numerator == 0
         assert stats.denominator == 0
 
+    def test_consolidation_rate_ignores_old_units_completed_in_window(self):
+        events = [
+            _evt(seq=1, session_id="s-old-1", unit_id="lu-old-1",
+                 type_=SessionEventType.LEARNING_UNIT_CREATED,
+                 ts=_NOW - timedelta(days=30)),
+            _evt(seq=2, session_id="s-old-1", unit_id="lu-old-1",
+                 type_=SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                 ts=_NOW - timedelta(days=1)),
+            _evt(seq=3, session_id="s-old-2", unit_id="lu-old-2",
+                 type_=SessionEventType.LEARNING_UNIT_CREATED,
+                 ts=_NOW - timedelta(days=20)),
+            _evt(seq=4, session_id="s-old-2", unit_id="lu-old-2",
+                 type_=SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                 ts=_NOW - timedelta(hours=1)),
+            _evt(seq=5, session_id="s-new", unit_id="lu-new",
+                 type_=SessionEventType.LEARNING_UNIT_CREATED,
+                 ts=_NOW - timedelta(hours=2)),
+        ]
+        stats = calculate_consolidation_rate(
+            events, window_start=_NOW - timedelta(days=7)
+        )
+        assert stats.numerator == 0
+        assert stats.denominator == 1
+        assert stats.ratio == 0.0
+
     def test_teach_entry_rate(self):
         events = [
             _evt(seq=1, session_id="s", unit_id="lu-a",
@@ -232,6 +257,25 @@ class TestRatioMetrics:
         ]
         stats = calculate_teach_entry_rate(events, window_start=None)
         assert stats.numerator == 1
+
+    def test_teach_entry_rate_ignores_old_units_entered_in_window(self):
+        events = [
+            _evt(seq=1, session_id="s-old", unit_id="lu-old",
+                 type_=SessionEventType.LEARNING_UNIT_CREATED,
+                 ts=_NOW - timedelta(days=30)),
+            _evt(seq=2, session_id="s-old", unit_id="lu-old",
+                 type_=SessionEventType.LEARNING_UNIT_TEACH_ENTERED,
+                 ts=_NOW - timedelta(hours=1)),
+            _evt(seq=3, session_id="s-new", unit_id="lu-new",
+                 type_=SessionEventType.LEARNING_UNIT_CREATED,
+                 ts=_NOW - timedelta(hours=2)),
+        ]
+        stats = calculate_teach_entry_rate(
+            events, window_start=_NOW - timedelta(days=7)
+        )
+        assert stats.numerator == 0
+        assert stats.denominator == 1
+        assert stats.ratio == 0.0
 
 
 class TestReuseIntentMetric:

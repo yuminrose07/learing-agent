@@ -78,7 +78,7 @@
 
             <!-- 聊天区域 -->
             <div class="chat-area" id="chat-area">
-                <!-- 学习卷目标卡（仅在 session.learning_unit_id 存在时显示） -->
+                <!-- 研习卷目标卡（仅在 session.learning_unit_id 存在时显示） -->
                 <div id="learning-unit-card" class="hidden" aria-live="polite"></div>
 
                 <!-- 欢迎页 -->
@@ -87,33 +87,23 @@
                         <span class="welcome-kicker">學齋 · Learning Agent</span>
                         <div class="welcome-logo">學</div>
                         <h1>今日想从哪一题开始？</h1>
-                        <p class="welcome-subtitle">直接输入即可开新一卷。Chat 适合日常对话，Ask 会先与你对齐目标再作答，Study 由资深学伴主持深入研习。需要换一种思考风格时，可在右上角「思路」里切换苏格拉底 / 费曼 / 蒙田 / 朱熹 / 笛卡尔等思路覆层。</p>
+                        <p class="welcome-subtitle">闲谈和研习彼此独立。闲谈适合轻量对话；研习会围绕一个主题形成研习卷，并在必要时先帮你收窄目标。需要换一种思考风格时，可在右上角「思路」里切换苏格拉底 / 费曼 / 蒙田 / 朱熹 / 笛卡尔等思路覆层。</p>
                         <div class="welcome-pill-row">
-                            <span class="welcome-pill">问道 · 先对齐再作答</span>
-                            <span class="welcome-pill">研习 · 深入展开</span>
+                            <span class="welcome-pill">闲谈 · 直接对话</span>
+                            <span class="welcome-pill">研习 · 单卷闭环</span>
                             <span class="welcome-pill">思路 · 可选思想风格</span>
                         </div>
 
                         <div class="home-mode-grid">
                             <button class="home-mode-card active" data-mode="chat" type="button">
                                 <span class="home-mode-badge">默认</span>
-                                <div class="home-mode-title" data-en="Chat">闲谈</div>
-                                <div class="home-mode-desc">轻巧的日常对话，直接进入，不预设角色或仪式。</div>
-                            </button>
-                            <button class="home-mode-card" data-mode="ask" type="button">
-                                <span class="home-mode-badge ask">对齐</span>
-                                <div class="home-mode-title" data-en="Ask">问道</div>
-                                <div class="home-mode-desc">回答之前先反问、收口目标，确认要解决的题目再展开。</div>
-                            </button>
-                            <button class="home-mode-card disabled" data-mode="study" type="button" disabled>
-                                <span class="home-mode-badge study">预告</span>
-                                <div class="home-mode-title" data-en="Study">研习</div>
-                                <div class="home-mode-desc">由资深学伴主持的深学模式，分章节带你推进，后续开放。</div>
+                                <div class="home-mode-title">闲谈</div>
+                                <div class="home-mode-desc">轻巧的日常对话，保持闲谈，不中途升格成研习。</div>
                             </button>
                             <button class="home-mode-card" data-mode="learning" type="button">
                                 <span class="home-mode-badge">新</span>
-                                <div class="home-mode-title" data-en="Learning">学习</div>
-                                <div class="home-mode-desc">直接开始学一个概念、模块或设计；如果范围太大，我会帮你逐步收窄。</div>
+                                <div class="home-mode-title">研习</div>
+                                <div class="home-mode-desc">围绕一个概念、模块或设计新开研习卷，独立推进。</div>
                             </button>
                         </div>
 
@@ -126,13 +116,13 @@
                                 <div class="suggestion-icon"></div>
                                 <div class="suggestion-text">帮我解释什么是强化学习？</div>
                             </div>
-                            <div class="suggestion-card" data-mode="ask" data-text="我准备做一个新的项目，先帮我对齐目标和范围。">
+                            <div class="suggestion-card" data-mode="learning" data-text="我准备做一个新的项目，先帮我梳理目标和范围。">
                                 <div class="suggestion-icon"></div>
-                                <div class="suggestion-text">我准备做一个新的项目，先帮我对齐目标和范围。</div>
+                                <div class="suggestion-text">我准备做一个新的项目，先帮我梳理目标和范围。</div>
                             </div>
-                            <div class="suggestion-card" data-mode="chat" data-text="帮我总结这篇设计文档的关键点。">
+                            <div class="suggestion-card" data-mode="learning" data-text="带我研习这篇设计文档的关键点。">
                                 <div class="suggestion-icon"></div>
-                                <div class="suggestion-text">帮我总结这篇设计文档的关键点。</div>
+                                <div class="suggestion-text">带我研习这篇设计文档的关键点。</div>
                             </div>
                             <div class="suggestion-card" data-mode="chat" data-text="我想做一个长期记忆系统，先给我几个靠谱思路。">
                                 <div class="suggestion-icon"></div>
@@ -148,21 +138,17 @@
 
             <!-- 模式工具栏 -->
             <div class="mode-toolbar" id="mode-toolbar">
-                <button id="btn-mode-chat" class="btn-mode active" data-mode="chat" title="Chat 闲谈：日常对话" aria-label="Chat 闲谈">
-                    <span class="mode-icon">💬</span>
-                    <span class="mode-label">Chat 闲谈</span>
+                <button id="btn-mode-chat" class="btn-mode active" data-mode="chat" title="闲谈：日常对话" aria-label="闲谈">
+                    <span class="mode-icon" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
+                    </span>
+                    <span class="mode-label">闲谈</span>
                 </button>
-                <button id="btn-mode-ask" class="btn-mode" data-mode="ask" title="Ask 问道：先对齐再作答" aria-label="Ask 问道">
-                    <span class="mode-icon">❓</span>
-                    <span class="mode-label">Ask 问道</span>
-                </button>
-                <button id="btn-mode-study" class="btn-mode disabled" data-mode="study" title="Study 研习：深度伴读（即将上线）" aria-label="Study 研习" disabled>
-                    <span class="mode-icon">📚</span>
-                    <span class="mode-label">Study 研习</span>
-                </button>
-                <button id="btn-mode-learning" class="btn-mode" data-mode="learning" title="Learning 学习：以一个学习卷为单位收束知识" aria-label="Learning 学习">
-                    <span class="mode-icon">🪴</span>
-                    <span class="mode-label">Learning 学习</span>
+                <button id="btn-mode-learning" class="btn-mode" data-mode="learning" title="研习：以一个研习卷为单位收束知识" aria-label="研习">
+                    <span class="mode-icon" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+                    </span>
+                    <span class="mode-label">研习</span>
                 </button>
             </div>
 
@@ -210,6 +196,31 @@
             <div class="modal-footer">
                 <button id="btn-cancel-delete" class="btn-secondary">取消</button>
                 <button id="btn-confirm-delete" class="btn-danger">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 研习结束弹窗 -->
+    <div id="learning-stop-modal" class="modal hidden" aria-hidden="true">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-small learning-stop-modal-content">
+            <div class="modal-header learning-stop-modal-header">
+                <div class="learning-stop-modal-copy">
+                    <span class="learning-stop-modal-kicker">研习已结束</span>
+                    <h2 id="learning-stop-modal-title">这一卷先学到这里</h2>
+                </div>
+                <button class="btn-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="modal-body learning-stop-modal-body">
+                <p id="learning-stop-modal-text">当前研习卷会保留在历史中，你可以稍后回来回看，也可以现在直接开始一个新主题。</p>
+                <div class="learning-stop-modal-summary">
+                    <span class="learning-stop-modal-summary-label">本卷主题</span>
+                    <p id="learning-stop-modal-objective">-</p>
+                </div>
+            </div>
+            <div class="modal-footer learning-stop-modal-footer">
+                <button id="btn-stay-learning-stop" class="btn-secondary" type="button">留在本卷回看</button>
+                <button id="btn-new-topic-after-stop" class="btn-primary" type="button">开始新主题</button>
             </div>
         </div>
     </div>

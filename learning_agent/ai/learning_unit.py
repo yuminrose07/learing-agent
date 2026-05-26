@@ -20,6 +20,7 @@ LearningUnitPhase = Literal[
     "absorbing",
     "outputting",
     "consolidated",
+    "stopped",
 ]
 
 
@@ -144,15 +145,18 @@ _PHASE_ORDER: tuple[LearningUnitPhase, ...] = (
     "absorbing",
     "outputting",
     "consolidated",
+    "stopped",
 )
 
 
 _ALLOWED_TRANSITIONS: dict[LearningUnitPhase, frozenset[LearningUnitPhase]] = {
     # 主链：absorbing -> outputting -> consolidated；TEACH 失败时可回退到 absorbing。
+    # 用户也可以显式 "先学到这里"，进入 stopped 终态并释放单卷互斥。
     # aligning 已从主链移除（adaptive alignment §8.1）；对齐降级为 alignment_state 旁路。
-    "absorbing": frozenset({"outputting"}),
-    "outputting": frozenset({"absorbing", "consolidated"}),
+    "absorbing": frozenset({"outputting", "stopped"}),
+    "outputting": frozenset({"absorbing", "consolidated", "stopped"}),
     "consolidated": frozenset(),  # 终态
+    "stopped": frozenset(),  # 用户显式中止终态，不计入完成率
 }
 
 
@@ -187,6 +191,9 @@ class LearningUnit(BaseModel):
     verification_status: Optional[VerificationStatus] = None
     # B5: consolidated 阶段写入；UI 用作"掌握度反馈卡"。卷未完成时保持 None。
     feedback_card: Optional[TeachFeedbackCard] = None
+    # 用户显式 "先学到这里" 时写入。stopped 是终态，但不代表完成验收。
+    stop_reason: Optional[str] = None
+    stopped_at: Optional[datetime] = None
     # M1：本卷首条 absorbing 阶段 assistant 消息成功 finalize 的时间戳，用作
     # ``learning_unit.first_value_delivered`` 事件的 once-only 守卫与
     # "首个学习价值时间 (TTFV)" 指标的 t0。None = 尚未投出首条价值。
@@ -206,7 +213,7 @@ class LearningUnit(BaseModel):
         self.updated_at = _now()
 
     def effective_mode(self) -> str:
-        """phase 到 AgentMode 字符串值的映射；consolidated 无效返回空串由调用方拒绝。
+        """phase 到 AgentMode 字符串值的映射；终态无效返回空串由调用方拒绝。
 
         注意：是否在 absorbing 中临时覆写为 ASK，由 Product 层根据
         ``alignment_state`` 决定（adaptive alignment §9.1），不在本方法范围。
@@ -218,7 +225,7 @@ class LearningUnit(BaseModel):
         return ""
 
     def is_terminal(self) -> bool:
-        return self.phase == "consolidated"
+        return self.phase in {"consolidated", "stopped"}
 
 
 __all__ = [

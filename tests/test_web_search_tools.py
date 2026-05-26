@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 from typing import Any
 
 import pytest
@@ -9,9 +10,11 @@ from learning_agent.agent.hook_system import HookSystem
 from learning_agent.ai import ToolCall
 from learning_agent.learning_agent.extension_manager import ExtensionContext
 from learning_agent.learning_agent.extensions.web_search_tools import (
+    _build_web_search_service,
     create_web_search_tools_extension,
 )
 from learning_agent.learning_agent.providers import RawFetchedPage, RawSearchResult
+from learning_agent.learning_agent.providers.adapters.tls_utils import build_web_tls_context
 from learning_agent.learning_agent.services import (
     DEFAULT_ALLOWED_SOURCE_TYPES,
     WebSearchService,
@@ -51,6 +54,10 @@ class FakeService:
 
     async def fetch(self, **kwargs: Any) -> dict[str, Any]:
         return {"kind": "fetch", **kwargs}
+
+
+class _FakeSSLContext:
+    pass
 
 
 @pytest.mark.asyncio
@@ -169,3 +176,91 @@ async def test_web_search_extension_registers_tools_and_handles_inputs(monkeypat
     assert fetch_result["kind"] == "fetch"
     assert fetch_result["offset"] == 10
     assert invalid_result["error"]["code"] == "INVALID_QUERY"
+
+
+def test_build_web_tls_context_uses_explicit_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+):
+    bundle = tmp_path / "root.pem"
+    bundle.write_text("dummy", encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    def _fake_create_default_context(*, cafile: str | None = None) -> _FakeSSLContext:
+        captured["cafile"] = cafile
+        return _FakeSSLContext()
+
+    monkeypatch.setattr(
+        "learning_agent.learning_agent.providers.adapters.tls_utils.ssl.create_default_context",
+        _fake_create_default_context,
+    )
+
+    context = build_web_tls_context(
+        ca_bundle_path=str(bundle),
+        prefer_system_trust_store=False,
+    )
+
+    assert isinstance(context, _FakeSSLContext)
+    assert captured["cafile"] == str(bundle)
+
+
+def test_build_web_tls_context_uses_truststore_when_available(monkeypatch: pytest.MonkeyPatch):
+    class _FakeTruststoreModule:
+        @staticmethod
+        def SSLContext(protocol: int) -> tuple[str, int]:
+            return ("truststore", protocol)
+
+    monkeypatch.setattr(
+        "learning_agent.learning_agent.providers.adapters.tls_utils.importlib.import_module",
+        lambda name: _FakeTruststoreModule() if name == "truststore" else None,
+    )
+
+    context = build_web_tls_context(
+        ca_bundle_path=None,
+        prefer_system_trust_store=True,
+    )
+
+    assert context == ("truststore", ssl.PROTOCOL_TLS_CLIENT)
+
+
+def test_build_web_search_service_passes_tls_config_to_builtin_providers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, Any] = {}
+
+    class _FakeSearchProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["search"] = kwargs
+
+    class _FakeFetchProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["fetch"] = kwargs
+
+    monkeypatch.setattr(
+        "learning_agent.learning_agent.extensions.web_search_tools.BuiltinWebSearchProvider",
+        _FakeSearchProvider,
+    )
+    monkeypatch.setattr(
+        "learning_agent.learning_agent.extensions.web_search_tools.BuiltinWebFetchProvider",
+        _FakeFetchProvider,
+    )
+
+    service = _build_web_search_service(
+        {
+            "provider": "builtin",
+            "timeout_seconds": 8,
+            "tls_ca_bundle_path": "/tmp/custom-ca.pem",
+            "prefer_system_trust_store": False,
+        }
+    )
+
+    assert service is not None
+    assert captured["search"] == {
+        "timeout_seconds": 8.0,
+        "ca_bundle_path": "/tmp/custom-ca.pem",
+        "prefer_system_trust_store": False,
+    }
+    assert captured["fetch"] == {
+        "timeout_seconds": 8.0,
+        "ca_bundle_path": "/tmp/custom-ca.pem",
+        "prefer_system_trust_store": False,
+    }

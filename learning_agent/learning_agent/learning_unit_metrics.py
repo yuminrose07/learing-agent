@@ -13,11 +13,8 @@
 - 纯函数 + 事件流入参，便于离线 backfill 与回归测试。系统层在
   ``LearningAgentSystem.get_learning_unit_metrics`` 中负责拼装事件。
 - ``created`` 用作分母时按时间窗筛选；``consolidated`` / ``teach_entered``
-  以其本身的 ts 是否落在窗口内来计数，避免"窗口内创建但未在窗口结束前
-  完成"的卷被双倍冤枉。每个指标对自身有意义的事件计数即可。
-- 完成率分子的 unit 只算其 ``consolidated`` 事件 ts 落在窗口内的；
-  分母同样限定 ``created`` 在窗口内。这一对齐导致跨窗的"创建很早、完成很晚"
-  的卷会被分子吃掉、分母不算——这是有意为之，让单一窗口的指标自洽。
+  只在同一批窗口内创建的卷里计数，避免旧卷在窗口内完成时把比率推到 100%
+  以上。
 """
 
 from __future__ import annotations
@@ -145,6 +142,14 @@ def _percentile(sorted_values: list[float], pct: float) -> float:
 
 def _count_unique_units(events: Iterable[SessionEvent], event_type: str) -> int:
     """同一卷的同一事件可能因 replay 出现多次，按 learning_unit_id 去重。"""
+    return len(_unit_ids_for_event(events, event_type))
+
+
+def _unit_ids_for_event(
+    events: Iterable[SessionEvent],
+    event_type: str,
+) -> set[str]:
+    """取出某类事件涉及的不重复 learning_unit_id。"""
     seen: set[str] = set()
     for e in events:
         if e.type != event_type:
@@ -153,7 +158,7 @@ def _count_unique_units(events: Iterable[SessionEvent], event_type: str) -> int:
         if not unit_id:
             continue
         seen.add(unit_id)
-    return len(seen)
+    return seen
 
 
 def calculate_consolidation_rate(
@@ -161,13 +166,18 @@ def calculate_consolidation_rate(
     *,
     window_start: Optional[datetime] = None,
 ) -> RatioStats:
-    """``count(consolidated within window) / count(created within window)``。"""
+    """窗口内创建的卷里，已经 consolidated 的占比。"""
     scoped = _filter_window(events, window_start=window_start)
-    created = _count_unique_units(scoped, SessionEventType.LEARNING_UNIT_CREATED)
-    consolidated = _count_unique_units(
+    created_units = _unit_ids_for_event(
+        scoped, SessionEventType.LEARNING_UNIT_CREATED
+    )
+    consolidated_units = _unit_ids_for_event(
         scoped, SessionEventType.LEARNING_UNIT_CONSOLIDATED
     )
-    return _make_ratio(consolidated, created)
+    return _make_ratio(
+        len(created_units & consolidated_units),
+        len(created_units),
+    )
 
 
 def calculate_teach_entry_rate(
@@ -175,13 +185,18 @@ def calculate_teach_entry_rate(
     *,
     window_start: Optional[datetime] = None,
 ) -> RatioStats:
-    """``count(teach_entered) / count(created)``，同一窗口。"""
+    """窗口内创建的卷里，进入 teach 的占比。"""
     scoped = _filter_window(events, window_start=window_start)
-    created = _count_unique_units(scoped, SessionEventType.LEARNING_UNIT_CREATED)
-    teach_entered = _count_unique_units(
+    created_units = _unit_ids_for_event(
+        scoped, SessionEventType.LEARNING_UNIT_CREATED
+    )
+    teach_entered_units = _unit_ids_for_event(
         scoped, SessionEventType.LEARNING_UNIT_TEACH_ENTERED
     )
-    return _make_ratio(teach_entered, created)
+    return _make_ratio(
+        len(created_units & teach_entered_units),
+        len(created_units),
+    )
 
 
 def calculate_reuse_intent_rate(

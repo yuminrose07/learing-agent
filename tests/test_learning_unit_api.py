@@ -8,8 +8,7 @@ mock_system，直接 await 路由函数。覆盖：
 - GET  /learning-units/{id} → 200 / 404
 - POST /learning-units/{id}/confirm-objective → 200；非法状态 400
 - POST /learning-units/{id}/advance → 200；非法过渡 400；未知 unit 404
-- POST /chat-sessions/{id}/promote-to-learning-unit → 200；session 不存在 404；
-  P3 冲突 409
+- 闲聊会话不暴露升格为研习卷的 public API
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, "/Users/roseannk/my-agent")
 
@@ -36,7 +36,7 @@ def mock_system():
     system.get_learning_unit = MagicMock(return_value=None)
     system.confirm_learning_unit_objective = MagicMock()
     system.advance_learning_unit = AsyncMock()
-    system.promote_chat_session_to_learning_unit = MagicMock()
+    system.stop_learning_unit = MagicMock()
     system.request_alignment = AsyncMock()
     system.accept_assumption = AsyncMock()
     system.refine_objective = AsyncMock()
@@ -91,6 +91,26 @@ class TestCreateLearningUnit:
             source="ai_distilled",
         )
 
+    def test_http_accepts_user_written_source(self, mock_system, monkeypatch):
+        import learning_agent.web.web_server as web_server
+
+        unit = _make_unit()
+        session = _make_session(unit)
+        mock_system.create_learning_unit.return_value = (session, unit)
+        monkeypatch.setattr(web_server, "_system", mock_system)
+
+        response = TestClient(web_server.app).post(
+            "/learning-units",
+            json={"seed_text": "理解 attention", "source": "user_written"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["session_id"] == session.id
+        mock_system.create_learning_unit.assert_called_once_with(
+            seed_text="理解 attention",
+            source="user_written",
+        )
+
     @pytest.mark.asyncio
     async def test_active_unit_conflict_returns_409(self, mock_system):
         from learning_agent.web.web_server import (
@@ -117,6 +137,16 @@ class TestCreateLearningUnit:
         body = json.loads(response.body)
         assert body["active_unit_id"] == "lu-active"
         assert "active" in body["detail"].lower()
+
+    def test_http_rejects_promoted_from_chat_source(self):
+        from learning_agent.web.web_server import app
+
+        response = TestClient(app).post(
+            "/learning-units",
+            json={"seed_text": "从闲聊升格", "source": "promoted_from_chat"},
+        )
+
+        assert response.status_code == 422
 
 
 class TestListAndGet:
@@ -279,80 +309,76 @@ class TestAdvance:
         assert exc_info.value.status_code == 404
 
 
-class TestPromoteFromChatSession:
+class TestStop:
     @pytest.mark.asyncio
-    async def test_happy_path_returns_new_unit_payload(self, mock_system):
+    async def test_happy_path_stops_unit(self, mock_system):
         from learning_agent.web.web_server import (
-            PromoteSessionRequest,
-            promote_chat_session_to_learning_unit,
+            StopLearningUnitRequest,
+            stop_learning_unit,
         )
 
-        unit = _make_unit(text="深入研究这个话题")
-        session = _make_session(unit)
-        mock_system.promote_chat_session_to_learning_unit.return_value = (
-            session,
-            unit,
-        )
+        unit = _make_unit(phase="stopped")
+        mock_system.stop_learning_unit.return_value = unit
 
         with patch(
             "learning_agent.web.web_server._get_system", return_value=mock_system
         ):
-            result = await promote_chat_session_to_learning_unit(
-                "sess-origin",
-                PromoteSessionRequest(seed_text="深入研究这个话题"),
+            result = await stop_learning_unit(
+                unit.id, StopLearningUnitRequest(reason="user_stopped")
             )
 
-        assert result["id"] == unit.id
-        assert result["session_id"] == session.id
-        mock_system.promote_chat_session_to_learning_unit.assert_called_once_with(
-            "sess-origin", seed_text="深入研究这个话题"
+        assert result["phase"] == "stopped"
+        mock_system.stop_learning_unit.assert_called_once_with(
+            unit.id,
+            reason="user_stopped",
         )
 
     @pytest.mark.asyncio
-    async def test_chat_session_missing_returns_404(self, mock_system):
+    async def test_unknown_unit_returns_404(self, mock_system):
         from learning_agent.web.web_server import (
-            PromoteSessionRequest,
-            promote_chat_session_to_learning_unit,
+            StopLearningUnitRequest,
+            stop_learning_unit,
         )
 
-        mock_system.promote_chat_session_to_learning_unit.side_effect = KeyError(
-            "sess-missing"
-        )
+        mock_system.stop_learning_unit.side_effect = KeyError("lu-missing")
 
         with patch(
             "learning_agent.web.web_server._get_system", return_value=mock_system
         ):
             with pytest.raises(HTTPException) as exc_info:
-                await promote_chat_session_to_learning_unit(
-                    "sess-missing", PromoteSessionRequest(seed_text="t")
+                await stop_learning_unit(
+                    "lu-missing", StopLearningUnitRequest(reason="user_stopped")
                 )
 
         assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_active_unit_conflict_returns_409(self, mock_system):
+    async def test_invalid_stop_returns_400(self, mock_system):
         from learning_agent.web.web_server import (
-            PromoteSessionRequest,
-            promote_chat_session_to_learning_unit,
+            StopLearningUnitRequest,
+            stop_learning_unit,
         )
 
-        mock_system.promote_chat_session_to_learning_unit.side_effect = (
-            ActiveUnitExistsError("lu-existing")
-        )
+        mock_system.stop_learning_unit.side_effect = ValueError("cannot stop")
 
         with patch(
             "learning_agent.web.web_server._get_system", return_value=mock_system
         ):
-            response = await promote_chat_session_to_learning_unit(
-                "sess-origin", PromoteSessionRequest(seed_text="t")
-            )
+            with pytest.raises(HTTPException) as exc_info:
+                await stop_learning_unit(
+                    "lu-x", StopLearningUnitRequest(reason="user_stopped")
+                )
 
-        assert isinstance(response, JSONResponse)
-        assert response.status_code == 409
-        import json
+        assert exc_info.value.status_code == 400
 
-        body = json.loads(response.body)
-        assert body["active_unit_id"] == "lu-existing"
+
+class TestStrictChatLearningSeparation:
+    def test_chat_promotion_route_is_not_exposed(self):
+        from learning_agent.web.web_server import app
+
+        paths = {getattr(route, "path", None) for route in app.routes}
+
+        assert "/chat-sessions/{session_id}/promote-to-learning-unit" not in paths
 
 
 class TestRequestAlignment:
@@ -574,6 +600,38 @@ class TestReuseFeedback:
 
 class TestMetricsEndpoint:
     """GET /learning-units/metrics — M2 4 个 P0 指标聚合视图。"""
+
+    def test_http_route_is_not_shadowed_by_unit_id_route(
+        self,
+        mock_system,
+        monkeypatch,
+    ):
+        import learning_agent.web.web_server as web_server
+        from learning_agent.learning_agent.learning_unit_metrics import (
+            LearningUnitMetricsSummary,
+            RatioStats,
+            TTFVStats,
+        )
+
+        mock_system.get_learning_unit_metrics.return_value = LearningUnitMetricsSummary(
+            window_days=7,
+            window_start_iso="2026-05-19T12:00:00+00:00",
+            generated_at_iso="2026-05-26T12:00:00+00:00",
+            ttfv=TTFVStats(p50_seconds=None, p90_seconds=None, sample_size=0),
+            consolidation=RatioStats(0, 0, None),
+            teach_entry=RatioStats(0, 0, None),
+            reuse_intent=RatioStats(0, 0, None),
+        )
+        monkeypatch.setattr(web_server, "_system", mock_system)
+
+        response = TestClient(web_server.app).get("/learning-units/metrics")
+
+        assert response.status_code == 200
+        assert response.json()["window_days"] == 7
+        mock_system.get_learning_unit.assert_not_called()
+        mock_system.get_learning_unit_metrics.assert_called_once_with(
+            window_days=7
+        )
 
     @pytest.mark.asyncio
     async def test_returns_summary_dict(self, mock_system):

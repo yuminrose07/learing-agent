@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from html.parser import HTMLParser
 from urllib import error, parse, request
 
@@ -9,6 +10,10 @@ from learning_agent.learning_agent.providers.web_fetch_provider import (
     FetchUnavailableError,
     RawFetchedPage,
     UnsupportedPageError,
+)
+from learning_agent.learning_agent.providers.adapters.tls_utils import (
+    build_web_tls_context,
+    tls_failure_hint,
 )
 
 _DEFAULT_USER_AGENT = (
@@ -94,9 +99,20 @@ class _ReadableHTMLParser(HTMLParser):
 class BuiltinWebFetchProvider:
     """A lightweight readable-content fetcher based on stdlib urllib + HTMLParser."""
 
-    def __init__(self, *, timeout_seconds: float = 12.0, user_agent: str = _DEFAULT_USER_AGENT):
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 12.0,
+        user_agent: str = _DEFAULT_USER_AGENT,
+        ca_bundle_path: str | None = None,
+        prefer_system_trust_store: bool = True,
+    ):
         self._timeout_seconds = timeout_seconds
         self._user_agent = user_agent
+        self._ssl_context = build_web_tls_context(
+            ca_bundle_path=ca_bundle_path,
+            prefer_system_trust_store=prefer_system_trust_store,
+        )
 
     async def fetch(self, url: str) -> RawFetchedPage:
         return await asyncio.to_thread(self._fetch_sync, url)
@@ -114,7 +130,7 @@ class BuiltinWebFetchProvider:
             },
         )
         try:
-            with request.urlopen(req, timeout=self._timeout_seconds) as resp:
+            with request.urlopen(req, timeout=self._timeout_seconds, context=self._ssl_context) as resp:
                 content_type = resp.headers.get_content_type()
                 raw = resp.read(_MAX_READ_BYTES)
                 charset = resp.headers.get_content_charset() or "utf-8"
@@ -128,7 +144,15 @@ class BuiltinWebFetchProvider:
             reason = getattr(exc, "reason", None)
             if isinstance(reason, TimeoutError):
                 raise FetchTimeoutError("Fetch request timed out") from exc
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise FetchUnavailableError(
+                    f"Fetch request failed: {reason}. {tls_failure_hint()}"
+                ) from exc
             raise FetchUnavailableError(f"Fetch request failed: {reason or exc}") from exc
+        except ssl.SSLCertVerificationError as exc:
+            raise FetchUnavailableError(
+                f"Fetch request failed: {exc}. {tls_failure_hint()}"
+            ) from exc
         except TimeoutError as exc:
             raise FetchTimeoutError("Fetch request timed out") from exc
 

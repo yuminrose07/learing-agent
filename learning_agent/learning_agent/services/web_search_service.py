@@ -55,6 +55,8 @@ class WebSearchServiceConfig:
     max_top_k: int = 10
     default_limit_chars: int = 12000
     timeout_seconds: float = 12.0
+    tls_ca_bundle_path: str | None = None
+    prefer_system_trust_store: bool = True
     allowed_source_types: tuple[str, ...] = tuple(DEFAULT_ALLOWED_SOURCE_TYPES)
 
 
@@ -67,6 +69,12 @@ def build_web_search_config(values: Optional[dict]) -> WebSearchServiceConfig:
         max_top_k=max(1, int(values.get("max_top_k", 10))),
         default_limit_chars=max(1000, int(values.get("default_limit_chars", 12000))),
         timeout_seconds=float(values.get("timeout_seconds", 12.0)),
+        tls_ca_bundle_path=(
+            str(values.get("tls_ca_bundle_path")).strip()
+            if values.get("tls_ca_bundle_path")
+            else None
+        ),
+        prefer_system_trust_store=bool(values.get("prefer_system_trust_store", True)),
         allowed_source_types=tuple(str(item) for item in allowed),
     )
 

@@ -154,6 +154,12 @@ class Config:
                 os.getenv("LA_WEB_SEARCH_TIMEOUT_SECONDS")
                 or web_search_from_file.get("timeout_seconds", "12")
             ),
+            "tls_ca_bundle_path": os.getenv("LA_WEB_SEARCH_CA_BUNDLE_PATH")
+            or web_search_from_file.get("tls_ca_bundle_path"),
+            "prefer_system_trust_store": (
+                os.getenv("LA_WEB_SEARCH_PREFER_SYSTEM_TRUST_STORE")
+                or str(web_search_from_file.get("prefer_system_trust_store", True))
+            ).lower() == "true",
             "allowed_source_types": parsed_allowed_source_types,
         }
 

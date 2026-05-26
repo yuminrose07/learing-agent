@@ -57,8 +57,16 @@ def _build_web_search_service(config: Optional[dict[str, Any]]) -> WebSearchServ
     provider_name = web_config.provider_name
     if provider_name != "builtin":
         raise ValueError(f"Unsupported web_search provider: {provider_name}")
-    search_provider = BuiltinWebSearchProvider(timeout_seconds=web_config.timeout_seconds)
-    fetch_provider = BuiltinWebFetchProvider(timeout_seconds=web_config.timeout_seconds)
+    search_provider = BuiltinWebSearchProvider(
+        timeout_seconds=web_config.timeout_seconds,
+        ca_bundle_path=web_config.tls_ca_bundle_path,
+        prefer_system_trust_store=web_config.prefer_system_trust_store,
+    )
+    fetch_provider = BuiltinWebFetchProvider(
+        timeout_seconds=web_config.timeout_seconds,
+        ca_bundle_path=web_config.tls_ca_bundle_path,
+        prefer_system_trust_store=web_config.prefer_system_trust_store,
+    )
     return WebSearchService(search_provider, fetch_provider, config=web_config)
 
 

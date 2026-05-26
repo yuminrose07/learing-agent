@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from html.parser import HTMLParser
 from typing import Optional
 from urllib import error, parse, request
@@ -9,6 +10,10 @@ from learning_agent.learning_agent.providers.web_search_provider import (
     RawSearchResult,
     SearchTimeoutError,
     SearchUnavailableError,
+)
+from learning_agent.learning_agent.providers.adapters.tls_utils import (
+    build_web_tls_context,
+    tls_failure_hint,
 )
 
 _SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
@@ -94,9 +99,20 @@ class _DuckDuckGoHTMLParser(HTMLParser):
 class BuiltinWebSearchProvider:
     """A lightweight HTML search provider using DuckDuckGo's HTML endpoint."""
 
-    def __init__(self, *, timeout_seconds: float = 12.0, user_agent: str = _DEFAULT_USER_AGENT):
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 12.0,
+        user_agent: str = _DEFAULT_USER_AGENT,
+        ca_bundle_path: str | None = None,
+        prefer_system_trust_store: bool = True,
+    ):
         self._timeout_seconds = timeout_seconds
         self._user_agent = user_agent
+        self._ssl_context = build_web_tls_context(
+            ca_bundle_path=ca_bundle_path,
+            prefer_system_trust_store=prefer_system_trust_store,
+        )
 
     async def search(
         self,
@@ -126,7 +142,7 @@ class BuiltinWebSearchProvider:
             },
         )
         try:
-            with request.urlopen(req, timeout=self._timeout_seconds) as resp:
+            with request.urlopen(req, timeout=self._timeout_seconds, context=self._ssl_context) as resp:
                 payload = resp.read().decode(resp.headers.get_content_charset() or "utf-8", errors="replace")
         except error.HTTPError as exc:
             if exc.code in {429, 500, 502, 503, 504}:
@@ -136,7 +152,15 @@ class BuiltinWebSearchProvider:
             reason = getattr(exc, "reason", None)
             if isinstance(reason, TimeoutError):
                 raise SearchTimeoutError("Search request timed out") from exc
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise SearchUnavailableError(
+                    f"Search request failed: {reason}. {tls_failure_hint()}"
+                ) from exc
             raise SearchUnavailableError(f"Search request failed: {reason or exc}") from exc
+        except ssl.SSLCertVerificationError as exc:
+            raise SearchUnavailableError(
+                f"Search request failed: {exc}. {tls_failure_hint()}"
+            ) from exc
         except TimeoutError as exc:
             raise SearchTimeoutError("Search request timed out") from exc
 

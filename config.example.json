@@ -27,6 +27,8 @@
     "max_top_k": 10,
     "default_limit_chars": 12000,
     "timeout_seconds": 12,
+    "tls_ca_bundle_path": null,
+    "prefer_system_trust_store": true,
     "allowed_source_types": [
       "official_docs",
       "official_blog",

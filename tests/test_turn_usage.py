@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +12,7 @@ from learning_agent.agent.agent_loop import AgentLoop, AgentLoopSession
 from learning_agent.agent.observability import ObservabilityCollector
 from learning_agent.ai import AgentMode, ChatChunk, ResilienceConfig
 from learning_agent.ai.models import Event
+from learning_agent.learning_agent.config import Config
 from learning_agent.learning_agent.main import LearningAgentSystem
 from learning_agent.learning_agent.mode_service import PreparedSessionTurn, build_turn_profile
 from learning_agent.learning_agent.session_manager import SessionManager
@@ -144,6 +146,30 @@ async def test_stream_session_chat_merges_public_usage_metadata():
     assert metadata["persona_key"] == profile.assistant_message_metadata["persona_key"]
     assert metadata["usage"]["actual_total_tokens"] == 360
     assert metadata["turn_usage"]["estimated_prompt_tokens"] == 320
+
+
+def test_backfill_learning_unit_session_links_restores_session_projection(tmp_path: Path):
+    config = Config()
+    config.data_dir = str(tmp_path)
+    system = LearningAgentSystem(config=config)
+    system.session_manager._event_bus = None
+
+    session = system.session_manager.create_session(title="learning-link")
+    unit = system.learning_unit_store.create(
+        session_id=session.id,
+        objective_text="怎么学 agent",
+    )
+
+    assert session.learning_unit_id is None
+
+    system._backfill_learning_unit_session_links()
+
+    assert session.learning_unit_id == unit.id
+
+    snapshot = system.session_manager.get_agent_snapshot(session.id)
+    restored = snapshot.to_learning_session()
+    assert snapshot.learning_unit_id == unit.id
+    assert restored.learning_unit_id == unit.id
 
 
 @pytest.mark.asyncio

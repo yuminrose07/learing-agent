@@ -1,6 +1,6 @@
-/* Learning-Agent · 学习卷 UI 样式
+/* Learning-Agent · 研习卷 UI 样式
  * Loaded after style.css. 仅作用于 #learning-unit-card 及其子元素。
- * 整体调性与现有 ask-mode 卡保持一致：vermillion 主色 + paper 纸面 + serif 标题。 */
+ * 整体调性使用 vermillion 主色 + paper 纸面 + serif 标题。 */
 
 #learning-unit-card {
     margin: 16px auto 0;
@@ -137,6 +137,76 @@
     gap: 8px;
 }
 
+.lu-teach-card,
+.lu-feedback-card,
+.lu-stopped-note {
+    padding: 12px 14px;
+    background: var(--paper-2, #f0e9dc);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-xs, 3px);
+}
+.lu-teach-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.lu-teach-kicker,
+.lu-teach-state,
+.lu-feedback-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+}
+.lu-teach-state {
+    color: var(--vermillion-deep);
+}
+.lu-teach-stem {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--ink);
+}
+.lu-feedback-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.lu-feedback-row {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 10px;
+    align-items: baseline;
+    color: var(--ink-2);
+}
+.lu-feedback-next {
+    color: var(--ink);
+    font-size: 12.5px;
+    border-top: 1px solid var(--hairline);
+    padding-top: 8px;
+}
+.lu-stopped-note {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-left: 3px solid rgba(176, 94, 56, 0.36);
+    background: linear-gradient(180deg, rgba(176, 94, 56, 0.08), rgba(176, 94, 56, 0.03));
+}
+.lu-stopped-title {
+    font-family: var(--font-serif);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink);
+}
+.lu-stopped-copy {
+    font-size: 12.5px;
+    color: var(--ink-2);
+}
+
 .lu-actions {
     display: flex;
     flex-wrap: wrap;
@@ -178,6 +248,9 @@
     opacity: 0.5;
     cursor: not-allowed;
 }
+.lu-btn-stop {
+    margin-left: auto;
+}
 .lu-btn-primary {
     background: var(--vermillion);
     border-color: var(--vermillion);
@@ -188,7 +261,7 @@
     border-color: var(--vermillion-deep);
 }
 
-/* Welcome-card variant of "学习模式" — matches existing .home-mode-card chrome.
+/* Welcome-card variant of "研习" — matches existing .home-mode-card chrome.
  * The card itself is rendered by the existing card grid; this rule only colors
  * the badge so it visually clusters with vermillion (alignment) badges. */
 .home-mode-card[data-mode="learning"] .home-mode-badge {
@@ -202,4 +275,113 @@
 /* Mode toolbar entry */
 .btn-mode[data-mode="learning"].active {
     color: var(--vermillion-deep);
+}
+
+#learning-stop-modal {
+    z-index: 120;
+}
+
+.learning-stop-modal-content {
+    width: min(520px, calc(100vw - 32px));
+    border-radius: 18px;
+    border: 1px solid rgba(176, 94, 56, 0.16);
+    background:
+        radial-gradient(circle at top, rgba(176, 94, 56, 0.12), transparent 58%),
+        linear-gradient(180deg, rgba(251, 247, 238, 0.98), rgba(244, 237, 225, 0.98));
+    box-shadow:
+        0 28px 72px rgba(43, 31, 21, 0.18),
+        0 6px 18px rgba(43, 31, 21, 0.08);
+}
+
+.learning-stop-modal-header {
+    align-items: flex-start;
+    gap: 16px;
+    padding-bottom: 12px;
+}
+
+.learning-stop-modal-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.learning-stop-modal-kicker {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: rgba(176, 94, 56, 0.12);
+    color: var(--vermillion-deep);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.learning-stop-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.learning-stop-modal-body p {
+    margin: 0;
+}
+
+.learning-stop-modal-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(60, 50, 40, 0.08);
+}
+
+.learning-stop-modal-summary-label {
+    color: var(--ink-4);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+#learning-stop-modal-objective {
+    font-family: var(--font-serif);
+    font-size: 18px;
+    line-height: 1.5;
+    color: var(--ink);
+}
+
+.learning-stop-modal-footer {
+    justify-content: space-between;
+}
+
+.learning-stop-modal-footer .btn-secondary,
+.learning-stop-modal-footer .btn-primary {
+    min-width: 136px;
+}
+
+@media (max-width: 640px) {
+    .learning-stop-modal-content {
+        width: min(100vw - 20px, 520px);
+        border-radius: 16px;
+    }
+
+    .learning-stop-modal-footer {
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
+
+    .learning-stop-modal-footer .btn-secondary,
+    .learning-stop-modal-footer .btn-primary {
+        width: 100%;
+    }
+
+    #learning-stop-modal-objective {
+        font-size: 16px;
+    }
 }
