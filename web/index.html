@@ -64,6 +64,16 @@
                     <span class="topbar-subtitle" id="topbar-subtitle">尚未开始 · 直接输入即可开新一卷</span>
                 </div>
                 <div class="topbar-spacer"></div>
+                <div class="topbar-companion" id="topbar-companion">
+                    <button type="button" class="companion-trigger" id="companion-trigger" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="companion-trigger-label">陪伴</span>
+                        <span class="companion-trigger-value" id="companion-trigger-value">关闭</span>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </button>
+                    <div class="companion-menu hidden" id="companion-menu" role="listbox">
+                        <!-- populated by JS from GET /companion-styles -->
+                    </div>
+                </div>
                 <div class="topbar-thinking" id="topbar-thinking">
                     <button type="button" class="thinking-trigger" id="thinking-trigger" aria-haspopup="listbox" aria-expanded="false">
                         <span class="thinking-trigger-label">思路</span>

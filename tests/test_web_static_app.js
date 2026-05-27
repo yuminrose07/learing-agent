@@ -310,6 +310,7 @@ module.exports = {
     normalizeFrontendMode,
     modeFromSession,
     backendModeForFrontendMode,
+    normalizeCompanionSettings,
     formatUsageNumber,
     formatUsagePercent,
     els,
@@ -443,6 +444,48 @@ test('前端只暴露闲谈与研习入口', () => {
     assert.doesNotMatch(INDEX_SOURCE, /btn-mode-ask|btn-mode-study/);
     assert.doesNotMatch(INDEX_SOURCE, /data-mode="ask"|data-mode="study"/);
     assert.doesNotMatch(INDEX_SOURCE, /Ask|Study|问道|学习模式/);
+});
+
+test('闲谈页暴露小月亮陪伴切换入口', () => {
+    assert.match(INDEX_SOURCE, /id="topbar-companion"/);
+    assert.match(INDEX_SOURCE, /id="companion-trigger"/);
+    assert.match(INDEX_SOURCE, /companion-trigger-label">陪伴/);
+    assert.ok(APP_SOURCE.includes("GET', '/companion-styles'"));
+    assert.ok(APP_SOURCE.includes("PUT', `/sessions/${currentSessionId}/companion`"));
+    assert.match(APP_SOURCE, /syncCompanionPickerVisibility/);
+    assert.match(APP_SOURCE, /setupCompanionPicker/);
+    assert.match(STYLE_SOURCE, /\.companion-trigger::before/);
+    assert.match(STYLE_SOURCE, /content: "☾"/);
+});
+
+test('历史回放能显示陪伴徽章', () => {
+    const { renderHistoryMessage, els, normalizeCompanionSettings } = loadAppForTest();
+
+    assert.equal(
+        JSON.stringify(normalizeCompanionSettings({
+            enabled: true,
+            style: 'warm_girlfriend',
+            advice_level: 'none',
+        })),
+        JSON.stringify({ enabled: true, style: 'warm_girlfriend', adviceLevel: 'none' })
+    );
+
+    renderHistoryMessage('assistant', '先歇一下。', {
+        mode: 'chat',
+        companion_enabled: true,
+        companion_style: 'warm_girlfriend',
+        companion_style_name: '温柔',
+    });
+
+    const assistantMessage = els.messages.children[0];
+    const content = assistantMessage.querySelector('.message-content');
+    const badge = content.querySelector('.companion-badge');
+    const avatar = assistantMessage.querySelector('.message-avatar');
+
+    assert.ok(badge);
+    assert.match(badge.textContent, /☾ 温柔陪伴/);
+    assert.ok(avatar.classList.contains('companion-mark'));
+    assert.equal(avatar.textContent, '☾');
 });
 
 test('历史会话列表用服务端绑定状态区分闲谈与研习', () => {

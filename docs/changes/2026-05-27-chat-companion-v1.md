@@ -14,6 +14,8 @@
   - `GET /companion-styles`
   - `GET /sessions/{session_id}/companion`
   - `PUT /sessions/{session_id}/companion`
+- 前端闲谈页顶部新增“小月亮 / 陪伴”切换入口；闲谈显示陪伴选择，研习保留思路选择。
+- SSE 与历史回放支持 companion metadata，助手气泡可显示陪伴徽章。
 
 ## 边界
 
@@ -25,3 +27,4 @@
 ## 验证
 
 - `pytest -q tests/test_companion_policy.py tests/test_chat_study_separation.py tests/test_mode_layering.py`
+- `node --test tests/test_web_static_app.js`

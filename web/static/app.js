@@ -19,6 +19,11 @@ let currentView = 'home';
 let currentPersonaKey = null;
 let currentPersonaName = '';
 let currentLearningPhase = null;
+let currentCompanion = {
+    enabled: false,
+    style: 'off',
+    adviceLevel: 'low',
+};
 
 // ─── DOM 元素 ───
 const els = {
@@ -39,6 +44,10 @@ const els = {
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
     topbarSubtitle: document.getElementById('topbar-subtitle'),
+    topbarCompanion: document.getElementById('topbar-companion'),
+    companionTrigger: document.getElementById('companion-trigger'),
+    companionTriggerValue: document.getElementById('companion-trigger-value'),
+    companionMenu: document.getElementById('companion-menu'),
     topbarThinking: document.getElementById('topbar-thinking'),
     thinkingTrigger: document.getElementById('thinking-trigger'),
     thinkingTriggerValue: document.getElementById('thinking-trigger-value'),
@@ -78,6 +87,16 @@ const PHILOSOPHER_ORDER = ['socrates', 'feynman', 'montaigne', 'zhu_xi', 'descar
 
 // Populated from GET /personas at init. Falls back to PERSONA_META above.
 let personaCatalog = null;
+
+const COMPANION_META = {
+    off: { name: '关闭', mark: '·', short: '保持普通闲谈，不附加陪伴语气。' },
+    warm_girlfriend: { name: '温柔', mark: '☾', short: '先接住疲惫和压力，少建议。' },
+    playful_girlfriend: { name: '活泼', mark: '☾', short: '轻快一点，帮你转移注意力。' },
+    quiet_companion: { name: '安静', mark: '☾', short: '话少、稳定，适合只想有人陪着。' },
+};
+
+// Populated from GET /companion-styles at init. Falls back to COMPANION_META.
+let companionCatalog = null;
 
 const FRONTEND_MODES = new Set(['chat', 'learning']);
 
@@ -238,6 +257,36 @@ function getPersonaDisplayName(personaKey) {
     return getPersonaMeta(personaKey).name || '默认';
 }
 
+function getCompanionMeta(styleKey) {
+    if (!styleKey) return COMPANION_META.off;
+    return COMPANION_META[styleKey] || COMPANION_META.off;
+}
+
+function getCompanionDisplayName(styleKey, enabled = true) {
+    if (!enabled || !styleKey || styleKey === 'off') return COMPANION_META.off.name;
+    return getCompanionMeta(styleKey).name || styleKey;
+}
+
+function normalizeCompanionSettings(raw = {}) {
+    const style = raw.style || raw.companion_style || 'off';
+    const enabled = Boolean(raw.enabled) && style !== 'off';
+    return {
+        enabled,
+        style: enabled ? style : 'off',
+        adviceLevel: raw.advice_level || raw.adviceLevel || raw.companion_advice_level || 'low',
+    };
+}
+
+function companionSettingsFromSession(session) {
+    const meta = session?.mode_metadata || {};
+    const enabled = meta.chat_profile === 'companion' && Boolean(meta.companion_style);
+    return normalizeCompanionSettings({
+        enabled,
+        style: enabled ? meta.companion_style : 'off',
+        advice_level: meta.companion_advice_level || 'low',
+    });
+}
+
 function resolvePersonaKeyForMode(mode, session = null) {
     // 思路 (persona overlay) 现在只服务研习；闲聊已与研学分离，恒为 neutral。
     if (normalizeFrontendMode(mode) === 'chat') return 'neutral';
@@ -360,6 +409,9 @@ function upsertAssistantUsage(content, rawUsage) {
 function getHomeSubtitle(mode) {
     if (normalizeFrontendMode(mode) === 'learning') {
         return '研习：围绕一个主题开研习卷，先收束目标，再推进讲讲看与反馈。';
+    }
+    if (currentCompanion.enabled) {
+        return `闲谈：${getCompanionDisplayName(currentCompanion.style)}陪伴已开启，适合休息和减压。`;
     }
     return '闲谈：直接输入即可开始轻量对话。';
 }
@@ -496,6 +548,7 @@ function showWelcome() {
     currentPersonaKey = null;
     currentPersonaName = '';
     syncThinkingPickerLabel('neutral');
+    syncCompanionPickerLabel(currentCompanion);
     document.dispatchEvent(new CustomEvent('learning-unit:reset'));
     els.messageInput.disabled = false;
     els.btnSend.disabled = false;
@@ -627,16 +680,166 @@ function syncTopbarFromSession(session, title) {
     els.topbarTitle.textContent = title || session?.title || currentSessionTitle || '學齋';
     const semanticMode = session ? modeFromSession(session) : currentMode;
     const personaKey = resolvePersonaKeyForMode(semanticMode, session);
+    if (semanticMode === 'chat') {
+        syncCompanionPickerLabel(companionSettingsFromSession(session));
+    }
     updateTopbarPersona(personaKey, semanticMode);
     els.topbarSubtitle.textContent = semanticMode === 'learning'
         ? '研习中 · 正在加载研习卷'
-        : (currentSessionTitle || title || '');
+        : (currentCompanion.enabled
+            ? `${getCompanionDisplayName(currentCompanion.style)}陪伴 · ${currentSessionTitle || title || '闲谈'}`
+            : (currentSessionTitle || title || ''));
 }
 
 function updateHomeModeCards() {
     document.querySelectorAll('.home-mode-card').forEach(card => {
         const isActive = card.dataset.mode === currentMode && !card.disabled;
         card.classList.toggle('active', isActive);
+    });
+}
+
+// ─── 陪伴 (companion / 减压) picker ───
+
+function companionCatalogEntries() {
+    if (companionCatalog && Array.isArray(companionCatalog.styles)) {
+        return companionCatalog.styles;
+    }
+    return Object.entries(COMPANION_META).map(([key, meta]) => ({
+        key,
+        display_name: meta.name,
+    }));
+}
+
+function syncCompanionPickerLabel(settings = currentCompanion) {
+    if (!els.companionTriggerValue) return;
+    const normalized = normalizeCompanionSettings(settings);
+    currentCompanion = normalized;
+    els.companionTriggerValue.textContent = getCompanionDisplayName(
+        normalized.style,
+        normalized.enabled
+    );
+    if (els.topbarCompanion) {
+        els.topbarCompanion.dataset.companionStyle = normalized.style;
+        els.topbarCompanion.classList.toggle('has-companion', normalized.enabled);
+    }
+    if (els.companionMenu) {
+        els.companionMenu.querySelectorAll('.companion-option').forEach(opt => {
+            opt.classList.toggle('active', opt.dataset.companionStyle === normalized.style);
+        });
+    }
+    if (currentView === 'home' && currentMode === 'chat') {
+        els.topbarSubtitle.textContent = getHomeSubtitle(currentMode);
+    } else if (currentView === 'chat' && currentMode === 'chat') {
+        const title = currentSessionTitle || els.topbarTitle.textContent || '闲谈';
+        els.topbarSubtitle.textContent = normalized.enabled
+            ? `${getCompanionDisplayName(normalized.style)}陪伴 · ${title}`
+            : title;
+    }
+}
+
+function renderCompanionMenu() {
+    if (!els.companionMenu) return;
+    const entries = companionCatalogEntries();
+    els.companionMenu.innerHTML = entries.map(entry => {
+        const key = entry.key || 'off';
+        const meta = getCompanionMeta(key);
+        const name = entry.display_name || meta.name;
+        return `
+            <button type="button" class="companion-option" data-companion-style="${escapeHtml(key)}" role="option">
+                <span class="companion-option-mark">${escapeHtml(meta.mark || '·')}</span>
+                <span class="companion-option-copy">
+                    <span class="companion-option-name">${escapeHtml(name)}</span>
+                    <span class="companion-option-short">${escapeHtml(meta.short || '')}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+    els.companionMenu.querySelectorAll('.companion-option').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const style = btn.dataset.companionStyle || 'off';
+            applyCompanionSelection(style);
+            closeCompanionMenu();
+        });
+    });
+    syncCompanionPickerLabel(currentCompanion);
+}
+
+function openCompanionMenu() {
+    if (!els.companionMenu) return;
+    els.companionMenu.classList.remove('hidden');
+    els.companionTrigger.setAttribute('aria-expanded', 'true');
+    els.topbarCompanion.classList.add('is-open');
+}
+
+function closeCompanionMenu() {
+    if (!els.companionMenu) return;
+    els.companionMenu.classList.add('hidden');
+    els.companionTrigger.setAttribute('aria-expanded', 'false');
+    els.topbarCompanion.classList.remove('is-open');
+}
+
+async function applyCompanionSelection(styleKey) {
+    const style = styleKey || 'off';
+    const next = normalizeCompanionSettings({
+        enabled: style !== 'off',
+        style,
+        advice_level: currentCompanion.adviceLevel || 'low',
+    });
+    syncCompanionPickerLabel(next);
+
+    if (!currentSessionId || currentMode !== 'chat') return;
+    try {
+        const saved = await api('PUT', `/sessions/${currentSessionId}/companion`, {
+            enabled: next.enabled,
+            style: next.style,
+            advice_level: next.adviceLevel,
+        });
+        syncCompanionPickerLabel(normalizeCompanionSettings(saved));
+    } catch (err) {
+        console.warn('更新陪伴失败:', err);
+        showToast('切换陪伴失败：' + err.message);
+    }
+}
+
+async function bindCurrentCompanionToSession(settings = currentCompanion) {
+    if (!currentSessionId || currentMode !== 'chat') return;
+    const normalized = normalizeCompanionSettings(settings);
+    try {
+        await api('PUT', `/sessions/${currentSessionId}/companion`, {
+            enabled: normalized.enabled,
+            style: normalized.style,
+            advice_level: normalized.adviceLevel,
+        });
+    } catch (err) {
+        console.warn('绑定陪伴到新会话失败:', err);
+    }
+}
+
+async function loadCompanionCatalog() {
+    try {
+        companionCatalog = await api('GET', '/companion-styles');
+    } catch (err) {
+        console.warn('载入陪伴列表失败，使用本地默认列表:', err);
+        companionCatalog = null;
+    }
+    renderCompanionMenu();
+}
+
+function setupCompanionPicker() {
+    if (!els.companionTrigger) return;
+    els.companionTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (els.companionMenu.classList.contains('hidden')) {
+            openCompanionMenu();
+        } else {
+            closeCompanionMenu();
+        }
+    });
+    document.addEventListener('click', (e) => {
+        if (!els.topbarCompanion.contains(e.target)) closeCompanionMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeCompanionMenu();
     });
 }
 
@@ -941,6 +1144,9 @@ function renderHistoryMessage(role, text, metadata = {}) {
         alignment: Boolean(metadata.alignment),
         personaKey: metadata.persona_key || '',
         personaName: metadata.persona_name || '',
+        companionStyle: metadata.companion_style || '',
+        companionStyleName: metadata.companion_style_name || '',
+        companionEnabled: Boolean(metadata.companion_enabled),
         usage: metadata.usage || metadata.turn_usage || null,
     });
 }
@@ -965,7 +1171,12 @@ function addMessage(role, text, options = {}) {
         const personaKey = options.personaKey || 'neutral';
         avatar.classList.add('persona-mark');
         avatar.dataset.personaKey = personaKey;
-        avatar.textContent = getPersonaMark(personaKey);
+        if (options.companionEnabled) {
+            avatar.classList.add('companion-mark');
+            avatar.textContent = getCompanionMeta(options.companionStyle).mark || '☾';
+        } else {
+            avatar.textContent = getPersonaMark(personaKey);
+        }
     } else if (role === 'user') {
         avatar.classList.add('user-mark');
         avatar.textContent = '我';
@@ -985,6 +1196,11 @@ function addMessage(role, text, options = {}) {
         if (options.personaName) {
             content.dataset.personaName = options.personaName;
             upsertAssistantPersonaBadge(content, options.personaName);
+        }
+        if (options.companionEnabled) {
+            content.dataset.companionStyle = options.companionStyle || '';
+            content.dataset.companionStyleName = options.companionStyleName || getCompanionDisplayName(options.companionStyle);
+            upsertAssistantCompanionBadge(content, content.dataset.companionStyleName);
         }
         upsertAssistantUsage(content, options.usage || null);
     } else {
@@ -1012,6 +1228,22 @@ function upsertAssistantPersonaBadge(content, personaName) {
         }
     }
     badge.textContent = personaName;
+}
+
+function upsertAssistantCompanionBadge(content, styleName) {
+    if (!styleName) return;
+    let badge = content.querySelector('.companion-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'companion-badge';
+        const body = content.querySelector('.message-body');
+        if (body) {
+            content.insertBefore(badge, body);
+        } else {
+            content.insertBefore(badge, content.firstChild);
+        }
+    }
+    badge.textContent = `☾ ${styleName}陪伴`;
 }
 
 function setLastAssistantPersona(personaKey, personaName) {
@@ -1046,6 +1278,27 @@ function setLastAssistantPersona(personaKey, personaName) {
     }
 }
 
+function setLastAssistantCompanion(styleKey, styleName) {
+    const contents = els.messages.querySelectorAll('.message.assistant .message-content');
+    if (contents.length === 0) return;
+    const last = contents[contents.length - 1];
+    const resolvedStyle = styleKey || last.dataset.companionStyle || 'warm_girlfriend';
+    const resolvedName = styleName || getCompanionDisplayName(resolvedStyle);
+    last.dataset.companionStyle = resolvedStyle;
+    last.dataset.companionStyleName = resolvedName;
+    upsertAssistantCompanionBadge(last, resolvedName);
+
+    const messages = els.messages.querySelectorAll('.message.assistant');
+    if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const avatar = lastMessage.querySelector('.message-avatar');
+        if (avatar) {
+            avatar.classList.add('companion-mark');
+            avatar.textContent = getCompanionMeta(resolvedStyle).mark || '☾';
+        }
+    }
+}
+
 function appendToLastMessage(text) {
     const contents = els.messages.querySelectorAll('.message.assistant .message-content');
     if (contents.length === 0) return;
@@ -1056,6 +1309,7 @@ function appendToLastMessage(text) {
     const body = ensureAssistantMessageBody(last);
     body.innerHTML = renderChatMarkdown(raw) + '<span class="typing-cursor"></span>';
     upsertAssistantPersonaBadge(last, last.dataset.personaName || '');
+    upsertAssistantCompanionBadge(last, last.dataset.companionStyleName || '');
     scrollToBottom();
 }
 
@@ -1132,9 +1386,12 @@ async function sendMessage(text) {
             }
             await selectSession(created.session_id, created.objective?.text || '研习');
         } else {
+            const companionToBind = { ...currentCompanion };
             const session = await createSession();
             if (!session) return;
             await selectSession(session.id, session.title || 'New chat');
+            await bindCurrentCompanionToSession(companionToBind);
+            syncCompanionPickerLabel(companionToBind);
         }
         if (requestedPersonaKey) {
             try {
@@ -1214,6 +1471,14 @@ async function sendMessage(text) {
                         if (data.error) throw new Error(data.error);
                         if (data.persona_key || data.persona_name) {
                             setLastAssistantPersona(data.persona_key, data.persona_name);
+                        }
+                        if (data.companion_enabled) {
+                            setLastAssistantCompanion(data.companion_style, data.companion_style_name);
+                            syncCompanionPickerLabel({
+                                enabled: true,
+                                style: data.companion_style,
+                                advice_level: data.companion_advice_level,
+                            });
                         }
                         if (data.alignment) {
                             const messages = els.messages.querySelectorAll('.message.assistant');
@@ -1335,6 +1600,13 @@ function syncThinkingPickerVisibility() {
     if (hideForChat) closeThinkingMenu();
 }
 
+function syncCompanionPickerVisibility() {
+    if (!els.topbarCompanion) return;
+    const showForChat = currentMode === 'chat';
+    els.topbarCompanion.classList.toggle('hidden', !showForChat);
+    if (!showForChat) closeCompanionMenu();
+}
+
 function updateModeToolbar() {
     [els.btnModeChat, els.btnModeLearning].forEach(btn => {
         if (btn) btn.classList.remove('active');
@@ -1344,6 +1616,7 @@ function updateModeToolbar() {
         learning: els.btnModeLearning,
     }[currentMode];
     if (activeBtn) activeBtn.classList.add('active');
+    syncCompanionPickerVisibility();
     syncThinkingPickerVisibility();
     // 把当前模式反映到 body，驱动 mode 维度的视觉（闲聊青瓷 / 研习朱砂）。
     document.body.classList.toggle('mode-chat', currentMode === 'chat');
@@ -1598,7 +1871,9 @@ els.chatArea.addEventListener('scroll', () => {
 
 async function init() {
     updateViewTheme(currentView);
+    setupCompanionPicker();
     setupThinkingPicker();
+    await loadCompanionCatalog();
     await loadPersonaCatalog();
     updateModeToolbar();
     els.topbarSubtitle.textContent = '正在载入会话…';

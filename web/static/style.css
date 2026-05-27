@@ -1315,7 +1315,9 @@ body.chat-view { /* in-conversation */ }
         width: 100%;
         justify-content: flex-start;
     }
+    .topbar-companion,
     .topbar-thinking { margin-left: 0; }
+    .companion-menu,
     .thinking-menu {
         right: 0; left: auto;
         max-width: calc(100vw - 32px);
@@ -1332,14 +1334,16 @@ body.chat-view { /* in-conversation */ }
 }
 
 /* ============================================================
- * 思路 picker (philosopher overlay, opt-in)
+ * 陪伴 / 思路 picker
  * ============================================================ */
+.topbar-companion,
 .topbar-thinking {
     position: relative;
     display: inline-flex;
     align-items: center;
     margin-left: 12px;
 }
+.companion-trigger,
 .thinking-trigger {
     appearance: none;
     background: var(--paper-1);
@@ -1356,33 +1360,56 @@ body.chat-view { /* in-conversation */ }
     letter-spacing: 0.06em;
     transition: border-color var(--t), background var(--t), color var(--t);
 }
+.companion-trigger::before {
+    content: "☾";
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--ink-3);
+    font-family: var(--font-serif);
+    font-size: 14px;
+    line-height: 1;
+}
+.companion-trigger:hover,
+.topbar-companion.is-open .companion-trigger,
 .thinking-trigger:hover,
 .topbar-thinking.is-open .thinking-trigger {
     border-color: var(--vermillion-line);
     color: var(--ink);
     background: var(--paper);
 }
+.topbar-companion.has-companion .companion-trigger,
 .topbar-thinking.has-overlay .thinking-trigger {
     border-color: var(--vermillion-line);
     background: var(--vermillion-soft);
     color: var(--vermillion-deep);
 }
+.topbar-companion.has-companion .companion-trigger::before {
+    color: var(--vermillion-deep);
+}
+.companion-trigger-label,
 .thinking-trigger-label {
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.18em;
     color: var(--ink-4);
 }
+.topbar-companion.has-companion .companion-trigger-label,
 .topbar-thinking.has-overlay .thinking-trigger-label {
     color: var(--vermillion);
 }
+.companion-trigger-value,
 .thinking-trigger-value {
     font-weight: 600;
     color: inherit;
     letter-spacing: 0.04em;
 }
+.companion-trigger svg,
 .thinking-trigger svg { opacity: 0.55; }
 
+.companion-menu,
 .thinking-menu {
     position: absolute;
     top: calc(100% + 8px);
@@ -1399,8 +1426,10 @@ body.chat-view { /* in-conversation */ }
     flex-direction: column;
     gap: 2px;
 }
+.companion-menu.hidden,
 .thinking-menu.hidden { display: none; }
 
+.companion-option,
 .thinking-option {
     appearance: none;
     background: transparent;
@@ -1415,11 +1444,14 @@ body.chat-view { /* in-conversation */ }
     color: var(--ink-2);
     transition: background var(--t-quick), color var(--t-quick);
 }
+.companion-option:hover,
 .thinking-option:hover { background: var(--paper-2); color: var(--ink); }
+.companion-option.active,
 .thinking-option.active {
     background: var(--vermillion-soft);
     color: var(--vermillion-deep);
 }
+.companion-option-mark,
 .thinking-option-mark {
     display: inline-flex;
     align-items: center;
@@ -1434,15 +1466,18 @@ body.chat-view { /* in-conversation */ }
     border-radius: 2px;
     color: var(--ink-3);
 }
+.companion-option.active .companion-option-mark,
 .thinking-option.active .thinking-option-mark {
     color: var(--vermillion);
 }
+.companion-option-copy,
 .thinking-option-copy {
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
 }
+.companion-option-name,
 .thinking-option-name {
     font-family: var(--font-serif);
     font-weight: 600;
@@ -1457,6 +1492,7 @@ body.chat-view { /* in-conversation */ }
     margin-left: 4px;
     letter-spacing: 0.04em;
 }
+.companion-option-short,
 .thinking-option-short {
     font-size: 11.5px;
     color: var(--ink-3);
@@ -1467,6 +1503,7 @@ body.chat-view { /* in-conversation */ }
  * Persona-mark message avatars (replace external avatar images)
  * ============================================================ */
 .message-avatar.persona-mark,
+.message-avatar.companion-mark,
 .message-avatar.user-mark {
     display: inline-flex;
     align-items: center;
@@ -1492,6 +1529,24 @@ body.chat-view { /* in-conversation */ }
     color: var(--vermillion-deep);
     border-color: var(--vermillion-line);
     background: var(--vermillion-soft);
+}
+.message-avatar.companion-mark {
+    color: var(--vermillion-deep);
+    border-color: var(--vermillion-line);
+    background: var(--vermillion-soft);
+}
+.companion-badge {
+    display: inline-flex;
+    width: fit-content;
+    margin-bottom: 8px;
+    padding: 3px 7px;
+    border: 1px solid var(--vermillion-line);
+    border-radius: 999px;
+    background: var(--vermillion-soft);
+    color: var(--vermillion-deep);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
 }
 
 /* ============================================================
