@@ -23,7 +23,13 @@
 #app {
     display: grid;
     grid-template-columns: 300px 1fr;
+    /* 显式声明行轨道为单一可收缩单元 —— 否则 grid 默认 auto-row 会随内容长出，
+       侧栏会话或主区时间线变长后 #app 会突破 100vh；外层 body{overflow:hidden}
+       直接把溢出剪掉，看上去就是"页面不能下滑"。
+       minmax(0, 1fr) 同时把行高夹在 0..1fr，给 min-height:0 的下游成员让出空间。 */
+    grid-template-rows: minmax(0, 1fr);
     height: 100vh;
+    overflow: hidden;
     background: var(--paper);
     position: relative;
 }
@@ -49,6 +55,8 @@ aside.sidebar {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    /* 让内部 .session-list 的 overflow:auto 拿到有限高度 */
+    min-height: 0;
 }
 
 .sidebar-header {
@@ -158,6 +166,8 @@ main.main {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    /* 同侧栏：tab-panel / timeline 的 overflow:auto 需要祖先有 min-height:0 */
+    min-height: 0;
     background: transparent;
 }
 
@@ -492,6 +502,9 @@ main.main {
 .tab-panel { display: none; flex-direction: column; flex: 1; min-height: 0; }
 .tab-panel.active { display: flex; }
 .tab-panel[hidden] { display: none; }
+/* events tab 内部由 .timeline 自带滚动；learning-units tab 是指标+诊断的静态块，
+   没有内层滚动器，故让面板自身负责纵向滚动。 */
+.tab-panel[data-tab="learning-units"] { overflow-y: auto; }
 
 .window-label {
     display: inline-flex;
