@@ -135,58 +135,100 @@ class ToolExecutor:
         执行全部 tool calls，返回结构化结果列表。
         每个结果 dict 包含：tool_call, result, is_error, display_result_override, extra_metadata
 
+        并发语义:
+        - 默认按 `ResilienceConfig.tool_parallel_execution` 决定是否并行。
+        - 并行时使用 `asyncio.gather`,outcome 顺序与输入 `tool_calls` 一致。
+        - 单工具或开关关闭时走串行路径,保留 escape hatch。
+
         契约：本方法对调用方不抛业务异常 —— 任何工具执行链路内部的意外
         异常都会被转成 is_error=True 的 outcome，保证 ReAct 主循环不被
         单个工具的崩溃打断。仅当解释器层异常（KeyboardInterrupt 等）才向上传播。
         """
+        if not tool_calls:
+            return []
+
+        parallel = (
+            self._resilience_config.tool_parallel_execution
+            and len(tool_calls) > 1
+        )
+
+        if parallel:
+            outcomes = await asyncio.gather(*[
+                self._run_one_with_pipeline_guard(
+                    session, tc, turn_count, parent_span, trace_id, build_hook_context
+                )
+                for tc in tool_calls
+            ])
+            return list(outcomes)
+
+        # 串行回退路径(开关关闭 或 只有一个工具时也走这里以省去 gather 开销)
         results: list[dict[str, Any]] = []
         for tc in tool_calls:
-            tool_span = self.obs.start_span("tool.execute", parent=parent_span, trace_id=trace_id) if self.obs else None
-            try:
-                try:
-                    result = await self._execute_one(
-                        session, tc, turn_count, tool_span, trace_id, build_hook_context
-                    )
-                except Exception as exc:
-                    # 工具流水线层意外异常（hook dispatch、event 投递、Pydantic 校验等）
-                    # 不允许打断整轮。统一转成 is_error=True 的 outcome，并落入失败账本。
-                    logger.exception(
-                        "[ToolExecutor] Unexpected pipeline failure for tool '%s'",
-                        tc.tool_id,
-                    )
-                    if self._unresolved_logger is not None:
-                        try:
-                            await self._unresolved_logger.record(
-                                session_id=session.id,
-                                layer="tool_executor_pipeline",
-                                reason_code="pipeline_exception",
-                                message=f"{type(exc).__name__}: {exc}",
-                                tool_id=tc.tool_id,
-                                arguments=dict(tc.arguments) if tc.arguments else None,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "[ToolExecutor] unresolved_logger.record failed (non-fatal)"
-                            )
-                    tc.error = str(exc)
-                    result = {
-                        "tool_call": tc,
-                        "result": f"[Error] {exc}",
-                        "is_error": True,
-                        "display_result_override": None,
-                        "extra_metadata": {"pipeline_failure": True},
-                    }
-                results.append(result)
-            finally:
-                if self.obs:
-                    try:
-                        self.obs.end_span(tool_span, trace_id=trace_id)
-                    except Exception:
-                        # 可观测性 bug 绝不允许吃掉工具结果或打断后续工具执行。
-                        logger.exception(
-                            "[ToolExecutor] obs.end_span raised (suppressed)"
-                        )
+            results.append(
+                await self._run_one_with_pipeline_guard(
+                    session, tc, turn_count, parent_span, trace_id, build_hook_context
+                )
+            )
         return results
+
+    async def _run_one_with_pipeline_guard(
+        self,
+        session: LearningSession,
+        tc: ToolCall,
+        turn_count: int,
+        parent_span: Optional[Any],
+        trace_id: Optional[str],
+        build_hook_context: callable,
+    ) -> dict[str, Any]:
+        """单个 tool_call 的完整执行 + pipeline_failure 兜底 + obs span 包裹。
+
+        语义与原 execute_all 的 for-body 完全一致:任何业务异常都被吃成
+        is_error=True 的 outcome,不向调用方传播。
+        """
+        tool_span = self.obs.start_span("tool.execute", parent=parent_span, trace_id=trace_id) if self.obs else None
+        try:
+            try:
+                return await self._execute_one(
+                    session, tc, turn_count, tool_span, trace_id, build_hook_context
+                )
+            except Exception as exc:
+                # 工具流水线层意外异常（hook dispatch、event 投递、Pydantic 校验等）
+                # 不允许打断整轮。统一转成 is_error=True 的 outcome，并落入失败账本。
+                logger.exception(
+                    "[ToolExecutor] Unexpected pipeline failure for tool '%s'",
+                    tc.tool_id,
+                )
+                if self._unresolved_logger is not None:
+                    try:
+                        await self._unresolved_logger.record(
+                            session_id=session.id,
+                            layer="tool_executor_pipeline",
+                            reason_code="pipeline_exception",
+                            message=f"{type(exc).__name__}: {exc}",
+                            tool_id=tc.tool_id,
+                            arguments=dict(tc.arguments) if tc.arguments else None,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[ToolExecutor] unresolved_logger.record failed (non-fatal)"
+                        )
+                tc.error = str(exc)
+                return {
+                    "tool_call": tc,
+                    "result": f"[Error] {exc}",
+                    "is_error": True,
+                    "display_result_override": None,
+                    "extra_metadata": {"pipeline_failure": True},
+                }
+        finally:
+            if self.obs:
+                try:
+                    self.obs.end_span(tool_span, trace_id=trace_id)
+                except Exception:
+                    # 可观测性 bug 绝不允许吃掉工具结果或打断后续工具执行。
+                    logger.exception(
+                        "[ToolExecutor] obs.end_span raised (suppressed)"
+                    )
 
     # ── 单工具执行 ──
 
