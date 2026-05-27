@@ -94,6 +94,9 @@
                             <span class="welcome-pill">思路 · 研习里可选</span>
                         </div>
 
+                        <!-- 未完成研习卷横幅 - JS 按需填充；无数据时保持 hidden 不占位 -->
+                        <div id="welcome-active-units" class="welcome-active-units hidden" aria-live="polite"></div>
+
                         <div class="home-mode-grid">
                             <button class="home-mode-card active" data-mode="chat" type="button">
                                 <span class="home-mode-badge">默认</span>
@@ -221,6 +224,31 @@
             <div class="modal-footer learning-stop-modal-footer">
                 <button id="btn-stay-learning-stop" class="btn-secondary" type="button">留在本卷回看</button>
                 <button id="btn-new-topic-after-stop" class="btn-primary" type="button">开始新主题</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 研习卷复用确认弹窗（POST /learning-units 返回 409 时由 app.js 打开） -->
+    <div id="learning-resume-modal" class="modal hidden" aria-hidden="true">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-small learning-stop-modal-content">
+            <div class="modal-header learning-stop-modal-header">
+                <div class="learning-stop-modal-copy">
+                    <span class="learning-stop-modal-kicker">研习未完成</span>
+                    <h2>还有一卷研习没结束</h2>
+                </div>
+                <button class="btn-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="modal-body learning-stop-modal-body">
+                <p>先决定怎么处理上一卷研习，再开新主题。</p>
+                <div class="learning-stop-modal-summary">
+                    <span class="learning-stop-modal-summary-label">上一卷主题</span>
+                    <p id="learning-resume-modal-objective">-</p>
+                </div>
+            </div>
+            <div class="modal-footer learning-stop-modal-footer">
+                <button id="btn-stop-and-new" class="btn-secondary" type="button">先停掉，开新主题</button>
+                <button id="btn-continue-active" class="btn-primary" type="button">继续这一卷</button>
             </div>
         </div>
     </div>

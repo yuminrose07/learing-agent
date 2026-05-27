@@ -54,6 +54,11 @@ const els = {
     learningStopModalObjective: document.getElementById('learning-stop-modal-objective'),
     btnStayLearningStop: document.getElementById('btn-stay-learning-stop'),
     btnNewTopicAfterStop: document.getElementById('btn-new-topic-after-stop'),
+    learningResumeModal: document.getElementById('learning-resume-modal'),
+    learningResumeModalObjective: document.getElementById('learning-resume-modal-objective'),
+    btnContinueActive: document.getElementById('btn-continue-active'),
+    btnStopAndNew: document.getElementById('btn-stop-and-new'),
+    welcomeActiveUnits: document.getElementById('welcome-active-units'),
     btnCancelDelete: document.getElementById('btn-cancel-delete'),
     btnConfirmDelete: document.getElementById('btn-confirm-delete'),
 };
@@ -497,7 +502,70 @@ function showWelcome() {
     updateInputPlaceholderFromSession(null);
     updateModeToolbar();
     updateHomeModeCards();
+    refreshWelcomeActiveUnits().catch(() => {});
     els.messageInput.focus();
+}
+
+// ─── 欢迎页"未完成研习卷"横幅 ───
+// 数据来自 GET /learning-units（已有全量返回，前端过滤 phase ∈ {absorbing, outputting}）。
+// 横幅出现条件 = 有进行中卷；列表为空时整块隐藏不占位。
+async function fetchActiveLearningUnits() {
+    const data = await api('GET', '/learning-units');
+    const units = Array.isArray(data) ? data : (Array.isArray(data?.units) ? data.units : []);
+    return units
+        .filter(u => u && (u.phase === 'absorbing' || u.phase === 'outputting'))
+        .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+}
+
+function renderWelcomeActiveUnits(units) {
+    const host = els.welcomeActiveUnits;
+    if (!host) return;
+    if (!units || units.length === 0) {
+        host.classList.add('hidden');
+        host.innerHTML = '';
+        return;
+    }
+    const phaseLabel = (p) => (p === 'outputting' ? '复述检验' : '研习中');
+    const html = units.map((u) => {
+        const sid = u.session_id || '';
+        const uid = u.id || '';
+        const objective = (u.objective && u.objective.text) || u.working_objective || '（未确定主题）';
+        const phase = u.phase || 'absorbing';
+        return `
+            <div class="welcome-active-unit-card" data-unit-id="${escapeHtml(uid)}" data-session-id="${escapeHtml(sid)}">
+                <div class="welcome-active-unit-head">
+                    <span class="welcome-active-unit-kicker">还有一卷未完成</span>
+                    <span class="lu-phase is-current">${escapeHtml(phaseLabel(phase))}</span>
+                </div>
+                <p class="welcome-active-unit-title">${escapeHtml(objective)}</p>
+                <div class="welcome-active-unit-actions">
+                    <button class="lu-btn lu-btn-secondary" type="button" data-action="stop"
+                            data-unit-id="${escapeHtml(uid)}">先停掉这卷</button>
+                    <button class="lu-btn lu-btn-primary" type="button" data-action="continue"
+                            data-unit-id="${escapeHtml(uid)}" data-session-id="${escapeHtml(sid)}">继续这一卷</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+    host.innerHTML = html;
+    host.classList.remove('hidden');
+}
+
+async function refreshWelcomeActiveUnits() {
+    if (!els.welcomeActiveUnits) return;
+    try {
+        const units = await fetchActiveLearningUnits();
+        renderWelcomeActiveUnits(units);
+    } catch (err) {
+        // 接口失败不影响首页主体——静默隐藏，不打扰用户。
+        els.welcomeActiveUnits.classList.add('hidden');
+        els.welcomeActiveUnits.innerHTML = '';
+        console.warn('拉取未完成研习卷失败:', err);
+    }
+}
+
+async function stopLearningUnitById(unitId) {
+    return api('POST', `/learning-units/${encodeURIComponent(unitId)}/stop`, { reason: 'user_stopped' });
 }
 
 function closeLearningStopModal() {
@@ -514,6 +582,30 @@ function openLearningStopModal(detail = {}) {
     els.learningStopModalObjective.textContent = objective;
     els.learningStopModal.classList.remove('hidden');
     els.learningStopModal.setAttribute('aria-hidden', 'false');
+}
+
+// 复用研习卷确认弹窗 —— POST /learning-units 返回 409 时由 sendMessage 调起，让用户
+// 显式选择「继续这一卷」还是「先停掉它，按新主题继续」。
+// state 用闭包变量保存当前面对的 activeUnit + 原始 seedText（用户刚刚打的字），
+// 两个按钮和事件绑定区共享这份 state。
+let pendingResumeContext = null;
+
+function openLearningResumeModal({ activeUnit, seedText }) {
+    if (!els.learningResumeModal) return;
+    pendingResumeContext = { activeUnit, seedText };
+    const objective = (activeUnit?.objective?.text || activeUnit?.working_objective || '').trim() || '（未确定主题）';
+    if (els.learningResumeModalObjective) {
+        els.learningResumeModalObjective.textContent = objective;
+    }
+    els.learningResumeModal.classList.remove('hidden');
+    els.learningResumeModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeLearningResumeModal() {
+    if (!els.learningResumeModal) return;
+    els.learningResumeModal.classList.add('hidden');
+    els.learningResumeModal.setAttribute('aria-hidden', 'true');
+    pendingResumeContext = null;
 }
 
 function hideWelcome() {
@@ -1027,13 +1119,18 @@ async function sendMessage(text) {
             if (!created || !created.session_id) {
                 return;
             }
-            await selectSession(created.session_id, created.objective?.text || '研习');
             if (created.reused_active_unit) {
+                // 409 路径不再静默 hydrate + toast；交给用户在 modal 里明确选。
+                // 原文本回写到输入框，用户决定后可以再发送或修改。
                 els.messageInput.value = text.trim();
                 autoResizeTextarea();
-                showToast('已有未停止的研习卷；先学到这里后再发送新主题');
+                openLearningResumeModal({
+                    activeUnit: created,
+                    seedText: text.trim(),
+                });
                 return;
             }
+            await selectSession(created.session_id, created.objective?.text || '研习');
         } else {
             const session = await createSession();
             if (!session) return;
@@ -1345,18 +1442,24 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
 // (visibility-change avatar refresh removed along with external avatar fetch.)
 
 // 弹窗关闭
-[els.memoryModal, els.deleteModal, els.learningStopModal].forEach(modal => {
+[els.memoryModal, els.deleteModal, els.learningStopModal, els.learningResumeModal].forEach(modal => {
     if (!modal) return;
     modal.querySelector('.modal-overlay').addEventListener('click', () => {
         modal.classList.add('hidden');
         if (modal === els.learningStopModal) {
             modal.setAttribute('aria-hidden', 'true');
         }
+        if (modal === els.learningResumeModal) {
+            closeLearningResumeModal();
+        }
     });
     modal.querySelector('.btn-close').addEventListener('click', () => {
         modal.classList.add('hidden');
         if (modal === els.learningStopModal) {
             modal.setAttribute('aria-hidden', 'true');
+        }
+        if (modal === els.learningResumeModal) {
+            closeLearningResumeModal();
         }
     });
 });
@@ -1378,6 +1481,99 @@ if (els.btnNewTopicAfterStop) {
         localStorage.removeItem('lastSessionId');
         document.querySelectorAll('.session-item').forEach(li => li.classList.remove('active'));
         showWelcome();
+    });
+}
+
+// 研习卷复用确认弹窗 —— 由 sendMessage 在 reused_active_unit 时打开。
+if (els.btnContinueActive) {
+    els.btnContinueActive.addEventListener('click', async () => {
+        const ctx = pendingResumeContext;
+        if (!ctx || !ctx.activeUnit || !ctx.activeUnit.session_id) {
+            closeLearningResumeModal();
+            return;
+        }
+        const unit = ctx.activeUnit;
+        const seedText = ctx.seedText || '';
+        closeLearningResumeModal();
+        try {
+            await selectSession(unit.session_id, unit.objective?.text || '研习');
+            els.messageInput.value = seedText;
+            autoResizeTextarea();
+            els.messageInput.focus();
+        } catch (err) {
+            console.warn('继续未完成研习卷失败:', err);
+            alert('打开研习卷失败: ' + err.message);
+        }
+    });
+}
+
+if (els.btnStopAndNew) {
+    els.btnStopAndNew.addEventListener('click', async () => {
+        const ctx = pendingResumeContext;
+        if (!ctx || !ctx.activeUnit || !ctx.activeUnit.id) {
+            closeLearningResumeModal();
+            return;
+        }
+        const oldUnitId = ctx.activeUnit.id;
+        const seedText = ctx.seedText || '';
+        els.btnStopAndNew.disabled = true;
+        els.btnContinueActive && (els.btnContinueActive.disabled = true);
+        try {
+            await stopLearningUnitById(oldUnitId);
+            closeLearningResumeModal();
+            // 老卷停掉后，再走一次创建路径，这次后端不会再 409。
+            if (typeof window.__createLearningUnit !== 'function') {
+                showToast('研习模块尚未加载完成，请稍后再试');
+                return;
+            }
+            const created = await window.__createLearningUnit(seedText);
+            if (created && created.session_id && !created.reused_active_unit) {
+                await selectSession(created.session_id, created.objective?.text || '研习');
+                els.messageInput.value = seedText;
+                autoResizeTextarea();
+                els.messageInput.focus();
+            }
+        } catch (err) {
+            console.warn('停掉旧卷开新主题失败:', err);
+            alert('操作失败: ' + err.message);
+        } finally {
+            els.btnStopAndNew.disabled = false;
+            els.btnContinueActive && (els.btnContinueActive.disabled = false);
+        }
+    });
+}
+
+// 欢迎页"未完成研习卷"横幅 —— 事件代理，区分 continue / stop 两个动作。
+if (els.welcomeActiveUnits) {
+    els.welcomeActiveUnits.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const action = btn.getAttribute('data-action');
+        const unitId = btn.getAttribute('data-unit-id');
+        const sessionId = btn.getAttribute('data-session-id');
+        if (action === 'continue') {
+            if (!sessionId) return;
+            try {
+                await switchMode('learning');
+                await selectSession(sessionId, '研习');
+            } catch (err) {
+                console.warn('从欢迎页进入未完成研习卷失败:', err);
+                alert('打开研习卷失败: ' + err.message);
+            }
+            return;
+        }
+        if (action === 'stop') {
+            if (!unitId) return;
+            btn.disabled = true;
+            try {
+                await stopLearningUnitById(unitId);
+                await refreshWelcomeActiveUnits();
+            } catch (err) {
+                console.warn('停掉研习卷失败:', err);
+                alert('停掉研习卷失败: ' + err.message);
+                btn.disabled = false;
+            }
+        }
     });
 }
 

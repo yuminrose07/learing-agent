@@ -464,6 +464,22 @@ test('研习 UI 暴露停止动作和常驻状态事件', () => {
     assert.match(APP_SOURCE, /LEARNING_PHASE_LABELS/);
 });
 
+test('欢迎页暴露未完成研习卷入口与显式复用确认弹窗', () => {
+    // 欢迎页占位 + 研习未完成 modal 必须存在于 index.html。
+    assert.match(INDEX_SOURCE, /id="welcome-active-units"/);
+    assert.match(INDEX_SOURCE, /id="learning-resume-modal"/);
+    assert.match(INDEX_SOURCE, /id="btn-continue-active"/);
+    assert.match(INDEX_SOURCE, /id="btn-stop-and-new"/);
+    // app.js 提供横幅渲染 + 复用 modal 的 open/close 入口。
+    assert.match(APP_SOURCE, /fetchActiveLearningUnits/);
+    assert.match(APP_SOURCE, /renderWelcomeActiveUnits/);
+    assert.match(APP_SOURCE, /openLearningResumeModal/);
+    assert.match(APP_SOURCE, /closeLearningResumeModal/);
+    // 旧的静默 toast 不应再出现 —— 已替换为显式 modal。
+    assert.doesNotMatch(APP_SOURCE, /已有未停止的研习卷[;；]先学到这里后再发送新主题/);
+    assert.doesNotMatch(LEARNING_UNIT_UI_SOURCE, /已回到未完成的研习卷/);
+});
+
 test('研习前端模式发送到后端时映射为 chat', () => {
     const {
         normalizeFrontendMode,
@@ -482,7 +498,7 @@ test('研习前端模式发送到后端时映射为 chat', () => {
     assert.match(APP_SOURCE, /created\.reused_active_unit/);
 });
 
-test('创建研习卷遇到 active unit 冲突时自动恢复已有卷', async () => {
+test('创建研习卷遇到 active unit 冲突时仅返回标记不再自动 hydrate 或弹 toast', async () => {
     const calls = [];
     const alerts = [];
     const toasts = [];
@@ -520,13 +536,17 @@ test('创建研习卷遇到 active unit 冲突时自动恢复已有卷', async (
 
     const result = await sandbox.window.__createLearningUnit('新的主题');
 
+    // 仍然返回带 reused_active_unit 标记的 unit，让 app.js 触发 #learning-resume-modal。
     assert.equal(result.session_id, 'sess-active');
     assert.equal(result.id, 'lu-active');
     assert.equal(result.reused_active_unit, true);
-    assert.equal(sandbox.window.__learningUnitUI.state.unitId, 'lu-active');
-    assert.equal(sandbox.window.__learningUnitUI.state.sessionId, 'sess-active');
+    // 关键变化：不再自动 hydrate 内部 state（推迟到 app.js 由用户确认后通过
+    // selectSession 触发 learning-unit:session-loaded 走标准 hydrate 路径），
+    // 也不再静默弹"已回到未完成的研习卷" toast。
+    assert.equal(sandbox.window.__learningUnitUI.state.unitId, null);
+    assert.equal(sandbox.window.__learningUnitUI.state.sessionId, null);
     assert.deepEqual(alerts, []);
-    assert.deepEqual(toasts, ['已回到未完成的研习卷']);
+    assert.deepEqual(toasts, []);
     assert.equal(calls.length, 2);
 });
 

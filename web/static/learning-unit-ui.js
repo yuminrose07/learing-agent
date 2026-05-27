@@ -96,11 +96,10 @@
         const sessionId = unit.session_id || error.payload.active_session_id || null;
         if (!sessionId) return null;
 
-        state.sessionId = sessionId;
-        hydrateFromUnit(unit, sessionId);
-        if (typeof window.__appShowToast === 'function') {
-            window.__appShowToast('已回到未完成的研习卷');
-        }
+        // 仅"探测 + fetch + 打标"，不再自动 hydrate / 不再 toast。
+        // 让 app.js 弹出 #learning-resume-modal 由用户明确选择「继续」/「先停掉开新」。
+        // 用户选「继续」后会走 selectSession → dispatch learning-unit:session-loaded →
+        // 由 learning-unit-ui.js:466-487 触发 hydrateFromUnit，路径与冷启动一致。
         return {
             ...unit,
             session_id: sessionId,

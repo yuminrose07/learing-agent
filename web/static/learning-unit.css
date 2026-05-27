@@ -385,3 +385,78 @@
         font-size: 16px;
     }
 }
+
+/* ============================================================
+ * 欢迎页"未完成研习卷"横幅
+ * 仅在 GET /learning-units 命中 phase ∈ {absorbing, outputting} 时显示。
+ * 卡片视觉与 #learning-unit-card 同语言（vermillion 左条 + paper-1 底），
+ * 让用户在欢迎页就感知到"上一卷还没学完"，并提供两个明确动作。
+ * ============================================================ */
+.welcome-active-units {
+    width: 100%;
+    max-width: 760px;
+    margin: 0 auto 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.welcome-active-units.hidden { display: none; }
+
+.welcome-active-unit-card {
+    padding: 14px 18px;
+    background: var(--paper-1);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--vermillion);
+    border-radius: 0 var(--r-sm, 6px) var(--r-sm, 6px) 0;
+    box-shadow: var(--shadow-soft, 0 1px 2px rgba(0, 0, 0, 0.04));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: left;
+}
+
+.welcome-active-unit-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.welcome-active-unit-kicker {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-4);
+}
+
+.welcome-active-unit-title {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--ink);
+}
+
+.welcome-active-unit-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+    .welcome-active-unit-actions {
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
+    .welcome-active-unit-actions .lu-btn {
+        width: 100%;
+    }
+}
+
+/* 复用确认弹窗的层叠次序：略高于 stop-modal（120），
+ * 避免极端边缘情况下两个 modal 叠在一起时 resume 在后。 */
+#learning-resume-modal {
+    z-index: 130;
+}
