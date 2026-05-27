@@ -60,6 +60,31 @@ def test_replay_events_stops_on_seq_gap():
     assert snapshot.corrupt_events[0]["expected_seq"] == 2
 
 
+def test_replay_restores_learning_unit_binding():
+    sid = "sess-learning"
+    created = SessionEvent(
+        seq=1,
+        event_id="evt-created",
+        session_id=sid,
+        type=SessionEventType.SESSION_CREATED,
+        payload={"title": "Learning Session", "mode": "chat"},
+    )
+    bound = SessionEvent(
+        seq=2,
+        event_id="evt-bound",
+        session_id=sid,
+        type=SessionEventType.SESSION_LEARNING_UNIT_BOUND,
+        payload={"learning_unit_id": "lu-123"},
+        visibility=EventVisibility.SYSTEM,
+    )
+
+    snapshot = replay_events([created, bound], session_id=sid)
+    session = snapshot.to_learning_session()
+
+    assert snapshot.learning_unit_id == "lu-123"
+    assert session.learning_unit_id == "lu-123"
+
+
 def test_project_legacy_session_linearizes_current_leaf_path():
     root = SessionEntry(
         id="entry-root",

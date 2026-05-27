@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from random import choice
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -68,14 +67,13 @@ class PreparedSessionTurn(BaseModel):
     runtime_input: str
     profile: TurnExecutionProfile
     stream_metadata: dict[str, Any] = Field(default_factory=dict)
-    capture_response_as_confirmed_input: bool = False
     compaction_plan: Any = None
 
 
 CHAT_PROFILE = ModeProfile(
     mode=AgentMode.CHAT,
     system_prompt="",
-    tools_enabled=["read_file", "grep", "write_file", "edit_file"],
+    tools_enabled=["read_file", "grep", "web_search", "web_fetch", "write_file", "edit_file"],
     context_budget="light",
     response_style="direct",
     micro_compact_enabled=False,
@@ -98,7 +96,7 @@ ASK_PROFILE = ModeProfile(
 STUDY_PROFILE = ModeProfile(
     mode=AgentMode.STUDY,
     system_prompt="",
-    tools_enabled=["read_file", "grep", "write_file", "edit_file"],
+    tools_enabled=["read_file", "grep", "web_search", "web_fetch", "write_file", "edit_file"],
     memory_read=True,
     memory_write=True,
     context_budget="heavy",
@@ -135,10 +133,12 @@ NEUTRAL_GUARDRAILS = (
     "## 工具使用优先级\n"
     "按以下优先级选择工具，能用高优先级工具解决的，绝不降级使用低优先级工具。\n"
     "\n"
-    "### 第一优先级:信息获取（grep → read_file）\n"
+    "### 第一优先级:信息获取（grep / web_search → read_file / web_fetch）\n"
     "- **grep**：不确定内容位置时，先用 grep 搜索关键词定位行号。\n"
+    "- **web_search**：需要项目外、最新、官方或社区资料时，先搜索外部来源，再继续抓取正文。\n"
     "- **read_file**：查看文件内容。支持 offset/limit 分页。"
     "大文件不要一次请求全文，先用 grep 找到相关区域，再分段精读。\n"
+    "- **web_fetch**：在已经拿到可信 URL 后抓取网页正文。长网页不要反复全文抓取，优先分页继续读。\n"
     "\n"
     "### 第二优先级：文件修改（edit_file → write_file）\n"
     "- **edit_file**：对已有文件做精确文本替换。"
@@ -353,6 +353,7 @@ def build_turn_profile(
     persona_key: str | None = None,
     turn_kind: TurnExecutionKind | None = None,
     override_system_prompt: str | None = None,
+    system_prompt_addendum: str | None = None,
     override_tools: list[str] | None = None,
     user_message_metadata: dict[str, Any] | None = None,
     assistant_message_metadata: dict[str, Any] | None = None,
@@ -365,10 +366,13 @@ def build_turn_profile(
         "persona_name": persona.display_name,
         "persona_role": persona.role_name,
     }
+    base_prompt = override_system_prompt or build_system_prompt(mode, persona)
+    if system_prompt_addendum:
+        base_prompt = f"{base_prompt}\n\n{system_prompt_addendum}"
     return TurnExecutionProfile(
         mode=profile.mode,
         turn_kind=turn_kind or profile.default_turn_kind,
-        system_prompt=override_system_prompt or build_system_prompt(mode, persona),
+        system_prompt=base_prompt,
         visible_tools=override_tools if override_tools is not None else list(profile.tools_enabled),
         memory_read=profile.memory_read,
         memory_write=profile.memory_write,
@@ -380,29 +384,3 @@ def build_turn_profile(
         user_message_metadata={**default_metadata, **(user_message_metadata or {})},
         assistant_message_metadata={**default_metadata, **(assistant_message_metadata or {})},
     )
-
-
-def is_confirmation_message(user_input: str) -> bool:
-    """判断用户输入是否为对齐确认。"""
-
-    text = user_input.strip().lower()
-    negation_patterns = {
-        "不对", "不好", "不行", "不要", "不用", "不可以", "不能",
-        "没", "没有", "否", "不是", "错了", "别",
-        "no", "not", "don't", "dont", "cannot", "can't", "cant",
-        "won't", "wouldn't", "nope", "wrong", "incorrect",
-    }
-    for neg in negation_patterns:
-        if neg in text:
-            return False
-
-    confirm_keywords = {
-        "确认", "是的", "没错", "ok", "好", "好的",
-        "可以", "行", "没问题", "正确", "就这样", "开始吧",
-        "yes", "y", "sure", "confirm", "correct", "go ahead",
-        "please proceed", "proceed", "do it", "准备好了",
-    }
-    for kw in confirm_keywords:
-        if text == kw or text.startswith(kw + "，") or text.startswith(kw + ",") or text.startswith(kw + " "):
-            return True
-    return False

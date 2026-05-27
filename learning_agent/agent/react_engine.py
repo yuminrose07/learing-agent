@@ -211,7 +211,8 @@ class ReActEngine:
                     content=(
                         "\n[Context limit reached. Switching to chat-only mode for this turn. "
                         "Please narrow the file range or search with grep first.]\n"
-                    )
+                    ),
+                    metadata={"stream_error": True, "stream_error_reason": "context_limit"},
                 )
                 return
             except RetryableError:
@@ -221,7 +222,10 @@ class ReActEngine:
                     continue
                 raise
             except (AuthError, InvalidRequestError) as e:
-                yield ChatChunk(content=f"\n[Error] {e}\n")
+                yield ChatChunk(
+                    content=f"\n[Error] {e}\n",
+                    metadata={"stream_error": True, "stream_error_reason": "provider_error"},
+                )
                 return
             except Exception:
                 # 未知异常不归入重试，向上传播

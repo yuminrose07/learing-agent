@@ -25,6 +25,7 @@ from learning_agent.agent.observability import ObservabilityCollector
 from learning_agent.agent.runtime_ports import SessionEventWriter, SessionStore, ToolExecutionService
 from learning_agent.agent.tool_failure_tracker import ToolFailureTracker
 from learning_agent.agent.tool_validator import ToolInputValidator
+from learning_agent.agent.unresolved_failure_logger import UnresolvedFailureLogger
 from learning_agent.ai import (
     AgentEventType,
     AfterToolExecuteInput,
@@ -39,6 +40,39 @@ from learning_agent.ai import (
 from learning_agent.learning_agent.session_events import EventVisibility, SessionEventType
 
 logger = logging.getLogger(__name__)
+
+
+class _StructuredToolFailure(Exception):
+    """工具返回的结构化失败结果，被收口成与异常等价的失败语义。"""
+
+    def __init__(self, payload: dict[str, Any], retryable: bool, reason_code: str, message: str):
+        super().__init__(message)
+        self.payload = payload
+        self.retryable = retryable
+        self.reason_code = reason_code
+        self.message = message
+
+
+def _detect_structured_failure(result: Any) -> Optional[_StructuredToolFailure]:
+    """识别工具返回值中的结构化失败。兼容两种现有 schema:
+
+    1. 嵌套：``{"error": {"code": ..., "message": ..., "retryable": ...}}``
+    2. 扁平：``{"error": "..."}``
+
+    若 result 不是失败，返回 None。
+    """
+    if not isinstance(result, dict):
+        return None
+    err = result.get("error")
+    if err is None:
+        return None
+    if isinstance(err, dict):
+        reason_code = str(err.get("code") or "TOOL_ERROR")
+        message = str(err.get("message") or err.get("error") or "Tool reported a structured error")
+        retryable = bool(err.get("retryable", False))
+        return _StructuredToolFailure(result, retryable, reason_code, message)
+    message = str(err)
+    return _StructuredToolFailure(result, False, "TOOL_ERROR", message)
 
 
 class ToolExecutor:
@@ -69,6 +103,7 @@ class ToolExecutor:
         observability: Optional[ObservabilityCollector] = None,
         is_retryable_fn: Optional[callable] = None,
         event_writer: Optional[SessionEventWriter] = None,
+        unresolved_failure_logger: Optional[UnresolvedFailureLogger] = None,
     ):
         self.hooks = hooks
         self.validator = validator
@@ -82,6 +117,8 @@ class ToolExecutor:
         # L1 trace writer（可选）。若注入则在工具执行流水线发射 tool.exec_* 诊断事件，
         # 这些事件 visibility=observability，不参与 replay/projection，仅做因果链追踪。
         self._event_writer = event_writer
+        # 不可恢复失败的"内部账本"。所有最终对用户隐藏的失败都会落一条。
+        self._unresolved_logger = unresolved_failure_logger
 
     # ── 批量执行 ──
 
@@ -97,18 +134,58 @@ class ToolExecutor:
         """
         执行全部 tool calls，返回结构化结果列表。
         每个结果 dict 包含：tool_call, result, is_error, display_result_override, extra_metadata
+
+        契约：本方法对调用方不抛业务异常 —— 任何工具执行链路内部的意外
+        异常都会被转成 is_error=True 的 outcome，保证 ReAct 主循环不被
+        单个工具的崩溃打断。仅当解释器层异常（KeyboardInterrupt 等）才向上传播。
         """
         results: list[dict[str, Any]] = []
         for tc in tool_calls:
             tool_span = self.obs.start_span("tool.execute", parent=parent_span, trace_id=trace_id) if self.obs else None
             try:
-                result = await self._execute_one(
-                    session, tc, turn_count, tool_span, trace_id, build_hook_context
-                )
+                try:
+                    result = await self._execute_one(
+                        session, tc, turn_count, tool_span, trace_id, build_hook_context
+                    )
+                except Exception as exc:
+                    # 工具流水线层意外异常（hook dispatch、event 投递、Pydantic 校验等）
+                    # 不允许打断整轮。统一转成 is_error=True 的 outcome，并落入失败账本。
+                    logger.exception(
+                        "[ToolExecutor] Unexpected pipeline failure for tool '%s'",
+                        tc.tool_id,
+                    )
+                    if self._unresolved_logger is not None:
+                        try:
+                            await self._unresolved_logger.record(
+                                session_id=session.id,
+                                layer="tool_executor_pipeline",
+                                reason_code="pipeline_exception",
+                                message=f"{type(exc).__name__}: {exc}",
+                                tool_id=tc.tool_id,
+                                arguments=dict(tc.arguments) if tc.arguments else None,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "[ToolExecutor] unresolved_logger.record failed (non-fatal)"
+                            )
+                    tc.error = str(exc)
+                    result = {
+                        "tool_call": tc,
+                        "result": f"[Error] {exc}",
+                        "is_error": True,
+                        "display_result_override": None,
+                        "extra_metadata": {"pipeline_failure": True},
+                    }
                 results.append(result)
             finally:
                 if self.obs:
-                    self.obs.end_span(tool_span, trace_id=trace_id)
+                    try:
+                        self.obs.end_span(tool_span, trace_id=trace_id)
+                    except Exception:
+                        # 可观测性 bug 绝不允许吃掉工具结果或打断后续工具执行。
+                        logger.exception(
+                            "[ToolExecutor] obs.end_span raised (suppressed)"
+                        )
         return results
 
     # ── 单工具执行 ──
@@ -247,6 +324,12 @@ class ToolExecutor:
                 )
                 exec_start_ts = time.monotonic()
                 result = await self.tool_service.execute_tool_call(tc, timeout=timeout)
+                # 收口：工具用 dict 形式返回的结构化失败，与异常等价处理。
+                # 之前这里会被当成 success=True 写入 session，导致 failure_tracker
+                # 失真、chat-only fallback 永远不触发、错误对象被原样塞给 LLM。
+                structured_failure = _detect_structured_failure(result)
+                if structured_failure is not None:
+                    raise structured_failure
                 latency_ms = (time.monotonic() - exec_start_ts) * 1000.0
                 self._emit_exec_completed(
                     session_id=session.id,
@@ -287,7 +370,13 @@ class ToolExecutor:
                     parent_event_id=started_event_id,
                 )
                 last_error = e
-                is_retryable = self._is_retryable(e)
+                # 结构化失败：retryable 取自工具自己的 hint；普通异常走默认判定。
+                if isinstance(e, _StructuredToolFailure):
+                    is_retryable = e.retryable
+                    reason_code = e.reason_code
+                else:
+                    is_retryable = self._is_retryable(e)
+                    reason_code = "execution_error"
 
                 if tool_retry_count < max_tool_retries and is_retryable:
                     tool_retry_count += 1
@@ -316,11 +405,31 @@ class ToolExecutor:
                     await asyncio.sleep(delay)
                     continue
                 else:
-                    self.failure_tracker.record_failure(tc.tool_id, turn_count=0, reason="execution_error")
+                    self.failure_tracker.record_failure(tc.tool_id, turn_count=0, reason=reason_code)
                     tc.error = str(last_error)
-                    final_result = f"[Error] {last_error}"
+                    # 结构化失败保留原 payload（给 LLM 一个可读的失败摘要），
+                    # 普通异常仍走 "[Error] xxx" 的可读字符串。
+                    if isinstance(last_error, _StructuredToolFailure):
+                        final_result = last_error.payload
+                    else:
+                        final_result = f"[Error] {last_error}"
                     final_error = str(last_error)
                     success = False
+                    if self._unresolved_logger is not None:
+                        try:
+                            await self._unresolved_logger.record(
+                                session_id=session.id,
+                                layer="tool_executor",
+                                reason_code=reason_code,
+                                message=str(last_error),
+                                tool_id=tc.tool_id,
+                                arguments=dict(tc.arguments) if tc.arguments else None,
+                                extra={"retry_count": tool_retry_count},
+                            )
+                        except Exception:
+                            logger.exception(
+                                "[ToolExecutor] unresolved_logger.record failed (non-fatal)"
+                            )
                     await self.events.publish(
                         Event(
                             type="agent.toolResult",
@@ -336,7 +445,7 @@ class ToolExecutor:
                             "tool_id": tc.tool_id,
                             "result": str(last_error),
                             "is_error": True,
-                            "reason": "execution_error",
+                            "reason": reason_code,
                         }
                     )
                     break

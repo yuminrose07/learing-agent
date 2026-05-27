@@ -60,6 +60,7 @@ class LearningUnitStore:
                 raw = self._file_store.load_learning_unit(unit_id)
                 if raw is None:
                     continue
+                raw = _project_legacy_unit(raw)
                 unit = LearningUnit.model_validate(raw)
                 self._units[unit.id] = unit
             except Exception:
@@ -162,3 +163,30 @@ class LearningUnitStore:
 
 
 __all__ = ["LearningUnitStore", "ActiveUnitExistsError"]
+
+
+def _project_legacy_unit(raw: dict) -> dict:
+    """旧 JSON 数据加载时的投影迁移（adaptive alignment §8.4）。
+
+    旧 schema 里 ``phase=aligning`` 表示"学习卷起步阶段，必须先走 ASK"。
+    新 schema 里这条主链已被移除，对齐降级为 ``alignment_state`` 旁路。
+
+    迁移规则：
+    - ``phase == "aligning"`` → ``phase = "absorbing"``,
+      ``alignment_state = "active"``, ``objective_status = "working"``
+    - ``aligning_round`` 字段被丢弃（已无意义）。
+    - 其他 phase 不动；缺失的新字段交给 Pydantic 默认值兜底。
+
+    这是纯读侧投影：不回写历史 events，原地翻译后由 ``save`` 用新 schema 覆写。
+    """
+    if not isinstance(raw, dict):
+        return raw
+    phase = raw.get("phase")
+    if phase == "aligning":
+        raw = dict(raw)  # 不污染调用方传入对象
+        raw["phase"] = "absorbing"
+        raw.setdefault("alignment_state", "active")
+        raw.setdefault("objective_status", "working")
+    # 旧字段无意义，直接丢弃（Pydantic 默认会忽略，但显式更稳）
+    raw.pop("aligning_round", None)
+    return raw

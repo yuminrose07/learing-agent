@@ -5,8 +5,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const APP_PATH = path.join(__dirname, '..', 'web', 'static', 'app.js');
+const INDEX_PATH = path.join(__dirname, '..', 'web', 'index.html');
+const LEARNING_UNIT_UI_PATH = path.join(__dirname, '..', 'web', 'static', 'learning-unit-ui.js');
+const STYLE_PATH = path.join(__dirname, '..', 'web', 'static', 'style.css');
 const MARKDOWN_IT_PATH = path.join(__dirname, '..', 'web', 'static', 'vendor', 'markdown-it.min.js');
 const APP_SOURCE = fs.readFileSync(APP_PATH, 'utf8');
+const INDEX_SOURCE = fs.readFileSync(INDEX_PATH, 'utf8');
+const LEARNING_UNIT_UI_SOURCE = fs.readFileSync(LEARNING_UNIT_UI_PATH, 'utf8');
+const STYLE_SOURCE = fs.readFileSync(STYLE_PATH, 'utf8');
 const MARKDOWN_IT_SOURCE = fs.readFileSync(MARKDOWN_IT_PATH, 'utf8');
 const APP_SOURCE_BEFORE_BINDINGS = APP_SOURCE.split('// ─── 事件绑定 ───')[0];
 
@@ -164,6 +170,7 @@ class FakeElement {
 class FakeDocument {
     constructor() {
         this.elementsById = new Map();
+        this.listeners = new Map();
         this.body = new FakeElement('body', this);
         this.body.className = '';
         this._topbar = new FakeElement('div', this);
@@ -200,7 +207,17 @@ class FakeDocument {
         return [];
     }
 
-    addEventListener() {}
+    addEventListener(type, handler) {
+        const handlers = this.listeners.get(type) || [];
+        handlers.push(handler);
+        this.listeners.set(type, handlers);
+    }
+
+    dispatchEvent(event) {
+        const handlers = this.listeners.get(event.type) || [];
+        for (const handler of handlers) handler(event);
+        return true;
+    }
 }
 
 function matchesSimpleSelector(node, selectorPart) {
@@ -290,6 +307,9 @@ module.exports = {
     renderChatMarkdown,
     addMessage,
     normalizeUsage,
+    normalizeFrontendMode,
+    modeFromSession,
+    backendModeForFrontendMode,
     formatUsageNumber,
     formatUsagePercent,
     els,
@@ -298,6 +318,31 @@ module.exports = {
 
     vm.runInNewContext(APP_SOURCE_BEFORE_BINDINGS + exportCode, sandbox, { filename: APP_PATH });
     return sandbox.module.exports;
+}
+
+function loadLearningUnitUIForTest(fetchImpl, extraWindow = {}) {
+    const document = new FakeDocument();
+    const sandbox = {
+        console,
+        document,
+        window: {
+            document,
+            location: { origin: 'http://127.0.0.1:8000' },
+            ...extraWindow,
+        },
+        fetch: fetchImpl,
+        alert: extraWindow.alert || (() => {}),
+        encodeURIComponent,
+        CustomEvent: class CustomEvent {
+            constructor(type, init = {}) {
+                this.type = type;
+                this.detail = init.detail;
+            }
+        },
+    };
+
+    vm.runInNewContext(LEARNING_UNIT_UI_SOURCE, sandbox, { filename: LEARNING_UNIT_UI_PATH });
+    return sandbox;
 }
 
 test('upsertAssistantUsage 区分 estimated 与 actual 展示', () => {
@@ -387,6 +432,178 @@ test('renderHistoryMessage 从 metadata.turn_usage 回放 usage 展示', () => {
     assert.match(usageBlock.innerHTML, /上限 128,000/);
     assert.match(usageBlock.innerHTML, /占比 0\.5%/);
     assert.match(usageBlock.innerHTML, /估算/);
+});
+
+test('前端只暴露闲谈与研习入口', () => {
+    assert.match(INDEX_SOURCE, /id="btn-mode-chat"/);
+    assert.match(INDEX_SOURCE, /id="btn-mode-learning"/);
+    assert.match(INDEX_SOURCE, />闲谈</);
+    assert.match(INDEX_SOURCE, />研习</);
+    assert.match(INDEX_SOURCE, /闲谈和研习彼此独立/);
+    assert.doesNotMatch(INDEX_SOURCE, /btn-mode-ask|btn-mode-study/);
+    assert.doesNotMatch(INDEX_SOURCE, /data-mode="ask"|data-mode="study"/);
+    assert.doesNotMatch(INDEX_SOURCE, /Ask|Study|问道|学习模式/);
+});
+
+test('历史会话列表用服务端绑定状态区分闲谈与研习', () => {
+    assert.match(APP_SOURCE, /const sessionMode = modeFromSession\(s\)/);
+    assert.match(APP_SOURCE, /session-mode-badge session-mode-\$\{sessionMode\}/);
+    assert.match(APP_SOURCE, /li\.dataset\.mode = sessionMode/);
+    assert.match(STYLE_SOURCE, /\.session-mode-chat/);
+    assert.match(STYLE_SOURCE, /\.session-mode-learning/);
+});
+
+test('研习 UI 暴露停止动作和常驻状态事件', () => {
+    assert.match(LEARNING_UNIT_UI_SOURCE, /data-action="stop"/);
+    assert.match(LEARNING_UNIT_UI_SOURCE, /先学到这里/);
+    assert.ok(LEARNING_UNIT_UI_SOURCE.includes('/learning-units/${encodeURIComponent(uid)}/stop'));
+    assert.match(LEARNING_UNIT_UI_SOURCE, /learning-unit:state/);
+    assert.match(INDEX_SOURCE, /id="learning-stop-modal"/);
+    assert.match(INDEX_SOURCE, /开始新主题/);
+    assert.match(APP_SOURCE, /openLearningStopModal/);
+    assert.match(APP_SOURCE, /LEARNING_PHASE_LABELS/);
+});
+
+test('研习前端模式发送到后端时映射为 chat', () => {
+    const {
+        normalizeFrontendMode,
+        modeFromSession,
+        backendModeForFrontendMode,
+    } = loadAppForTest();
+
+    assert.equal(normalizeFrontendMode('chat'), 'chat');
+    assert.equal(normalizeFrontendMode('learning'), 'learning');
+    assert.equal(normalizeFrontendMode('ask'), 'chat');
+    assert.equal(modeFromSession({ mode: 'chat', learning_unit_id: 'unit-1' }), 'learning');
+    assert.equal(modeFromSession({ mode: 'ask', learning_unit_id: null }), 'chat');
+    assert.equal(backendModeForFrontendMode('learning'), 'chat');
+    assert.equal(backendModeForFrontendMode('chat'), 'chat');
+    assert.doesNotMatch(APP_SOURCE, /mode:\s*currentMode/);
+    assert.match(APP_SOURCE, /created\.reused_active_unit/);
+});
+
+test('创建研习卷遇到 active unit 冲突时自动恢复已有卷', async () => {
+    const calls = [];
+    const alerts = [];
+    const toasts = [];
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        calls.push({ url, method: opts.method, body: opts.body });
+        if (url.endsWith('/learning-units') && opts.method === 'POST') {
+            return {
+                ok: false,
+                status: 409,
+                json: async () => ({
+                    detail: 'An active learning unit already exists; close it first.',
+                    active_unit_id: 'lu-active',
+                }),
+            };
+        }
+        if (url.endsWith('/learning-units/lu-active') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-active',
+                    session_id: 'sess-active',
+                    phase: 'absorbing',
+                    alignment_state: 'none',
+                    objective_status: 'working',
+                    objective: { text: '未完成研习卷' },
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    }, {
+        alert: (message) => alerts.push(message),
+        __appShowToast: (message) => toasts.push(message),
+    });
+
+    const result = await sandbox.window.__createLearningUnit('新的主题');
+
+    assert.equal(result.session_id, 'sess-active');
+    assert.equal(result.id, 'lu-active');
+    assert.equal(result.reused_active_unit, true);
+    assert.equal(sandbox.window.__learningUnitUI.state.unitId, 'lu-active');
+    assert.equal(sandbox.window.__learningUnitUI.state.sessionId, 'sess-active');
+    assert.deepEqual(alerts, []);
+    assert.deepEqual(toasts, ['已回到未完成的研习卷']);
+    assert.equal(calls.length, 2);
+});
+
+test('研习卷停止动作会调用 stop API 并派发带主题的 stopped 事件', async () => {
+    const calls = [];
+    const stoppedEvents = [];
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        calls.push({ url, method: opts.method, body: opts.body });
+        if (url.endsWith('/learning-units/lu-stop') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-stop',
+                    session_id: 'sess-stop',
+                    phase: 'absorbing',
+                    alignment_state: 'none',
+                    objective_status: 'working',
+                    objective: { text: '停止前目标' },
+                }),
+            };
+        }
+        if (url.endsWith('/learning-units/lu-stop/stop') && opts.method === 'POST') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-stop',
+                    session_id: 'sess-stop',
+                    phase: 'stopped',
+                    alignment_state: 'skipped',
+                    objective_status: 'working',
+                    objective: { text: '停止前目标' },
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.document.addEventListener('learning-unit:stopped', (ev) => {
+        stoppedEvents.push(ev.detail);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-stop';
+    sandbox.window.__learningUnitUI.state.unitId = 'lu-stop';
+    await sandbox.window.__learningUnitUI.refreshUnit();
+
+    const card = sandbox.document.getElementById('learning-unit-card');
+    const stopButton = {
+        disabled: false,
+        parentNode: card,
+        getAttribute(name) {
+            return name === 'data-action' ? 'stop' : null;
+        },
+        closest() {
+            return this;
+        },
+    };
+    const clickHandlers = card.listeners.get('click') || [];
+    assert.equal(clickHandlers.length, 1);
+
+    clickHandlers[0]({ target: stopButton });
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(sandbox.window.__learningUnitUI.state.phase, 'stopped');
+    assert.equal(stoppedEvents.length, 1);
+    assert.equal(stoppedEvents[0].sessionId, 'sess-stop');
+    assert.equal(stoppedEvents[0].unitId, 'lu-stop');
+    assert.equal(stoppedEvents[0].phase, 'stopped');
+    assert.equal(stoppedEvents[0].objectiveText, '停止前目标');
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1], {
+        url: 'http://127.0.0.1:8000/learning-units/lu-stop/stop',
+        method: 'POST',
+        body: JSON.stringify({ reason: 'user_stopped' }),
+    });
 });
 
 test('renderChatMarkdown 使用 markdown-it 渲染表格与 br 换行', () => {

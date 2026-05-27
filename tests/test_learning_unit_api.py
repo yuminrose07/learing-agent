@@ -8,8 +8,7 @@ mock_system，直接 await 路由函数。覆盖：
 - GET  /learning-units/{id} → 200 / 404
 - POST /learning-units/{id}/confirm-objective → 200；非法状态 400
 - POST /learning-units/{id}/advance → 200；非法过渡 400；未知 unit 404
-- POST /chat-sessions/{id}/promote-to-learning-unit → 200；session 不存在 404；
-  P3 冲突 409
+- 闲聊会话不暴露升格为研习卷的 public API
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, "/Users/roseannk/my-agent")
 
@@ -35,15 +35,20 @@ def mock_system():
     system.list_learning_units = MagicMock(return_value=[])
     system.get_learning_unit = MagicMock(return_value=None)
     system.confirm_learning_unit_objective = MagicMock()
-    system.advance_learning_unit = MagicMock()
-    system.promote_chat_session_to_learning_unit = MagicMock()
+    system.advance_learning_unit = AsyncMock()
+    system.stop_learning_unit = MagicMock()
+    system.request_alignment = AsyncMock()
+    system.accept_assumption = AsyncMock()
+    system.refine_objective = AsyncMock()
+    system.record_reuse_feedback = MagicMock()
+    system.get_learning_unit_metrics = MagicMock()
     return system
 
 
 def _make_unit(
     *,
     session_id: str = "sess-x",
-    phase: str = "aligning",
+    phase: str = "absorbing",
     text: str = "理解 attention",
 ) -> LearningUnit:
     unit = LearningUnit(
@@ -79,11 +84,31 @@ class TestCreateLearningUnit:
 
         assert result["id"] == unit.id
         assert result["session_id"] == session.id
-        assert result["phase"] == "aligning"
+        assert result["phase"] == "absorbing"
         assert result["objective"]["text"] == "理解 attention"
         mock_system.create_learning_unit.assert_called_once_with(
             seed_text="理解 attention",
             source="ai_distilled",
+        )
+
+    def test_http_accepts_user_written_source(self, mock_system, monkeypatch):
+        import learning_agent.web.web_server as web_server
+
+        unit = _make_unit()
+        session = _make_session(unit)
+        mock_system.create_learning_unit.return_value = (session, unit)
+        monkeypatch.setattr(web_server, "_system", mock_system)
+
+        response = TestClient(web_server.app).post(
+            "/learning-units",
+            json={"seed_text": "理解 attention", "source": "user_written"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["session_id"] == session.id
+        mock_system.create_learning_unit.assert_called_once_with(
+            seed_text="理解 attention",
+            source="user_written",
         )
 
     @pytest.mark.asyncio
@@ -112,6 +137,16 @@ class TestCreateLearningUnit:
         body = json.loads(response.body)
         assert body["active_unit_id"] == "lu-active"
         assert "active" in body["detail"].lower()
+
+    def test_http_rejects_promoted_from_chat_source(self):
+        from learning_agent.web.web_server import app
+
+        response = TestClient(app).post(
+            "/learning-units",
+            json={"seed_text": "从闲聊升格", "source": "promoted_from_chat"},
+        )
+
+        assert response.status_code == 422
 
 
 class TestListAndGet:
@@ -226,7 +261,7 @@ class TestAdvance:
             )
 
         assert result["phase"] == "outputting"
-        mock_system.advance_learning_unit.assert_called_once_with(
+        mock_system.advance_learning_unit.assert_awaited_once_with(
             unit.id, "outputting"
         )
 
@@ -238,7 +273,7 @@ class TestAdvance:
         )
 
         mock_system.advance_learning_unit.side_effect = ValueError(
-            "Illegal phase transition: aligning -> consolidated"
+            "Illegal phase transition: absorbing -> consolidated"
         )
 
         with patch(
@@ -274,77 +309,384 @@ class TestAdvance:
         assert exc_info.value.status_code == 404
 
 
-class TestPromoteFromChatSession:
+class TestStop:
     @pytest.mark.asyncio
-    async def test_happy_path_returns_new_unit_payload(self, mock_system):
+    async def test_happy_path_stops_unit(self, mock_system):
         from learning_agent.web.web_server import (
-            PromoteSessionRequest,
-            promote_chat_session_to_learning_unit,
+            StopLearningUnitRequest,
+            stop_learning_unit,
         )
 
-        unit = _make_unit(text="深入研究这个话题")
-        session = _make_session(unit)
-        mock_system.promote_chat_session_to_learning_unit.return_value = (
-            session,
-            unit,
-        )
+        unit = _make_unit(phase="stopped")
+        mock_system.stop_learning_unit.return_value = unit
 
         with patch(
             "learning_agent.web.web_server._get_system", return_value=mock_system
         ):
-            result = await promote_chat_session_to_learning_unit(
-                "sess-origin",
-                PromoteSessionRequest(seed_text="深入研究这个话题"),
+            result = await stop_learning_unit(
+                unit.id, StopLearningUnitRequest(reason="user_stopped")
             )
 
-        assert result["id"] == unit.id
-        assert result["session_id"] == session.id
-        mock_system.promote_chat_session_to_learning_unit.assert_called_once_with(
-            "sess-origin", seed_text="深入研究这个话题"
+        assert result["phase"] == "stopped"
+        mock_system.stop_learning_unit.assert_called_once_with(
+            unit.id,
+            reason="user_stopped",
         )
 
     @pytest.mark.asyncio
-    async def test_chat_session_missing_returns_404(self, mock_system):
+    async def test_unknown_unit_returns_404(self, mock_system):
         from learning_agent.web.web_server import (
-            PromoteSessionRequest,
-            promote_chat_session_to_learning_unit,
+            StopLearningUnitRequest,
+            stop_learning_unit,
         )
 
-        mock_system.promote_chat_session_to_learning_unit.side_effect = KeyError(
-            "sess-missing"
+        mock_system.stop_learning_unit.side_effect = KeyError("lu-missing")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await stop_learning_unit(
+                    "lu-missing", StopLearningUnitRequest(reason="user_stopped")
+                )
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_invalid_stop_returns_400(self, mock_system):
+        from learning_agent.web.web_server import (
+            StopLearningUnitRequest,
+            stop_learning_unit,
+        )
+
+        mock_system.stop_learning_unit.side_effect = ValueError("cannot stop")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await stop_learning_unit(
+                    "lu-x", StopLearningUnitRequest(reason="user_stopped")
+                )
+
+        assert exc_info.value.status_code == 400
+
+
+class TestStrictChatLearningSeparation:
+    def test_chat_promotion_route_is_not_exposed(self):
+        from learning_agent.web.web_server import app
+
+        paths = {getattr(route, "path", None) for route in app.routes}
+
+        assert "/chat-sessions/{session_id}/promote-to-learning-unit" not in paths
+
+
+class TestRequestAlignment:
+    """POST /learning-units/{id}/align — adaptive alignment §6.3。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_active_user_request(self, mock_system):
+        from learning_agent.web.web_server import request_learning_unit_alignment
+
+        unit = _make_unit()
+        unit.alignment_state = "active"
+        unit.alignment_reason = "user_request"
+        mock_system.request_alignment.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await request_learning_unit_alignment(unit.id)
+
+        assert result["alignment_state"] == "active"
+        assert result["alignment_reason"] == "user_request"
+        mock_system.request_alignment.assert_awaited_once_with(unit.id)
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import request_learning_unit_alignment
+
+        mock_system.request_alignment.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await request_learning_unit_alignment("lu-x")
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_wrong_phase_returns_400(self, mock_system):
+        from learning_agent.web.web_server import request_learning_unit_alignment
+
+        mock_system.request_alignment.side_effect = ValueError(
+            "Cannot request alignment in phase 'outputting'"
         )
 
         with patch(
             "learning_agent.web.web_server._get_system", return_value=mock_system
         ):
             with pytest.raises(HTTPException) as exc_info:
-                await promote_chat_session_to_learning_unit(
-                    "sess-missing", PromoteSessionRequest(seed_text="t")
-                )
+                await request_learning_unit_alignment("lu-x")
+        assert exc_info.value.status_code == 400
 
-        assert exc_info.value.status_code == 404
+
+class TestAcceptAssumption:
+    """POST /learning-units/{id}/accept-assumption — §6.3 / §9.3 #3。"""
 
     @pytest.mark.asyncio
-    async def test_active_unit_conflict_returns_409(self, mock_system):
+    async def test_happy_path_returns_skipped_with_cooldown(self, mock_system):
+        from learning_agent.web.web_server import accept_learning_unit_assumption
+
+        unit = _make_unit()
+        unit.alignment_state = "skipped"
+        unit.nag_cooldown_remaining = 3
+        mock_system.accept_assumption.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await accept_learning_unit_assumption(unit.id)
+
+        assert result["alignment_state"] == "skipped"
+        assert result["nag_cooldown_remaining"] == 3
+        mock_system.accept_assumption.assert_awaited_once_with(unit.id)
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import accept_learning_unit_assumption
+
+        mock_system.accept_assumption.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await accept_learning_unit_assumption("lu-x")
+        assert exc_info.value.status_code == 404
+
+
+class TestRefineObjective:
+    """POST /learning-units/{id}/refine-objective — §6.3 / §11.2。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_replaces_text_and_marks_refined(self, mock_system):
         from learning_agent.web.web_server import (
-            PromoteSessionRequest,
-            promote_chat_session_to_learning_unit,
+            RefineObjectiveRequest,
+            refine_learning_unit_objective,
         )
 
-        mock_system.promote_chat_session_to_learning_unit.side_effect = (
-            ActiveUnitExistsError("lu-existing")
+        unit = _make_unit(text="原目标")
+        unit.objective.text = "理解 BaseModel 校验流程"
+        unit.objective_status = "refined"
+        unit.alignment_state = "resolved"
+        mock_system.refine_objective.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await refine_learning_unit_objective(
+                unit.id,
+                RefineObjectiveRequest(new_text="理解 BaseModel 校验流程"),
+            )
+
+        assert result["objective"]["text"] == "理解 BaseModel 校验流程"
+        assert result["objective_status"] == "refined"
+        assert result["alignment_state"] == "resolved"
+        mock_system.refine_objective.assert_awaited_once_with(
+            unit.id, "理解 BaseModel 校验流程"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_text_returns_400(self, mock_system):
+        from learning_agent.web.web_server import (
+            RefineObjectiveRequest,
+            refine_learning_unit_objective,
+        )
+
+        mock_system.refine_objective.side_effect = ValueError(
+            "Objective text cannot be empty."
         )
 
         with patch(
             "learning_agent.web.web_server._get_system", return_value=mock_system
         ):
-            response = await promote_chat_session_to_learning_unit(
-                "sess-origin", PromoteSessionRequest(seed_text="t")
+            with pytest.raises(HTTPException) as exc_info:
+                await refine_learning_unit_objective(
+                    "lu-x", RefineObjectiveRequest(new_text="   ")
+                )
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import (
+            RefineObjectiveRequest,
+            refine_learning_unit_objective,
+        )
+
+        mock_system.refine_objective.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await refine_learning_unit_objective(
+                    "lu-x", RefineObjectiveRequest(new_text="x")
+                )
+        assert exc_info.value.status_code == 404
+
+
+class TestReuseFeedback:
+    """POST /learning-units/{id}/reuse-feedback — M2 复用意愿轻量问卷。"""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_yes_returns_unit(self, mock_system):
+        from learning_agent.web.web_server import (
+            ReuseFeedbackRequest,
+            record_learning_unit_reuse_feedback,
+        )
+
+        unit = _make_unit(phase="consolidated")
+        mock_system.record_reuse_feedback.return_value = unit
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await record_learning_unit_reuse_feedback(
+                unit.id, ReuseFeedbackRequest(value="yes")
             )
 
-        assert isinstance(response, JSONResponse)
-        assert response.status_code == 409
-        import json
+        assert result["id"] == unit.id
+        mock_system.record_reuse_feedback.assert_called_once_with(unit.id, "yes")
 
-        body = json.loads(response.body)
-        assert body["active_unit_id"] == "lu-existing"
+    @pytest.mark.asyncio
+    async def test_invalid_value_returns_400(self, mock_system):
+        from learning_agent.web.web_server import (
+            ReuseFeedbackRequest,
+            record_learning_unit_reuse_feedback,
+        )
+
+        mock_system.record_reuse_feedback.side_effect = ValueError(
+            "reuse feedback value must be 'yes' or 'no'"
+        )
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await record_learning_unit_reuse_feedback(
+                    "lu-x", ReuseFeedbackRequest(value="maybe")
+                )
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_404(self, mock_system):
+        from learning_agent.web.web_server import (
+            ReuseFeedbackRequest,
+            record_learning_unit_reuse_feedback,
+        )
+
+        mock_system.record_reuse_feedback.side_effect = KeyError("lu-x")
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await record_learning_unit_reuse_feedback(
+                    "lu-x", ReuseFeedbackRequest(value="yes")
+                )
+        assert exc_info.value.status_code == 404
+
+
+class TestMetricsEndpoint:
+    """GET /learning-units/metrics — M2 4 个 P0 指标聚合视图。"""
+
+    def test_http_route_is_not_shadowed_by_unit_id_route(
+        self,
+        mock_system,
+        monkeypatch,
+    ):
+        import learning_agent.web.web_server as web_server
+        from learning_agent.learning_agent.learning_unit_metrics import (
+            LearningUnitMetricsSummary,
+            RatioStats,
+            TTFVStats,
+        )
+
+        mock_system.get_learning_unit_metrics.return_value = LearningUnitMetricsSummary(
+            window_days=7,
+            window_start_iso="2026-05-19T12:00:00+00:00",
+            generated_at_iso="2026-05-26T12:00:00+00:00",
+            ttfv=TTFVStats(p50_seconds=None, p90_seconds=None, sample_size=0),
+            consolidation=RatioStats(0, 0, None),
+            teach_entry=RatioStats(0, 0, None),
+            reuse_intent=RatioStats(0, 0, None),
+        )
+        monkeypatch.setattr(web_server, "_system", mock_system)
+
+        response = TestClient(web_server.app).get("/learning-units/metrics")
+
+        assert response.status_code == 200
+        assert response.json()["window_days"] == 7
+        mock_system.get_learning_unit.assert_not_called()
+        mock_system.get_learning_unit_metrics.assert_called_once_with(
+            window_days=7
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_summary_dict(self, mock_system):
+        from learning_agent.learning_agent.learning_unit_metrics import (
+            LearningUnitMetricsSummary,
+            RatioStats,
+            TTFVStats,
+        )
+        from learning_agent.web.web_server import get_learning_unit_metrics
+
+        summary = LearningUnitMetricsSummary(
+            window_days=7,
+            window_start_iso="2026-05-19T12:00:00+00:00",
+            generated_at_iso="2026-05-26T12:00:00+00:00",
+            ttfv=TTFVStats(p50_seconds=5.0, p90_seconds=10.0, sample_size=3),
+            consolidation=RatioStats(numerator=2, denominator=4, ratio=0.5),
+            teach_entry=RatioStats(numerator=3, denominator=4, ratio=0.75),
+            reuse_intent=RatioStats(numerator=2, denominator=3, ratio=2 / 3),
+            diagnostics={"total_events": 50, "learning_unit_events": 20},
+        )
+        mock_system.get_learning_unit_metrics.return_value = summary
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await get_learning_unit_metrics()
+
+        assert result["window_days"] == 7
+        assert result["ttfv"]["p50_seconds"] == 5.0
+        assert result["consolidation_rate"]["ratio"] == 0.5
+        assert result["reuse_intent_rate"]["numerator"] == 2
+        mock_system.get_learning_unit_metrics.assert_called_once_with(window_days=7)
+
+    @pytest.mark.asyncio
+    async def test_negative_window_days_collapses_to_none(self, mock_system):
+        from learning_agent.learning_agent.learning_unit_metrics import (
+            LearningUnitMetricsSummary,
+            RatioStats,
+            TTFVStats,
+        )
+        from learning_agent.web.web_server import get_learning_unit_metrics
+
+        mock_system.get_learning_unit_metrics.return_value = LearningUnitMetricsSummary(
+            window_days=None,
+            window_start_iso=None,
+            generated_at_iso="2026-05-26T12:00:00+00:00",
+            ttfv=TTFVStats(p50_seconds=None, p90_seconds=None, sample_size=0),
+            consolidation=RatioStats(0, 0, None),
+            teach_entry=RatioStats(0, 0, None),
+            reuse_intent=RatioStats(0, 0, None),
+        )
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            await get_learning_unit_metrics(window_days=-1)
+
+        mock_system.get_learning_unit_metrics.assert_called_once_with(window_days=None)

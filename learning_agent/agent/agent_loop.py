@@ -23,6 +23,7 @@ from learning_agent.agent.runtime_ports import (
     ToolExecutionService,
 )
 from learning_agent.agent.tool_validator import ToolInputValidator
+from learning_agent.agent.unresolved_failure_logger import UnresolvedFailureLogger
 from learning_agent.ai import (
     ChatChunk,
     LearningSession,
@@ -60,6 +61,7 @@ class AgentLoop:
         resilience_config: Optional[ResilienceConfig] = None,
         session_runtime_ttl: int = 3600,
         event_writer: Optional[SessionEventWriter] = None,
+        unresolved_failure_logger: Optional[UnresolvedFailureLogger] = None,
     ):
         # Runtime 共享依赖
         self.provider = provider
@@ -71,6 +73,8 @@ class AgentLoop:
         self.obs = observability
         # 可选 L1 trace writer：若注入，ToolExecutor 会在工具执行流水线发射 tool.exec_* 诊断事件
         self.event_writer = event_writer
+        # 工具调用成功导向架构：不可恢复失败的"内部账本"
+        self.unresolved_failure_logger = unresolved_failure_logger
 
         # 全局配置
         self.max_react_turns = max_react_turns

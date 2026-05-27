@@ -40,7 +40,6 @@ def migrate_legacy_session(session_id: str, file_store: FileStore) -> bool:
             "mode": session.mode.value,
             "status": session.status.value,
             "mode_metadata": dict(session.mode_metadata),
-            "ask_state": session.ask_state.model_dump(mode="json"),
             "created_at": session.created_at.isoformat(),
             "last_accessed_at": session.last_accessed_at.isoformat(),
         },

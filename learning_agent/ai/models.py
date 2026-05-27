@@ -184,12 +184,6 @@ class SessionEntry(BaseModel):
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class AskState(BaseModel):
-    """Ask 对齐模式状态。"""
-    status: str = "idle"          # idle | aligning
-    confirmed_input: str = ""     # 对齐后最终确认的问题描述（Agent最后一次输出）
-
-
 class LearningSession(BaseModel):
     id: str = Field(default_factory=lambda: f"sess-{uuid.uuid4().hex[:8]}")
     objective_id: Optional[str] = None
@@ -204,7 +198,6 @@ class LearningSession(BaseModel):
     last_accessed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     extracted_knowledge_ids: list[str] = Field(default_factory=list)
     entries: list[SessionEntry] = Field(default_factory=list)
-    ask_state: AskState = Field(default_factory=AskState)
 
 
 # ───────────────────────────────

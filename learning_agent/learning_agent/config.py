@@ -84,6 +84,18 @@ class Config:
             or learning_unit_from_file.get("concept_extraction_threshold", "0.6")
         )
 
+        # outputting 阶段 TEACH 链路（B5 E4）。两者皆可为 None，回退到
+        # provider.default_model。建议在 config.yaml 里指向同一颗 cheap-tier
+        # 模型，例如 ``claude-haiku-4-5-20251001``。
+        self.teach_generator_model: Optional[str] = (
+            os.getenv("LA_TEACH_GENERATOR_MODEL")
+            or learning_unit_from_file.get("teach_generator_model")
+        )
+        self.teach_judge_model: Optional[str] = (
+            os.getenv("LA_TEACH_JUDGE_MODEL")
+            or learning_unit_from_file.get("teach_judge_model")
+        )
+
         # Tool Guard 配置
         tool_guard_from_file = file_values.get("tool_guard", {})
         rules_from_file = tool_guard_from_file.get("rules", {})
@@ -96,6 +108,59 @@ class Config:
                 "deny": rules_from_file.get("deny", []),
                 "ask": rules_from_file.get("ask", []),
             },
+        }
+
+        web_search_from_file = file_values.get("web_search", {})
+        allowed_source_types = os.getenv("LA_WEB_SEARCH_ALLOWED_SOURCE_TYPES")
+        if allowed_source_types:
+            parsed_allowed_source_types = [
+                item.strip() for item in allowed_source_types.split(",") if item.strip()
+            ]
+        else:
+            parsed_allowed_source_types = web_search_from_file.get(
+                "allowed_source_types",
+                [
+                    "official_docs",
+                    "official_blog",
+                    "github_repo",
+                    "github_issue",
+                    "community_forum",
+                    "blog",
+                    "paper",
+                    "news",
+                    "aggregator",
+                ],
+            )
+        self.web_search = {
+            "enabled": (
+                os.getenv("LA_WEB_SEARCH_ENABLED")
+                or str(web_search_from_file.get("enabled", True))
+            ).lower() == "true",
+            "provider": os.getenv("LA_WEB_SEARCH_PROVIDER")
+            or web_search_from_file.get("provider", "builtin"),
+            "default_top_k": int(
+                os.getenv("LA_WEB_SEARCH_DEFAULT_TOP_K")
+                or web_search_from_file.get("default_top_k", "5")
+            ),
+            "max_top_k": int(
+                os.getenv("LA_WEB_SEARCH_MAX_TOP_K")
+                or web_search_from_file.get("max_top_k", "10")
+            ),
+            "default_limit_chars": int(
+                os.getenv("LA_WEB_FETCH_DEFAULT_LIMIT_CHARS")
+                or web_search_from_file.get("default_limit_chars", "12000")
+            ),
+            "timeout_seconds": float(
+                os.getenv("LA_WEB_SEARCH_TIMEOUT_SECONDS")
+                or web_search_from_file.get("timeout_seconds", "12")
+            ),
+            "tls_ca_bundle_path": os.getenv("LA_WEB_SEARCH_CA_BUNDLE_PATH")
+            or web_search_from_file.get("tls_ca_bundle_path"),
+            "prefer_system_trust_store": (
+                os.getenv("LA_WEB_SEARCH_PREFER_SYSTEM_TRUST_STORE")
+                or str(web_search_from_file.get("prefer_system_trust_store", True))
+            ).lower() == "true",
+            "allowed_source_types": parsed_allowed_source_types,
         }
 
     def _load_config_file(self, config_path: Optional[str]) -> dict[str, Any]:
@@ -202,4 +267,5 @@ class Config:
             "auto_confirm_knowledge": self.auto_confirm_knowledge,
             "log_level": self.log_level,
             "tool_guard": self.tool_guard,
+            "web_search": self.web_search,
         }

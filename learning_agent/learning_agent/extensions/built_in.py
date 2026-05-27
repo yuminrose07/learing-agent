@@ -8,6 +8,7 @@ from learning_agent.learning_agent.extension_manager import Extension, Extension
 from learning_agent.learning_agent.extensions.code_tools import create_code_tools_extension
 from learning_agent.learning_agent.extensions.grep_tools import create_grep_tools_extension
 from learning_agent.learning_agent.extensions.tool_guard import create_tool_guard_extension
+from learning_agent.learning_agent.extensions.web_search_tools import create_web_search_tools_extension
 from learning_agent.ai import (
     AfterResponseInput,
     AfterResponseResult,
@@ -30,6 +31,7 @@ def create_builtin_extensions(config: dict | None = None) -> list[Extension]:
         _create_observability_extension(),
         create_code_tools_extension(),
         create_grep_tools_extension(),
+        create_web_search_tools_extension(config),
         create_tool_guard_extension(config),
     ]
 

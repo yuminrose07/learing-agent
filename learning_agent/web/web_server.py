@@ -32,7 +32,8 @@ from pydantic import BaseModel
 from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
 from learning_agent.learning_agent.learning_unit_store import ActiveUnitExistsError
-from learning_agent.learning_agent.main import LearningAgentSystem
+from learning_agent.learning_agent.learning_unit_metrics import summary_to_dict
+from learning_agent.learning_agent.main import LearningAgentSystem, SessionNotFoundError
 from learning_agent.learning_agent.mode_service import (
     NEUTRAL_PERSONA,
     PHILOSOPHER_PERSONAS,
@@ -41,6 +42,10 @@ from learning_agent.learning_agent.mode_service import (
 from learning_agent.learning_agent.session_event_store import filter_events
 
 logger = logging.getLogger(__name__)
+
+# SSE 心跳间隔：静默期内每隔多少秒发一行 SSE 注释（": ping"），
+# 用于穿透浏览器/反向代理的空闲超时（典型默认 30s/60s）。
+_SSE_HEARTBEAT_SECONDS = 15.0
 
 # ───────────────────────────────
 # 请求/响应模型
@@ -79,17 +84,12 @@ class UpdatePersonaRequest(BaseModel):
     persona_key: Optional[str] = None
 
 
-class SaveStateRequest(BaseModel):
-    pass
-
-
 class CreateLearningUnitRequest(BaseModel):
     seed_text: str
     source: Literal[
         "ai_distilled",
         "user_written",
         "material_imported",
-        "promoted_from_chat",
     ] = "ai_distilled"
 
 
@@ -97,8 +97,16 @@ class AdvanceLearningUnitRequest(BaseModel):
     target_phase: Literal["absorbing", "outputting", "consolidated"]
 
 
-class PromoteSessionRequest(BaseModel):
-    seed_text: str
+class RefineObjectiveRequest(BaseModel):
+    new_text: str
+
+
+class ReuseFeedbackRequest(BaseModel):
+    value: str  # "yes" | "no"
+
+
+class StopLearningUnitRequest(BaseModel):
+    reason: str = "user_stopped"
 
 
 # ───────────────────────────────
@@ -159,29 +167,114 @@ async def _stream_chat_chunks(
     message: str,
     mode: AgentMode = AgentMode.CHAT,
 ) -> AsyncGenerator[str, None]:
-    """将产品层对话流转换为 SSE 格式。"""
-    try:
-        async for chunk in system.stream_session_chat(session_id, message, mode=mode):
-            chunk_metadata = dict(chunk.metadata)
-            payload = {
-                "content": chunk.content,
-                "tool_call": chunk.tool_call,
-                "finish_reason": chunk.finish_reason,
-                "mode": chunk_metadata.get("mode", mode.value),
-                "alignment": chunk_metadata.get("alignment", mode == AgentMode.ASK),
-                "persona_key": chunk_metadata.get("persona_key"),
-                "persona_name": chunk_metadata.get("persona_name"),
-                "persona_role": chunk_metadata.get("persona_role"),
-                "usage": chunk_metadata.get("usage") or chunk_metadata.get("turn_usage"),
+    """将产品层对话流转换为 SSE 格式，并在静默期发心跳防止超时断流。
+
+    上游 ``stream_session_chat`` 会先做一次同步重的准备
+    （compaction plan / 首 token 预热），期间没有数据下行。
+    用 ``asyncio.Queue`` 把生产与消费解耦，消费侧每
+    ``_SSE_HEARTBEAT_SECONDS`` 秒没拿到新数据就发一行 SSE 注释
+    （前端 parser 会忽略 ``:`` 开头的行），避免被反向代理或浏览器
+    判定为空闲连接而 RST。
+    """
+    # 立刻送一行注释，触发 Starlette 把响应头 flush 出去，
+    # 使前端的 fetch().response 尽早 resolve，避免 TTFB 阶段被代理切断。
+    yield ": stream-open\n\n"
+
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+    async def _producer() -> None:
+        try:
+            async for chunk in system.stream_session_chat(session_id, message, mode=mode):
+                chunk_metadata = dict(chunk.metadata)
+                payload = {
+                    "content": chunk.content,
+                    "tool_call": chunk.tool_call,
+                    "finish_reason": chunk.finish_reason,
+                    "mode": chunk_metadata.get("mode", mode.value),
+                    "alignment": chunk_metadata.get("alignment", mode == AgentMode.ASK),
+                    "persona_key": chunk_metadata.get("persona_key"),
+                    "persona_name": chunk_metadata.get("persona_name"),
+                    "persona_role": chunk_metadata.get("persona_role"),
+                    "usage": chunk_metadata.get("usage") or chunk_metadata.get("turn_usage"),
+                }
+                # adaptive alignment §11.3：学习卷专属元数据，前端按此驱动
+                # 目标卡片 + 收窄建议条 + 验收按钮，避免轮询 GET /learning-units/{id}。
+                for key in (
+                    "learning_unit_id",
+                    "learning_unit_phase",
+                    "alignment_state",
+                    "objective_status",
+                    "alignment_reason",
+                    "assumption_note",
+                    "suggested_objective",
+                    "teach_session_id",
+                    "teach_state",
+                    "question_index",
+                    "question_total",
+                    "verdict",
+                    "feedback_card",
+                ):
+                    value = chunk_metadata.get(key)
+                    if value is not None:
+                        payload[key] = value
+                # Final Answer Guarantee 标记：让前端可以选择性渲染（仍是正常 content）
+                if chunk_metadata.get("rescue"):
+                    payload["rescue"] = True
+                await queue.put(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        except SessionNotFoundError:
+            await queue.put(
+                f"data: {json.dumps({'error': f'Session {session_id} not found'}, ensure_ascii=False)}\n\n"
+            )
+        except Exception as e:
+            # 工具调用成功导向架构：理论上 stream_session_chat 已经自带兜底，
+            # 这里只可能命中 BaseException 子类或上游初始化期错误（如 system 未启动）。
+            # 仍然不能让前端拿到无 content 的流，输出一条静态兜底文本。
+            logger.exception(f"[Web] Chat stream outer-guard error: {e}")
+            try:
+                await system.unresolved_failure_logger.record(
+                    session_id=session_id,
+                    layer="web_server_stream_outer",
+                    reason_code=type(e).__name__,
+                    message=str(e),
+                    user_input=message,
+                    rescue_used=True,
+                    extra={"mode": mode.value},
+                )
+            except Exception:
+                logger.exception("[Web] unresolved_failure_logger.record failed (non-fatal)")
+            fallback_payload = {
+                "content": (
+                    "我这边暂时没办法完成这条请求——你能再描述一次或换个角度问我吗？"
+                ),
+                "rescue": True,
+                "rescue_reason": "web_outer_exception",
+                "mode": mode.value,
             }
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-    except ValueError:
-        yield f"data: {json.dumps({'error': f'Session {session_id} not found'}, ensure_ascii=False)}\n\n"
-    except Exception as e:
-        logger.exception(f"[Web] Chat stream error: {e}")
-        yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-    finally:
+            await queue.put(
+                f"data: {json.dumps(fallback_payload, ensure_ascii=False)}\n\n"
+            )
+        finally:
+            await queue.put(None)
+
+    producer_task = asyncio.create_task(_producer())
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=_SSE_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
+            if item is None:
+                break
+            yield item
         yield "data: [DONE]\n\n"
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 # ───────────────────────────────
@@ -263,6 +356,13 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
         return StreamingResponse(
             _stream_chat_chunks(system, session_id, req.message, mode=req.mode),
             media_type="text/event-stream",
+            headers={
+                # 禁掉所有可能的缓冲/转换：浏览器缓存、nginx proxy_buffering、
+                # 任何会改 body 的中间件（如 gzip 重分块）。
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
     else:
         try:
@@ -271,11 +371,27 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
                 req.message,
                 mode=req.mode,
             )
-        except ValueError:
+        except SessionNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")
         except Exception as e:
+            # 工具调用成功导向架构：collect_session_chat 自带兜底，
+            # 这里只可能命中初始化期或框架级错误。仍然不向用户暴露原始错误信息。
             logger.exception(f"[Web] Chat error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            try:
+                await system.unresolved_failure_logger.record(
+                    session_id=session_id,
+                    layer="web_server_collect_outer",
+                    reason_code=type(e).__name__,
+                    message=str(e),
+                    user_input=req.message,
+                    rescue_used=True,
+                    extra={"mode": req.mode.value},
+                )
+            except Exception:
+                logger.exception("[Web] unresolved_failure_logger.record failed (non-fatal)")
+            content = (
+                "我这边暂时没办法完成这条请求——你能再描述一次或换个角度问我吗？"
+            )
         return {
             "session_id": session_id,
             "content": content,
@@ -292,7 +408,6 @@ async def update_session_mode(session_id: str, req: UpdateModeRequest) -> dict[s
     return {
         "session_id": session.id,
         "mode": session.mode.value,
-        "ask_state": session.ask_state.status,
     }
 
 
@@ -305,7 +420,6 @@ async def get_session_mode(session_id: str) -> dict[str, Any]:
     return {
         "session_id": session.id,
         "mode": session.mode.value,
-        "ask_state": session.ask_state.status,
     }
 
 
@@ -436,6 +550,22 @@ async def list_learning_units() -> list[dict[str, Any]]:
     return [_learning_unit_payload(unit) for unit in system.list_learning_units()]
 
 
+@app.get("/learning-units/metrics")
+async def get_learning_unit_metrics(
+    window_days: Optional[int] = 7,
+) -> dict[str, Any]:
+    """M2：返回 4 个 P0 指标（TTFV / consolidation / teach-entry / reuse）。
+
+    ``window_days=0`` 表示当天，``None`` 走全量回看（前端可以传 ``window_days=-1``
+    或省略该参数）。
+    """
+    system = _get_system()
+    if window_days is not None and window_days < 0:
+        window_days = None
+    summary = system.get_learning_unit_metrics(window_days=window_days)
+    return summary_to_dict(summary)
+
+
 @app.get("/learning-units/{unit_id}")
 async def get_learning_unit(unit_id: str) -> dict[str, Any]:
     system = _get_system()
@@ -463,7 +593,7 @@ async def advance_learning_unit(
 ) -> dict[str, Any]:
     system = _get_system()
     try:
-        unit = system.advance_learning_unit(unit_id, req.target_phase)
+        unit = await system.advance_learning_unit(unit_id, req.target_phase)
     except KeyError:
         raise HTTPException(status_code=404, detail="Learning unit not found")
     except ValueError as exc:
@@ -471,26 +601,80 @@ async def advance_learning_unit(
     return _learning_unit_payload(unit)
 
 
-@app.post("/chat-sessions/{session_id}/promote-to-learning-unit")
-async def promote_chat_session_to_learning_unit(
-    session_id: str, req: PromoteSessionRequest
+@app.post("/learning-units/{unit_id}/stop")
+async def stop_learning_unit(
+    unit_id: str, req: StopLearningUnitRequest | None = None
 ) -> dict[str, Any]:
     system = _get_system()
     try:
-        session, unit = system.promote_chat_session_to_learning_unit(
-            session_id, seed_text=req.seed_text
+        unit = system.stop_learning_unit(
+            unit_id,
+            reason=(req.reason if req is not None else "user_stopped"),
         )
     except KeyError:
-        raise HTTPException(status_code=404, detail="Chat session not found")
-    except ActiveUnitExistsError as exc:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": "An active learning unit already exists; close it first.",
-                "active_unit_id": exc.active_unit_id,
-            },
-        )
-    return _learning_unit_payload(unit, session_id=session.id)
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/align")
+async def request_learning_unit_alignment(unit_id: str) -> dict[str, Any]:
+    """adaptive alignment §6.3：用户主动点"帮我收窄"。"""
+    system = _get_system()
+    try:
+        unit = await system.request_alignment(unit_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/accept-assumption")
+async def accept_learning_unit_assumption(unit_id: str) -> dict[str, Any]:
+    """adaptive alignment §6.3：用户点"先按这个学"消除建议条。"""
+    system = _get_system()
+    try:
+        unit = await system.accept_assumption(unit_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/refine-objective")
+async def refine_learning_unit_objective(
+    unit_id: str, req: RefineObjectiveRequest
+) -> dict[str, Any]:
+    """adaptive alignment §6.3：用户改写工作目标。"""
+    system = _get_system()
+    try:
+        unit = await system.refine_objective(unit_id, req.new_text)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
+
+
+@app.post("/learning-units/{unit_id}/reuse-feedback")
+async def record_learning_unit_reuse_feedback(
+    unit_id: str, req: ReuseFeedbackRequest
+) -> dict[str, Any]:
+    """M2：反馈卡上"下次还会用学习模式吗"轻量问卷。
+
+    400：value 非 yes/no，或卷未进入 consolidated。404：unit 不存在。
+    """
+    system = _get_system()
+    try:
+        unit = system.record_reuse_feedback(unit_id, req.value)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Learning unit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _learning_unit_payload(unit)
 
 
 # ───────────────────────────────
@@ -646,4 +830,3 @@ if _WEB_DIR.is_dir():
 @app.get("/")
 async def _root_redirect() -> RedirectResponse:
     return RedirectResponse(url="/ui/index.html")
-

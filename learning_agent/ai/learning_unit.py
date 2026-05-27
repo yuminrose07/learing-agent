@@ -17,10 +17,26 @@ from pydantic import BaseModel, Field
 
 
 LearningUnitPhase = Literal[
-    "aligning",
     "absorbing",
     "outputting",
     "consolidated",
+    "stopped",
+]
+
+
+AlignmentState = Literal[
+    "idle",
+    "suggested",
+    "active",
+    "resolved",
+    "skipped",
+]
+
+
+ObjectiveStatus = Literal[
+    "working",
+    "refined",
+    "confirmed",
 ]
 
 
@@ -110,20 +126,37 @@ class TeachSession(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class TeachFeedbackCard(BaseModel):
+    """consolidated 阶段的"掌握度"反馈卡片（task breakdown B5 §4）。
+
+    三块固定字段供 F5 反馈卡片直接渲染：
+    - ``mastered``：本卷已经掌握的概念短语（≤ concept_list.name 集合）
+    - ``gaps``：仍有空缺、需要补强的概念短语
+    - ``next_topic_suggestion``：基于 gaps 给出的一句话下一步建议
+    所有字段都默认为空，便于"卷尚未完成评判"时的兜底渲染。
+    """
+
+    mastered: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    next_topic_suggestion: str = ""
+
+
 _PHASE_ORDER: tuple[LearningUnitPhase, ...] = (
-    "aligning",
     "absorbing",
     "outputting",
     "consolidated",
+    "stopped",
 )
 
 
 _ALLOWED_TRANSITIONS: dict[LearningUnitPhase, frozenset[LearningUnitPhase]] = {
-    "aligning": frozenset({"absorbing"}),
-    # outputting 是必经的，但允许 TEACH 失败时回退到 absorbing（C5/§3.4）
-    "absorbing": frozenset({"outputting"}),
-    "outputting": frozenset({"absorbing", "consolidated"}),
+    # 主链：absorbing -> outputting -> consolidated；TEACH 失败时可回退到 absorbing。
+    # 用户也可以显式 "先学到这里"，进入 stopped 终态并释放单卷互斥。
+    # aligning 已从主链移除（adaptive alignment §8.1）；对齐降级为 alignment_state 旁路。
+    "absorbing": frozenset({"outputting", "stopped"}),
+    "outputting": frozenset({"absorbing", "consolidated", "stopped"}),
     "consolidated": frozenset(),  # 终态
+    "stopped": frozenset(),  # 用户显式中止终态，不计入完成率
 }
 
 
@@ -133,12 +166,38 @@ class LearningUnit(BaseModel):
     id: str = Field(default_factory=lambda: f"lu-{uuid.uuid4().hex[:8]}")
     session_id: str
     objective: UnitObjective
-    phase: LearningUnitPhase = "aligning"
+    phase: LearningUnitPhase = "absorbing"
     concept_list: list[ConceptItem] = Field(default_factory=list)
     tangent_notes: list[TangentNote] = Field(default_factory=list)
-    aligning_round: int = 1
+
+    # ── adaptive alignment 旁路状态（§8.2）─────────────────────────
+    # 对齐不再是主阶段，而是横切能力；以下字段刻画当前轮是否需要触发 ASK
+    # 协议，以及目标的成熟度。Product 层在 _prepare_learning_unit_turn 中
+    # 读写，Runtime 不感知。
+    alignment_state: AlignmentState = "idle"
+    objective_status: ObjectiveStatus = "working"
+    assumption_note: str = ""
+    alignment_reason: str = ""
+    clarification_count: int = 0
+    # 已经向用户暴露过的"非阻塞建议"次数。§9.3 #2 限流：每个 unit
+    # 启动期最多 2 条 suggested 建议，超过即降级为 none，避免反复唠叨。
+    suggestion_count: int = 0
+    # "先按这个学"冷静期剩余轮数。§9.3 #3 限流：用户主动 accept_assumption
+    # 后，N 轮内不再弹建议条；每个 absorbing 轮进入时减 1，归零后恢复。
+    nag_cooldown_remaining: int = 0
+    last_alignment_at: Optional[datetime] = None
+
     teach_session: Optional[TeachSession] = None
     verification_status: Optional[VerificationStatus] = None
+    # B5: consolidated 阶段写入；UI 用作"掌握度反馈卡"。卷未完成时保持 None。
+    feedback_card: Optional[TeachFeedbackCard] = None
+    # 用户显式 "先学到这里" 时写入。stopped 是终态，但不代表完成验收。
+    stop_reason: Optional[str] = None
+    stopped_at: Optional[datetime] = None
+    # M1：本卷首条 absorbing 阶段 assistant 消息成功 finalize 的时间戳，用作
+    # ``learning_unit.first_value_delivered`` 事件的 once-only 守卫与
+    # "首个学习价值时间 (TTFV)" 指标的 t0。None = 尚未投出首条价值。
+    first_value_delivered_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -154,9 +213,11 @@ class LearningUnit(BaseModel):
         self.updated_at = _now()
 
     def effective_mode(self) -> str:
-        """phase 到 AgentMode 字符串值的映射；consolidated 无效返回 None 由调用方拒绝。"""
-        if self.phase == "aligning":
-            return "ask"
+        """phase 到 AgentMode 字符串值的映射；终态无效返回空串由调用方拒绝。
+
+        注意：是否在 absorbing 中临时覆写为 ASK，由 Product 层根据
+        ``alignment_state`` 决定（adaptive alignment §9.1），不在本方法范围。
+        """
         if self.phase == "absorbing":
             return "chat"
         if self.phase == "outputting":
@@ -164,12 +225,14 @@ class LearningUnit(BaseModel):
         return ""
 
     def is_terminal(self) -> bool:
-        return self.phase == "consolidated"
+        return self.phase in {"consolidated", "stopped"}
 
 
 __all__ = [
     "LearningUnit",
     "LearningUnitPhase",
+    "AlignmentState",
+    "ObjectiveStatus",
     "UnitObjective",
     "ConceptItem",
     "ConceptStatus",
@@ -178,6 +241,7 @@ __all__ = [
     "TeachQuestion",
     "TeachSession",
     "TeachSessionState",
+    "TeachFeedbackCard",
     "QuestionKind",
     "QuestionVerdict",
     "VerificationStatus",

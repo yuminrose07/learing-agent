@@ -143,10 +143,12 @@ class TestSessionEndpointsUseSystemApi:
         async for payload in _stream_chat_chunks(mock_system, "sess-stream", "hi", mode=AgentMode.ASK):
             payloads.append(payload)
 
-        assert payloads[0].startswith("data: ")
-        assert payloads[-1] == "data: [DONE]\n\n"
-        assert '"mode": "ask"' in payloads[0]
-        assert '"usage": {"estimated_prompt_tokens": 256, "context_limit": 128000}' in payloads[0]
+        # SSE 注释行（": stream-open" / ": ping"）由 transport 层注入，
+        # 前端 parser 会忽略，对业务断言无意义，过滤掉。
+        data_payloads = [p for p in payloads if p.startswith("data: ")]
+        assert data_payloads[-1] == "data: [DONE]\n\n"
+        assert '"mode": "ask"' in data_payloads[0]
+        assert '"usage": {"estimated_prompt_tokens": 256, "context_limit": 128000}' in data_payloads[0]
         mock_system.stream_session_chat.assert_called_once_with("sess-stream", "hi", mode=AgentMode.ASK)
 
     @pytest.mark.asyncio
@@ -167,26 +169,53 @@ class TestSessionEndpointsUseSystemApi:
         async for payload in _stream_chat_chunks(mock_system, "sess-stream", "hi", mode=AgentMode.CHAT):
             payloads.append(payload)
 
-        assert '"usage": {"estimated_prompt_tokens": 128, "context_limit": 64000}' in payloads[0]
+        data_payloads = [p for p in payloads if p.startswith("data: ")]
+        assert '"usage": {"estimated_prompt_tokens": 128, "context_limit": 64000}' in data_payloads[0]
         mock_system.stream_session_chat.assert_called_once_with("sess-stream", "hi", mode=AgentMode.CHAT)
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_helper_emits_opener_and_heartbeat(self, mock_system, monkeypatch):
+        """回归测试：SSE 必须先发 opener 注释触发 header flush，且在
+        上游静默期内按 _SSE_HEARTBEAT_SECONDS 周期发心跳，避免反代/
+        浏览器空闲超时把流断掉。"""
+        import asyncio as _asyncio
+        from learning_agent.web import web_server
+
+        monkeypatch.setattr(web_server, "_SSE_HEARTBEAT_SECONDS", 0.05)
+
+        async def _slow_chunks():
+            # 模拟一次 ~0.18s 的"静默期"（compaction / 首 token 预热）
+            # 期望期间至少触发 2 次心跳（每 0.05s 一次）。
+            await _asyncio.sleep(0.18)
+            yield MagicMock(content="hi", tool_call=None, finish_reason="stop", metadata={})
+
+        mock_system.stream_session_chat.return_value = _slow_chunks()
+
+        payloads = []
+        async for payload in web_server._stream_chat_chunks(
+            mock_system, "sess-hb", "hi", mode=AgentMode.CHAT
+        ):
+            payloads.append(payload)
+
+        assert payloads[0] == ": stream-open\n\n", "首字节必须是 opener，避免 TTFB 过长"
+        assert payloads.count(": ping\n\n") >= 2, "静默期必须发心跳"
+        assert payloads[-1] == "data: [DONE]\n\n"
 
     @pytest.mark.asyncio
     async def test_update_mode_endpoint_uses_system_api(self, mock_system):
         from learning_agent.web.web_server import update_session_mode, UpdateModeRequest
 
-        switched = LearningSession(id="sess-mode", mode=AgentMode.ASK)
-        switched.ask_state.status = "aligning"
+        switched = LearningSession(id="sess-mode", mode=AgentMode.STUDY)
         mock_system.update_session_mode.return_value = switched
 
         with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
-            result = await update_session_mode("sess-mode", UpdateModeRequest(mode=AgentMode.ASK))
+            result = await update_session_mode("sess-mode", UpdateModeRequest(mode=AgentMode.STUDY))
 
         assert result == {
             "session_id": "sess-mode",
-            "mode": "ask",
-            "ask_state": "aligning",
+            "mode": "study",
         }
-        mock_system.update_session_mode.assert_called_once_with("sess-mode", AgentMode.ASK)
+        mock_system.update_session_mode.assert_called_once_with("sess-mode", AgentMode.STUDY)
 
     @pytest.mark.asyncio
     async def test_confirm_knowledge_uses_system_api(self, mock_system):
