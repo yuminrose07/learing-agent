@@ -213,6 +213,9 @@ async def _stream_chat_chunks(
                     "question_total",
                     "verdict",
                     "feedback_card",
+                    "forge_stage",
+                    "temperature_state",
+                    "learning_action",
                 ):
                     value = chunk_metadata.get(key)
                     if value is not None:

@@ -47,6 +47,19 @@
         confirmed: '已确认',
     };
 
+    const FORGE_STAGE_LABEL = {
+        entry: '入局',
+        collision: '碰撞',
+        forge: '铸造',
+        fixed: '定型',
+        cooling: '降温',
+    };
+
+    const LEARNING_ACTION_LABEL = {
+        orient: '定向',
+        prepare_to_guess: '准备试答',
+    };
+
     /** Frontend representation of the active learning unit, kept in sync with SSE deltas. */
     const state = {
         sessionId: null,
@@ -57,6 +70,9 @@
         objectiveText: '',
         assumptionNote: '',
         alignmentReason: '',
+        forgeStage: null,
+        temperatureState: null,
+        learningAction: null,
         teachSessionId: null,
         teachState: null,
         questionIndex: null,
@@ -136,6 +152,9 @@
         state.objectiveText = '';
         state.assumptionNote = '';
         state.alignmentReason = '';
+        state.forgeStage = null;
+        state.temperatureState = null;
+        state.learningAction = null;
         state.teachSessionId = null;
         state.teachState = null;
         state.questionIndex = null;
@@ -161,6 +180,9 @@
         state.objectiveText = (unit.objective && unit.objective.text) || unit.working_objective || '';
         state.assumptionNote = unit.assumption_note || '';
         state.alignmentReason = unit.alignment_reason || '';
+        state.forgeStage = unit.forge_stage || 'entry';
+        state.temperatureState = unit.temperature_state || 'steady';
+        if (unit.learning_action) state.learningAction = unit.learning_action;
         const teachSession = unit.teach_session || null;
         const questions = teachSession && Array.isArray(teachSession.questions)
             ? teachSession.questions
@@ -200,6 +222,9 @@
             objectiveStatus: delta.objective_status,
             alignmentReason: delta.alignment_reason,
             assumptionNote: delta.assumption_note,
+            forgeStage: delta.forge_stage,
+            temperatureState: delta.temperature_state,
+            learningAction: delta.learning_action,
             teachSessionId: delta.teach_session_id,
             teachState: delta.teach_state,
             questionIndex: delta.question_index,
@@ -267,6 +292,7 @@
 
         const showSuggestion = state.alignmentState === 'suggested' && phase === 'absorbing';
         const showTeachEntry = phase === 'absorbing';
+        const showForge = phase === 'absorbing';
         const showQuestion = phase === 'outputting';
         const showStop = phase === 'absorbing' || phase === 'outputting';
         const showStopped = phase === 'stopped';
@@ -288,6 +314,7 @@
             <div class="lu-objective">
                 <span class="lu-objective-kicker">研习卷</span>
                 <p class="lu-objective-text">${state.objectiveText ? escapeHtml(state.objectiveText) : '<span class="lu-empty">尚未生成工作目标</span>'}</p>
+                ${showForge ? renderForgeRow() : ''}
             </div>
             ${state.assumptionNote ? `<div class="lu-assumption">${escapeHtml(state.assumptionNote)}</div>` : ''}
             ${showSuggestion ? renderSuggestionBar() : ''}
@@ -308,6 +335,19 @@
                     <button class="lu-btn lu-btn-secondary" data-action="reuse-no" ${state.pendingAction ? 'disabled' : ''}>不会</button>
                 ` : ''}
                 ${showReuseDone ? `<span class="lu-reuse-done">谢谢反馈</span>` : ''}
+            </div>
+        `;
+    }
+
+    function renderForgeRow() {
+        const stage = state.forgeStage || 'entry';
+        const stageLabel = FORGE_STAGE_LABEL[stage] || stage;
+        const action = state.learningAction;
+        const actionLabel = action ? (LEARNING_ACTION_LABEL[action] || action) : '';
+        return `
+            <div class="lu-forge-row" aria-label="铸造阶段">
+                <span class="lu-forge-stage lu-forge-${escapeHtml(stage)}">${escapeHtml(stageLabel)}</span>
+                ${actionLabel ? `<span class="lu-learning-action">${escapeHtml(actionLabel)}</span>` : ''}
             </div>
         `;
     }

@@ -54,6 +54,18 @@ ObjectiveSource = Literal[
 VerificationStatus = Literal["passed", "skipped"]
 
 
+ForgeStage = Literal["entry", "collision", "forge", "fixed", "cooling"]
+
+TemperatureState = Literal[
+    "steady",
+    "needs_example",
+    "needs_structure",
+    "resisting_output",
+    "fatigued",
+    "small_step_crossed",
+]
+
+
 TeachSessionState = Literal[
     "generating",
     "queued",
@@ -198,6 +210,9 @@ class LearningUnit(BaseModel):
     # ``learning_unit.first_value_delivered`` 事件的 once-only 守卫与
     # "首个学习价值时间 (TTFV)" 指标的 t0。None = 尚未投出首条价值。
     first_value_delivered_at: Optional[datetime] = None
+    # ── Phase 1A 铸造状态骨架 ─────────────────────────────────────
+    forge_stage: ForgeStage = "entry"
+    temperature_state: TemperatureState = "steady"
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -245,4 +260,6 @@ __all__ = [
     "QuestionKind",
     "QuestionVerdict",
     "VerificationStatus",
+    "ForgeStage",
+    "TemperatureState",
 ]
