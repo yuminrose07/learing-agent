@@ -1,0 +1,71 @@
+{
+  "suite_id": "alignment-classifier-popup-real",
+  "baseline_version": "2026-05-28-v1",
+  "dataset": "tests/e2e/real_datasets/alignment-classifier-popup-real.json",
+  "status": "not_yet_executed",
+  "note": "该 baseline 先行定义对齐分类器 + 弹窗短路的真实环境验收指标。首次执行需要：(1) frontend_real_runner_learning.py 补 GET /learning-units/{id} 抓取；(2) 支持 setup.env_overrides 用于 fail-open case。首次执行后回填 pass/fail、证据路径、已知 implementation_gap 与质量棘轮。",
+  "must_pass_cases": [
+    "lm-align-clear-input-no-popup",
+    "lm-align-multi-candidate-high-cost-popup",
+    "lm-align-continue-learning-context-aware",
+    "lm-align-clarification-cap-respected",
+    "lm-align-fail-open-when-model-missing"
+  ],
+  "should_pass_cases": [
+    "lm-align-multi-candidate-low-cost-suggestion",
+    "lm-align-popup-short-circuits-tool-calls"
+  ],
+  "allowed_failures": {
+    "case_ids": [],
+    "max_total": 0,
+    "reason": "对齐分类器是研学一进门就会被触发的关键路径。ASK 切模式 / 概念抽取被跳过 / popup 不短路 / 限流失效都属于硬故障，不允许长期白名单化。首次执行若发现 runner 不抓取 learning_unit.json，将该缺口记为 implementation_gap 并补 runner，而不是降低验收。"
+  },
+  "hard_targets": {
+    "learning_unit_creation_rate": 1.0,
+    "non_empty_response_rate": 1.0,
+    "high_cost_popup_triggers_alignment_event_rate": 1.0,
+    "clear_input_does_not_trigger_popup_rate": 1.0,
+    "popup_short_circuits_tool_calls_rate": 1.0,
+    "clarification_cap_violation_count": 0,
+    "fail_open_silent_when_model_missing_rate": 1.0,
+    "ask_mode_overlay_count": 0
+  },
+  "quality_targets": {
+    "context_aware_continue_no_popup_pass_min": 1,
+    "low_cost_suggestion_no_popup_pass_min": 1,
+    "candidate_schema_well_formed_rate_min": 1.0,
+    "placeholder_text_length_le_200_when_popup_rate": 1.0
+  },
+  "failure_budgets": {
+    "empty_response": 0,
+    "learning_unit_not_created": 0,
+    "active_falls_back_to_ask_mode": 0,
+    "popup_case_invokes_agent_loop_tool_calls": 0,
+    "clear_input_triggers_popup": 0,
+    "clarification_count_exceeds_cap": 0,
+    "missing_alignment_event_when_popup_expected": 0,
+    "five_hundred_when_classifier_model_missing": 0,
+    "candidate_schema_malformed": 0
+  },
+  "evidence_required": [
+    "manifest.json",
+    "summary.json",
+    "results.jsonl",
+    "cases/<case_id>/request.json",
+    "cases/<case_id>/response.json",
+    "cases/<case_id>/session.json",
+    "cases/<case_id>/events.jsonl"
+  ],
+  "evidence_required_when_runner_supports": [
+    "cases/<case_id>/learning_unit.json"
+  ],
+  "frontend_evidence_required_when_applicable": [
+    "cases/<case_id>/frontend.png"
+  ],
+  "implementation_gaps_to_track_on_first_run": [
+    "frontend_real_runner_learning.py 是否抓取 /learning-units/{id} payload —— 不抓则 last_candidates / alignment_state / suggestion_count 类断言无法验证",
+    "runner 是否支持 setup.env_overrides —— 不支持则 lm-align-fail-open-when-model-missing 只能手工跑",
+    "popup 短路路径在非流式 POST /sessions/{id}/chat 下 response.content 是否就等于 placeholder_text —— 若 web 层把 placeholder 也包进了多 chunk 结构，需要在 runner 侧合并",
+    "frontend mode 下 modal 是否成功打开（前端 DOM 而非后端 metadata）—— 需要 screenshot 或后续补 e2e UI 断言"
+  ]
+}
