@@ -233,9 +233,9 @@ function getPersonaDisplayName(personaKey) {
     return getPersonaMeta(personaKey).name || '默认';
 }
 
-function resolvePersonaKeyForMode(_mode, session = null) {
-    // Personas are universal across modes — pick whatever the session has stored,
-    // falling back to the in-memory selection, then NEUTRAL.
+function resolvePersonaKeyForMode(mode, session = null) {
+    // 思路 (persona overlay) 现在只服务研习；闲聊已与研学分离，恒为 neutral。
+    if (normalizeFrontendMode(mode) === 'chat') return 'neutral';
     const stored = session ? session.mode_metadata?.chat_persona_key : null;
     return stored || currentPersonaKey || 'neutral';
 }
@@ -1011,7 +1011,8 @@ async function sendMessage(text) {
     if (isStreaming || !text.trim()) return;
 
     const requestedMode = normalizeFrontendMode(currentMode);
-    const requestedPersonaKey = currentPersonaKey;
+    // 闲聊不再带思路覆层；只有研习才把已选思路绑定到新会话。
+    const requestedPersonaKey = requestedMode === 'chat' ? null : currentPersonaKey;
 
     if (!currentSessionId) {
         // adaptive alignment §6.1: "研习" 起手不走普通 POST /sessions —— 而是
@@ -1229,6 +1230,14 @@ async function switchMode(mode) {
     showWelcome();
 }
 
+function syncThinkingPickerVisibility() {
+    // 思路 (persona overlay) 仅服务研习；闲聊已分离，不再暴露思路选择。
+    if (!els.topbarThinking) return;
+    const hideForChat = currentMode === 'chat';
+    els.topbarThinking.classList.toggle('hidden', hideForChat);
+    if (hideForChat) closeThinkingMenu();
+}
+
 function updateModeToolbar() {
     [els.btnModeChat, els.btnModeLearning].forEach(btn => {
         if (btn) btn.classList.remove('active');
@@ -1238,6 +1247,10 @@ function updateModeToolbar() {
         learning: els.btnModeLearning,
     }[currentMode];
     if (activeBtn) activeBtn.classList.add('active');
+    syncThinkingPickerVisibility();
+    // 把当前模式反映到 body，驱动 mode 维度的视觉（闲聊青瓷 / 研习朱砂）。
+    document.body.classList.toggle('mode-chat', currentMode === 'chat');
+    document.body.classList.toggle('mode-learning', currentMode === 'learning');
 }
 
 // ─── 侧边栏交互 ───

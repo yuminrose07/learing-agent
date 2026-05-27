@@ -1493,3 +1493,32 @@ body.chat-view { /* in-conversation */ }
     border-color: var(--vermillion-line);
     background: var(--vermillion-soft);
 }
+
+/* ============================================================
+ * 闲聊模式视觉：青瓷·清谈
+ * 仅在「闲聊对话态」(body.chat-view.mode-chat) 生效；研习(mode-learning)
+ * 与欢迎页(home-view)不在作用域内，保持朱砂书斋的正式感不变。
+ * 做法：在作用域内把强调色族整体重定义为青瓷绿，让既有规则（发送键 /
+ * 输入聚焦 / 模式按钮 / typing / 正文链接等）自动跟随，零规则重写；
+ * 再单独给气泡与输入做圆润 + 极淡青瓷底，强化清新放松的基调。
+ * ============================================================ */
+body.chat-view.mode-chat {
+    --vermillion:      #5C8A75;
+    --vermillion-deep: #4A7560;
+    --vermillion-soft: rgba(92, 138, 117, 0.10);
+    --vermillion-line: rgba(92, 138, 117, 0.26);
+    --vermillion-glow: rgba(92, 138, 117, 0.16);
+}
+
+/* 更圆润的气泡与输入框 —— 圆角即亲切 */
+body.chat-view.mode-chat .message-content { border-radius: 16px; }
+body.chat-view.mode-chat .input-wrapper   { border-radius: 18px; }
+
+/* 助手气泡换极淡青瓷底，更有呼吸感（用户气泡仍为墨底，对比清爽） */
+body.chat-view.mode-chat .message.assistant .message-content {
+    background: rgba(92, 138, 117, 0.08);
+    border-color: rgba(92, 138, 117, 0.18);
+}
+
+/* 圆形头像更亲切（研习保持方形印章） */
+body.chat-view.mode-chat .message-avatar { border-radius: 50%; }
