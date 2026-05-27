@@ -140,6 +140,10 @@ aside.sidebar {
     font-size: 11.5px;
     color: var(--ink);
     letter-spacing: 0.02em;
+    /* 长 UUID 不要 wrap，挤压侧栏排版；JS 端已截断显示，title 仍是完整 ID */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .session-row.active .session-id { color: var(--vermillion-deep); }
 .session-row .session-title {
@@ -158,6 +162,13 @@ aside.sidebar {
     line-height: 1.6;
 }
 
+/* 错误态统一走 --danger token，不再在 JS 行内打字面色（#b91c1c） */
+.session-empty.is-error,
+.timeline .empty.is-error,
+.metrics-diagnostics .empty.is-error {
+    color: var(--danger);
+}
+
 
 /* ============================================================
  * Main
@@ -173,7 +184,7 @@ main.main {
 
 .toolbar {
     padding: 16px 28px;
-    border-bottom: 1px solid var(--hairline);
+    /* 移除 border-bottom：紧邻的 .filter-row 已带分割线，两条横线视觉冗余 */
     background: transparent;
     display: flex;
     flex-wrap: wrap;
@@ -248,7 +259,7 @@ main.main {
     letter-spacing: 0.04em;
 }
 .filter-row > span:first-child,
-.filter-row > span:not(.vis-chip):not(.vis-chip-inline) {
+.filter-row > span:not(.vis-chip) {
     text-transform: uppercase;
     font-size: 10.5px;
     letter-spacing: 0.18em;
@@ -276,6 +287,15 @@ main.main {
 .vis-chip[data-vis="system"]        { color: var(--vis-system);        border-color: var(--vis-system-line);        background: var(--vis-system-soft); }
 .vis-chip[data-vis="ui"]            { color: var(--vis-ui);            border-color: var(--vis-ui-line);            background: var(--vis-ui-soft); }
 .vis-chip[data-vis="observability"] { color: var(--vis-observability); border-color: var(--vis-observability-line); background: var(--vis-observability-soft); }
+
+/* 事件行里的内联小标：复用 .vis-chip 的 token 着色，仅微调尺寸/字号，
+   与顶部过滤器是同一含义 → 同一配色。 */
+.vis-chip.is-inline {
+    padding: 1px 8px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    cursor: default;
+}
 
 .type-input {
     flex: 1;
@@ -460,13 +480,18 @@ main.main {
 /* ============================================================
  * Responsive
  * ============================================================ */
-@media (max-width: 900px) {
-    #app { grid-template-columns: 1fr; }
-    aside.sidebar { display: none; }
+@media (max-width: 720px) {
+    /* 窄屏不再隐藏侧栏 —— 旧版 display:none 让会话列表整体消失却没提供唤回入口，
+       窗口缩到 720px（13" 分屏极限附近）就丢失"选会话"能力。
+       改为把侧栏收窄到 220px，主区相应收紧 padding。
+       N=1 桌面工具，不做手机汉堡菜单。 */
+    #app { grid-template-columns: 220px 1fr; }
     .toolbar,
     .filter-row,
-    .timeline { padding-left: 18px; padding-right: 18px; }
-    .metrics-grid { padding-left: 18px; padding-right: 18px; }
+    .timeline { padding-left: 16px; padding-right: 16px; }
+    .metrics-grid { padding-left: 16px; padding-right: 16px; }
+    .metrics-diagnostics { padding-left: 16px; padding-right: 16px; }
+    .tabs { padding-left: 16px; padding-right: 16px; }
 }
 
 
@@ -602,6 +627,18 @@ main.main {
     letter-spacing: 0.14em;
 }
 .metric-card .metric-stat .metric-value { font-size: 20px; }
+
+/* 无样本/零数据的卡片视觉权重降低：朱砂左条 → 灰，数值变 ink-4，
+   一眼能扫出"哪张卡片有数据，哪张暂无"。判定由 JS markMetricCardEmpty 控制。 */
+.metric-card.is-empty {
+    border-left-color: var(--paper-edge);
+}
+.metric-card.is-empty .metric-value {
+    color: var(--ink-4);
+}
+.metric-card.is-empty .metric-footnote {
+    color: var(--ink-4);
+}
 
 .metrics-diagnostics {
     padding: 12px 28px 28px;

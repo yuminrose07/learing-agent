@@ -13,12 +13,8 @@ const API_BASE = typeof window !== 'undefined'
     ? window.location.origin
     : '';
 
-const VIS_COLORS = {
-    agent: '#2563eb',
-    system: '#64748b',
-    ui: '#0891b2',
-    observability: '#ea580c',
-};
+// 截断长 UUID 用的展示长度；事件 / parent / sessionId 用同一规则保持一致。
+const ID_DISPLAY_PREFIX = 12;
 
 const state = {
     sessions: [],
@@ -70,7 +66,7 @@ async function loadSessions() {
         state.sessions = Array.isArray(sessions) ? sessions : [];
         renderSessionList();
     } catch (err) {
-        els.sessionList.innerHTML = `<div class="session-empty" style="color:#b91c1c">加载会话失败: ${escapeHtml(err.message)}</div>`;
+        els.sessionList.innerHTML = `<div class="session-empty is-error">加载会话失败: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -84,8 +80,8 @@ function renderSessionList() {
         const title = s.title || '(untitled)';
         const isActive = sid === state.currentSessionId;
         return `
-            <div class="session-row ${isActive ? 'active' : ''}" data-session-id="${escapeAttr(sid)}">
-                <div class="session-id">${escapeHtml(sid)}</div>
+            <div class="session-row ${isActive ? 'active' : ''}" data-session-id="${escapeAttr(sid)}" title="${escapeAttr(sid)}">
+                <div class="session-id">${escapeHtml(shortId(sid))}</div>
                 <div class="session-title">${escapeHtml(title)}</div>
             </div>
         `;
@@ -103,7 +99,8 @@ async function selectSession(sessionId) {
     if (!sessionId) return;
     state.currentSessionId = sessionId;
     renderSessionList();
-    els.currentSession.textContent = sessionId;
+    els.currentSession.textContent = shortId(sessionId);
+    els.currentSession.title = sessionId;
     els.statsText.textContent = '加载中…';
     els.timeline.innerHTML = '<div class="empty">加载中…</div>';
     try {
@@ -112,7 +109,7 @@ async function selectSession(sessionId) {
         rebuildIndexes();
         renderTimeline();
     } catch (err) {
-        els.timeline.innerHTML = `<div class="empty" style="color:#b91c1c">加载事件失败: ${escapeHtml(err.message)}</div>`;
+        els.timeline.innerHTML = `<div class="empty is-error">加载事件失败: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -189,8 +186,12 @@ function renderEventRow(event, visibleSeqs) {
         }
     }
     const payloadStr = safeStringify(event.payload || {});
-    const eventIdHtml = event.event_id ? `<code>event_id=${escapeHtml(event.event_id)}</code>` : '';
-    const parentMetaHtml = parentId ? `<code>parent=${escapeHtml(parentId)}</code>` : '';
+    const eventIdHtml = event.event_id
+        ? `<code title="${escapeAttr(event.event_id)}">event_id=${escapeHtml(shortId(event.event_id))}</code>`
+        : '';
+    const parentMetaHtml = parentId
+        ? `<code title="${escapeAttr(parentId)}">parent=${escapeHtml(shortId(parentId))}</code>`
+        : '';
 
     return `
         <details class="event-row${failureClass}" id="evt-${seq}">
@@ -233,8 +234,10 @@ function isFailure(event) {
 }
 
 function visChip(visibility) {
-    const color = VIS_COLORS[visibility] || '#64748b';
-    return `<span class="vis-chip-inline" style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid ${color}55;background:${color}1a;color:${color}">${escapeHtml(visibility)}</span>`;
+    // 复用顶部过滤器同一套 token class (.vis-chip[data-vis=...])；不再行内打色，
+    // 避免事件行的小标和顶部过滤器是同一含义却走两套配色。`is-inline` 仅作尺寸微调。
+    const vis = visibility || 'agent';
+    return `<span class="vis-chip is-inline" data-vis="${escapeAttr(vis)}">${escapeHtml(vis)}</span>`;
 }
 
 function shortTs(raw) {
@@ -271,6 +274,13 @@ function safeStringify(obj) {
     }
 }
 
+function shortId(id) {
+    // UUID 类长 ID 在 toolbar / event-meta 里完整铺开会撑破排版，统一截前 12 字符 + ellipsis。
+    if (!id) return '';
+    const s = String(id);
+    return s.length <= ID_DISPLAY_PREFIX ? s : `${s.slice(0, ID_DISPLAY_PREFIX)}…`;
+}
+
 function escapeHtml(text) {
     if (text == null) return '';
     return String(text)
@@ -283,6 +293,29 @@ function escapeHtml(text) {
 
 function escapeAttr(text) {
     return escapeHtml(text);
+}
+
+function debounce(fn, ms) {
+    let h = null;
+    return (...args) => {
+        if (h != null) clearTimeout(h);
+        h = setTimeout(() => { h = null; fn(...args); }, ms);
+    };
+}
+
+// 刷新类按钮的 loading 套子：禁用 + 替换文案，结束（含错误）自动复原。
+async function withButtonLoading(btn, loadingLabel, action) {
+    if (!btn) return action();
+    const originalLabel = btn.textContent;
+    const originalDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.textContent = loadingLabel;
+    try {
+        return await action();
+    } finally {
+        btn.textContent = originalLabel;
+        btn.disabled = originalDisabled;
+    }
 }
 
 // ─── Wiring ───
@@ -302,17 +335,17 @@ els.visChips.forEach((chip) => {
     });
 });
 
-els.typeInput.addEventListener('input', (e) => {
+els.typeInput.addEventListener('input', debounce((e) => {
     state.typeFilter = e.target.value;
     renderTimeline();
-});
+}, 250));
 
-els.btnRefresh.addEventListener('click', async () => {
+els.btnRefresh.addEventListener('click', () => withButtonLoading(els.btnRefresh, '加载中…', async () => {
     await loadSessions();
     if (state.currentSessionId) {
         await selectSession(state.currentSessionId);
     }
-});
+}));
 
 // ─── Tabs ───
 
@@ -352,7 +385,7 @@ if (els.luWindowSelect) {
     });
 }
 if (els.luBtnRefresh) {
-    els.luBtnRefresh.addEventListener('click', () => loadLearningUnitMetrics());
+    els.luBtnRefresh.addEventListener('click', () => withButtonLoading(els.luBtnRefresh, '加载中…', () => loadLearningUnitMetrics()));
 }
 
 async function loadLearningUnitMetrics() {
@@ -367,12 +400,33 @@ async function loadLearningUnitMetrics() {
         state.learningUnitMetricsLoaded = true;
         renderLearningUnitMetrics();
     } catch (err) {
+        // 失败时把所有数值清空，避免「7 天数据 + 30 天窗口标签」这种静默错位。
+        state.learningUnitMetrics = null;
         state.learningUnitMetricsLoaded = false;
+        clearLearningUnitMetrics();
         els.luStatsText.textContent = '';
         if (els.luDiagnostics) {
-            els.luDiagnostics.innerHTML = `<span class="empty" style="color:#b91c1c">加载指标失败: ${escapeHtml(err.message)}</span>`;
+            els.luDiagnostics.innerHTML = `<span class="empty is-error">加载指标失败: ${escapeHtml(err.message)}</span>`;
         }
     }
+}
+
+function clearLearningUnitMetrics() {
+    // 把 4 张卡片的 value / footnote 全部重置为占位，并加上 .is-empty 类。
+    ['ttfv.p50', 'ttfv.p90', 'consolidation.ratio', 'teach.ratio', 'reuse.ratio'].forEach((k) => setBind(k, '—'));
+    setBind('ttfv.sample', '样本 —');
+    setBind('consolidation.fraction', '— / —');
+    setBind('teach.fraction', '— / —');
+    setBind('reuse.fraction', '— / —');
+    if (els.luMetricsGrid) {
+        els.luMetricsGrid.querySelectorAll('.metric-card').forEach((card) => card.classList.add('is-empty'));
+    }
+}
+
+function markMetricCardEmpty(metricName, isEmpty) {
+    if (!els.luMetricsGrid) return;
+    const card = els.luMetricsGrid.querySelector(`.metric-card[data-metric="${metricName}"]`);
+    if (card) card.classList.toggle('is-empty', isEmpty);
 }
 
 function renderLearningUnitMetrics() {
@@ -381,24 +435,32 @@ function renderLearningUnitMetrics() {
 
     // TTFV
     const ttfv = m.ttfv || {};
+    const ttfvSamples = ttfv.sample_size ?? 0;
     setBind('ttfv.p50', formatSeconds(ttfv.p50_seconds));
     setBind('ttfv.p90', formatSeconds(ttfv.p90_seconds));
-    setBind('ttfv.sample', `样本 ${ttfv.sample_size ?? 0}`);
+    setBind('ttfv.sample', `样本 ${ttfvSamples}`);
+    markMetricCardEmpty('ttfv', ttfvSamples === 0);
 
     // Consolidation
     const cons = m.consolidation_rate || {};
+    const consDenom = cons.denominator ?? 0;
     setBind('consolidation.ratio', formatRatio(cons.ratio));
-    setBind('consolidation.fraction', `${cons.numerator ?? 0} / ${cons.denominator ?? 0}`);
+    setBind('consolidation.fraction', `${cons.numerator ?? 0} / ${consDenom}`);
+    markMetricCardEmpty('consolidation', consDenom === 0);
 
     // Teach entry
     const teach = m.teach_entry_rate || {};
+    const teachDenom = teach.denominator ?? 0;
     setBind('teach.ratio', formatRatio(teach.ratio));
-    setBind('teach.fraction', `${teach.numerator ?? 0} / ${teach.denominator ?? 0}`);
+    setBind('teach.fraction', `${teach.numerator ?? 0} / ${teachDenom}`);
+    markMetricCardEmpty('teach-entry', teachDenom === 0);
 
     // Reuse intent
     const reuse = m.reuse_intent_rate || {};
+    const reuseDenom = reuse.denominator ?? 0;
     setBind('reuse.ratio', formatRatio(reuse.ratio));
-    setBind('reuse.fraction', `${reuse.numerator ?? 0} / ${reuse.denominator ?? 0}`);
+    setBind('reuse.fraction', `${reuse.numerator ?? 0} / ${reuseDenom}`);
+    markMetricCardEmpty('reuse-intent', reuseDenom === 0);
 
     // Top-line stats
     const generated = m.generated_at ? fullTs(m.generated_at) : '-';
