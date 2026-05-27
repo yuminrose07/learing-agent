@@ -21,6 +21,14 @@ from learning_agent.learning_agent.providers.adapters.tls_utils import (
     tls_failure_hint,
 )
 
+# Trafilatura 是 A 级抽取兜底:lxml 树剪枝 + 密度评分,F-score ~0.75,
+# 对复杂页面(docs.python.org / fastapi.tiangolo.com 等)远胜 stdlib HTMLParser。
+# 包没装时不阻塞导入,统一降级到 stdlib + Jina Reader 路径。
+try:
+    import trafilatura  # type: ignore[import-untyped]
+except ImportError:
+    trafilatura = None  # type: ignore[assignment]
+
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -99,7 +107,15 @@ _POSITIVE_ATTR_MARKERS = (
     "tutorial",
 )
 _MIN_PRIORITY_CONTENT_CHARS = 200
+# 抽取兜底链:trafilatura / jina 拿到的 content 长度低于此阈值即视为"提取失败",
+# 继续向下一级兜底。50 字符够过滤"跳转到内容"这类锚点 alt 文本噪声,同时不会
+# 误杀 docstring-style 短小但有意义的页面。
+_MIN_FALLBACK_CONTENT_CHARS = 50
 _HEADING_TAG_LEVELS = {f"h{level}": level for level in range(1, 7)}
+# trafilatura / jina 输出 markdown,按 ATX 标题(# / ## / ###)切层级 section。
+# fence 正则用于排除代码围栏内的 "# ..." 注释 —— 它们是代码,不是标题。
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_MARKDOWN_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 _XML_CONTENT_TYPES = {"text/xml", "application/xml", "application/rss+xml", "application/atom+xml"}
 _FEED_LISTING_SEGMENTS = {"blog", "news", "stories", "updates"}
 _FEED_SEGMENT_ALIASES = {
@@ -500,6 +516,160 @@ def _extract_structured_readable_html(html: str) -> tuple[str, str, tuple[RawFet
     return title, content, sections, headings
 
 
+def _extract_markdown_code_blocks(markdown_text: str) -> tuple[str, ...]:
+    """从 markdown 文本里抽取代码围栏(``` / ~~~)内的代码块,去重后返回。"""
+    blocks: list[str] = []
+    fence: str | None = None
+    buffer: list[str] = []
+    for line in markdown_text.splitlines():
+        stripped = line.strip()
+        if fence is None:
+            match = _MARKDOWN_FENCE_RE.match(stripped)
+            if match:
+                fence = match.group(1)[:3]
+                buffer = []
+            continue
+        if stripped.startswith(fence):
+            code = "\n".join(buffer).strip()
+            if code and code not in blocks:
+                blocks.append(code)
+            fence = None
+            buffer = []
+            continue
+        buffer.append(line)
+    return tuple(blocks)
+
+
+def _clean_markdown_heading(text: str) -> str:
+    """清掉 markdown 标题里残留的 # 和锚点符(¶),返回干净标题文本。"""
+    cleaned = text.strip().strip("#").strip()
+    return cleaned.rstrip("¶").strip()
+
+
+def _build_sections_from_markdown(title: str, markdown_content: str) -> tuple[RawFetchedSection, ...]:
+    """按 ATX 标题(# / ## / ###)把 markdown 正文切成层级 section。
+
+    用 fence 状态机排除代码围栏内的 "# ..." 行 —— 那些是代码注释不是标题。
+    heading_stack 维护当前标题路径,section_path 反映层级,供章节导航使用。
+    """
+    lines = markdown_content.splitlines()
+    sections: list[RawFetchedSection] = []
+    heading_stack: list[tuple[int, str]] = []
+    root_heading = (title or "").strip() or "Overview"
+    current_heading = root_heading
+    current_path: tuple[str, ...] = (root_heading,)
+    current_lines: list[str] = []
+    fence: str | None = None
+
+    def flush_section() -> None:
+        nonlocal current_lines
+        body = "\n".join(current_lines).strip()
+        if not body:
+            current_lines = []
+            return
+        sections.append(
+            RawFetchedSection(
+                cursor=f"s{len(sections)}",
+                heading=current_heading,
+                section_path=current_path,
+                content=body,
+                code_blocks=_extract_markdown_code_blocks(body),
+            )
+        )
+        current_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        fence_match = _MARKDOWN_FENCE_RE.match(stripped)
+        if fence_match:
+            marker = fence_match.group(1)[:3]
+            if fence is None:
+                fence = marker
+            elif stripped.startswith(fence):
+                fence = None
+            current_lines.append(line)
+            continue
+        heading_match = None if fence is not None else _MARKDOWN_HEADING_RE.match(line)
+        if heading_match:
+            flush_section()
+            level = len(heading_match.group(1))
+            heading_text = _clean_markdown_heading(heading_match.group(2)) or current_heading
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, heading_text))
+            current_heading = heading_text
+            current_path = tuple(text for _, text in heading_stack)
+            current_lines = [heading_text]
+            continue
+        current_lines.append(line)
+    flush_section()
+    return tuple(sections)
+
+
+def _extract_with_trafilatura(
+    html_text: str,
+    canonical_url: str,
+    content_type: str,
+) -> RawFetchedPage | None:
+    """用 trafilatura 兜底解析 HTML,返回 markdown 单段内容。
+
+    stdlib HTMLParser 对复杂 wrapper 嵌套页面经常返回空 content,trafilatura
+    用 lxml 树剪枝 + 密度评分 + readability 算法可以拿到正文。解析失败、包没装、
+    或抽到的内容短于 ``_MIN_FALLBACK_CONTENT_CHARS`` 都返回 None,由上层继续走
+    Jina Reader 兜底。
+    """
+    if trafilatura is None:
+        return None
+    try:
+        extracted = trafilatura.extract(
+            html_text,
+            output_format="markdown",
+            include_comments=False,
+            include_tables=True,
+            with_metadata=False,
+            url=canonical_url,
+            favor_recall=True,
+        )
+    except Exception:
+        return None
+    if not extracted or len(extracted.strip()) < _MIN_FALLBACK_CONTENT_CHARS:
+        return None
+
+    title: str | None = None
+    try:
+        metadata = trafilatura.extract_metadata(html_text, default_url=canonical_url)
+        if metadata is not None:
+            meta_title = getattr(metadata, "title", None)
+            if meta_title:
+                title = str(meta_title).strip() or None
+    except Exception:
+        title = None
+
+    final_title = title or parse.urlparse(canonical_url).netloc
+    content = re.sub(r"\n{3,}", "\n\n", extracted).strip()
+    sections = _build_sections_from_markdown(final_title, content)
+    if not sections:
+        sections = (
+            RawFetchedSection(
+                cursor="s0",
+                heading=final_title,
+                section_path=(final_title,),
+                content=content,
+            ),
+        )
+    headings = tuple(dict.fromkeys(section.heading for section in sections))
+    code_blocks = tuple(dict.fromkeys(code for section in sections for code in section.code_blocks))
+    return RawFetchedPage(
+        url=canonical_url,
+        title=final_title,
+        content=content,
+        content_type=content_type,
+        headings=headings,
+        sections=sections,
+        code_blocks=code_blocks,
+    )
+
+
 class BuiltinWebFetchProvider:
     """A lightweight readable-content fetcher based on stdlib urllib + HTMLParser."""
 
@@ -511,6 +681,9 @@ class BuiltinWebFetchProvider:
         user_agent: str = _DEFAULT_USER_AGENT,
         ca_bundle_path: str | None = None,
         prefer_system_trust_store: bool = True,
+        trafilatura_enabled: bool = True,
+        jina_reader_enabled: bool = False,
+        jina_reader_base_url: str = "https://r.jina.ai",
     ):
         self._timeout_seconds = timeout_seconds
         # 整体墙钟预算:原站请求 + 多个 feed 候选 + archive 兜底共享同一份时间预算,
@@ -521,6 +694,11 @@ class BuiltinWebFetchProvider:
             ca_bundle_path=ca_bundle_path,
             prefer_system_trust_store=prefer_system_trust_store,
         )
+        # 抽取兜底链开关:stdlib HTMLParser 失败时按顺序尝试 trafilatura → jina_reader。
+        # trafilatura 默认开,但包没装时静默降级;jina_reader 默认关,涉及第三方 URL 透传。
+        self._trafilatura_enabled = trafilatura_enabled and (trafilatura is not None)
+        self._jina_reader_enabled = jina_reader_enabled
+        self._jina_reader_base_url = jina_reader_base_url.rstrip("/")
 
     async def fetch(self, url: str) -> RawFetchedPage:
         return await asyncio.to_thread(self._fetch_sync, url)
@@ -554,6 +732,133 @@ class BuiltinWebFetchProvider:
         except Exception:
             # archive fallback 是兜底，自身失败永远不抛 —— 让上层走原始失败语义。
             return None
+
+    def _extract_with_fallback_chain(
+        self,
+        *,
+        text: str,
+        canonical_url: str,
+        content_type: str,
+        deadline: float,
+    ) -> RawFetchedPage | None:
+        """三段式抽取兜底:stdlib → trafilatura → jina_reader。
+
+        任意一段拿到非空 content 就立即返回;全部失败返回 None,由调用方抛
+        ``UnsupportedPageError``。trafilatura 不消耗 deadline(本地解析),
+        jina_reader 消耗 deadline,剩余 <= 2s 时跳过以留时间给 archive 兜底。
+
+        每一段都按 ``_MIN_FALLBACK_CONTENT_CHARS`` 判断"实质内容":避免 stdlib
+        返回 5 字符 "跳转到内容" 之类锚点 alt 文本而误判为成功。
+        """
+        title, content, sections, headings = _extract_structured_readable_html(text)
+        if content and len(content) >= _MIN_FALLBACK_CONTENT_CHARS:
+            code_blocks = tuple({code for section in sections for code in section.code_blocks})
+            return RawFetchedPage(
+                url=canonical_url,
+                title=title or parse.urlparse(canonical_url).netloc,
+                content=content,
+                content_type=content_type,
+                headings=headings,
+                sections=sections,
+                code_blocks=code_blocks,
+            )
+
+        if self._trafilatura_enabled:
+            page = _extract_with_trafilatura(text, canonical_url, content_type)
+            if page is not None:
+                return page
+
+        if self._jina_reader_enabled and deadline - time.monotonic() > 2.0:
+            page = self._fetch_via_jina_reader(canonical_url, deadline)
+            if page is not None:
+                return page
+
+        # 兜底链全部失败时,如果 stdlib 至少抽到了一点内容(< 阈值但非空),
+        # 仍然把它返回 —— 总比抛 UnsupportedPageError 让 LLM 拿不到任何信息好。
+        if content:
+            code_blocks = tuple({code for section in sections for code in section.code_blocks})
+            return RawFetchedPage(
+                url=canonical_url,
+                title=title or parse.urlparse(canonical_url).netloc,
+                content=content,
+                content_type=content_type,
+                headings=headings,
+                sections=sections,
+                code_blocks=code_blocks,
+            )
+
+        return None
+
+    def _fetch_via_jina_reader(
+        self,
+        url: str,
+        deadline: float,
+    ) -> RawFetchedPage | None:
+        """Jina Reader (https://r.jina.ai/<url>) 兜底:headless Chrome + Readability + Markdown。
+
+        复用现有 urllib + ssl_context,不引入 httpx。任何异常都不向上抛,
+        让上层继续走 archive.org 路径(或最终的 UnsupportedPageError)。
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        jina_url = f"{self._jina_reader_base_url}/{url}"
+        req = request.Request(
+            jina_url,
+            headers={
+                "User-Agent": self._user_agent,
+                "Accept": "text/markdown, text/plain;q=0.9",
+                "X-Return-Format": "markdown",
+            },
+        )
+        per_request_timeout = min(self._timeout_seconds, remaining)
+        try:
+            with request.urlopen(
+                req,
+                timeout=per_request_timeout,
+                context=self._ssl_context,
+            ) as resp:
+                raw = resp.read(_MAX_READ_BYTES)
+                charset = resp.headers.get_content_charset() or "utf-8"
+        except Exception:
+            return None
+
+        markdown = raw.decode(charset, errors="replace").strip()
+        if not markdown or len(markdown) < _MIN_FALLBACK_CONTENT_CHARS:
+            return None
+
+        # Jina 返回的 markdown 头部通常带 "Title: ..." / "URL Source: ..." 元信息行,
+        # 抓 Title 当 page.title,其余作正文。
+        title: str | None = None
+        body_lines: list[str] = []
+        for line in markdown.splitlines():
+            if title is None and line.lower().startswith("title:"):
+                title = line.split(":", 1)[1].strip() or None
+                continue
+            body_lines.append(line)
+        body = "\n".join(body_lines).strip() or markdown
+        final_title = title or parse.urlparse(url).netloc
+        sections = _build_sections_from_markdown(final_title, body)
+        if not sections:
+            sections = (
+                RawFetchedSection(
+                    cursor="s0",
+                    heading=final_title,
+                    section_path=(final_title,),
+                    content=body,
+                ),
+            )
+        headings = tuple(dict.fromkeys(section.heading for section in sections))
+        code_blocks = tuple(dict.fromkeys(code for section in sections for code in section.code_blocks))
+        return RawFetchedPage(
+            url=url,
+            title=final_title,
+            content=body,
+            content_type="text/html",
+            headings=headings,
+            sections=sections,
+            code_blocks=code_blocks,
+        )
 
     def _read_url_sync(
         self,
@@ -688,17 +993,12 @@ class BuiltinWebFetchProvider:
         if content_type not in {"text/html", "application/xhtml+xml"}:
             raise UnsupportedPageError(f"Unsupported content type: {content_type}")
 
-        title, content, sections, headings = _extract_structured_readable_html(text)
-        if not content:
-            raise UnsupportedPageError("Failed to extract readable page content")
-        title = title or parse.urlparse(canonical_url).netloc
-        code_blocks = tuple({code for section in sections for code in section.code_blocks})
-        return RawFetchedPage(
-            url=canonical_url,
-            title=title,
-            content=content,
+        page = self._extract_with_fallback_chain(
+            text=text,
+            canonical_url=canonical_url,
             content_type=content_type,
-            headings=headings,
-            sections=sections,
-            code_blocks=code_blocks,
+            deadline=deadline,
         )
+        if page is None:
+            raise UnsupportedPageError("Failed to extract readable page content")
+        return page
