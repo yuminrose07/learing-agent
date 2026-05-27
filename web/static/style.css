@@ -1315,8 +1315,6 @@ body.chat-view { /* in-conversation */ }
         width: 100%;
         justify-content: flex-start;
     }
-    .topbar-companion,
-    .topbar-thinking { margin-left: 0; }
     .companion-menu,
     .thinking-menu {
         right: 0; left: auto;
@@ -1335,14 +1333,20 @@ body.chat-view { /* in-conversation */ }
 
 /* ============================================================
  * 陪伴 / 思路 picker
+ *   两者都位于 input-wrapper 内 textarea 和 send 之间，菜单向上展开。
+ *   - 陪伴（companion）：仅 home + chat 模式可见，进入会话后由 JS 隐藏
+ *   - 思路（thinking）：仅 home + learning 模式可见，开卷后由 JS 隐藏
+ *   一次会话/一卷研习锁定一个风格 / 人格，进入后整块消失（非 disabled）。
  * ============================================================ */
-.topbar-companion,
-.topbar-thinking {
+.companion-picker,
+.thinking-picker {
     position: relative;
     display: inline-flex;
     align-items: center;
-    margin-left: 12px;
+    flex: 0 0 auto;
 }
+.companion-picker.hidden,
+.thinking-picker.hidden { display: none; }
 .companion-trigger,
 .thinking-trigger {
     appearance: none;
@@ -1372,33 +1376,35 @@ body.chat-view { /* in-conversation */ }
     font-size: 14px;
     line-height: 1;
 }
+.thinking-trigger::before {
+    content: "☰";
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--ink-3);
+    font-family: var(--font-serif);
+    font-size: 13px;
+    line-height: 1;
+}
 .companion-trigger:hover,
-.topbar-companion.is-open .companion-trigger,
+.companion-picker.is-open .companion-trigger,
 .thinking-trigger:hover,
-.topbar-thinking.is-open .thinking-trigger {
+.thinking-picker.is-open .thinking-trigger {
     border-color: var(--vermillion-line);
     color: var(--ink);
     background: var(--paper);
 }
-.topbar-companion.has-companion .companion-trigger,
-.topbar-thinking.has-overlay .thinking-trigger {
+.companion-picker.has-companion .companion-trigger,
+.thinking-picker.has-overlay .thinking-trigger {
     border-color: var(--vermillion-line);
     background: var(--vermillion-soft);
     color: var(--vermillion-deep);
 }
-.topbar-companion.has-companion .companion-trigger::before {
+.companion-picker.has-companion .companion-trigger::before,
+.thinking-picker.has-overlay .thinking-trigger::before {
     color: var(--vermillion-deep);
-}
-.companion-trigger-label,
-.thinking-trigger-label {
-    text-transform: uppercase;
-    font-size: 10px;
-    letter-spacing: 0.18em;
-    color: var(--ink-4);
-}
-.topbar-companion.has-companion .companion-trigger-label,
-.topbar-thinking.has-overlay .thinking-trigger-label {
-    color: var(--vermillion);
 }
 .companion-trigger-value,
 .thinking-trigger-value {
@@ -1412,10 +1418,10 @@ body.chat-view { /* in-conversation */ }
 .companion-menu,
 .thinking-menu {
     position: absolute;
-    top: calc(100% + 8px);
+    bottom: calc(100% + 8px);
     right: 0;
-    min-width: 280px;
-    max-width: 340px;
+    min-width: 260px;
+    max-width: 320px;
     background: var(--paper-1);
     border: 1px solid var(--border);
     border-radius: var(--r-xs);
@@ -1425,6 +1431,10 @@ body.chat-view { /* in-conversation */ }
     display: flex;
     flex-direction: column;
     gap: 2px;
+}
+.thinking-menu {
+    min-width: 280px;
+    max-width: 340px;
 }
 .companion-menu.hidden,
 .thinking-menu.hidden { display: none; }

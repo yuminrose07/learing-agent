@@ -44,11 +44,11 @@ const els = {
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
     topbarSubtitle: document.getElementById('topbar-subtitle'),
-    topbarCompanion: document.getElementById('topbar-companion'),
+    companionPicker: document.getElementById('companion-picker'),
     companionTrigger: document.getElementById('companion-trigger'),
     companionTriggerValue: document.getElementById('companion-trigger-value'),
     companionMenu: document.getElementById('companion-menu'),
-    topbarThinking: document.getElementById('topbar-thinking'),
+    thinkingPicker: document.getElementById('thinking-picker'),
     thinkingTrigger: document.getElementById('thinking-trigger'),
     thinkingTriggerValue: document.getElementById('thinking-trigger-value'),
     thinkingMenu: document.getElementById('thinking-menu'),
@@ -665,6 +665,9 @@ function hideWelcome() {
     currentView = 'chat';
     updateViewTheme('chat');
     els.welcomeScreen.classList.add('hidden');
+    // 进入会话后立即隐藏陪伴 / 思路 picker；会话内不允许再切风格 / 思路。
+    syncCompanionPickerVisibility();
+    syncThinkingPickerVisibility();
 }
 
 function updateTopbarPersona(personaKey, _mode = currentMode) {
@@ -718,9 +721,9 @@ function syncCompanionPickerLabel(settings = currentCompanion) {
         normalized.style,
         normalized.enabled
     );
-    if (els.topbarCompanion) {
-        els.topbarCompanion.dataset.companionStyle = normalized.style;
-        els.topbarCompanion.classList.toggle('has-companion', normalized.enabled);
+    if (els.companionPicker) {
+        els.companionPicker.dataset.companionStyle = normalized.style;
+        els.companionPicker.classList.toggle('has-companion', normalized.enabled);
     }
     if (els.companionMenu) {
         els.companionMenu.querySelectorAll('.companion-option').forEach(opt => {
@@ -768,14 +771,14 @@ function openCompanionMenu() {
     if (!els.companionMenu) return;
     els.companionMenu.classList.remove('hidden');
     els.companionTrigger.setAttribute('aria-expanded', 'true');
-    els.topbarCompanion.classList.add('is-open');
+    els.companionPicker.classList.add('is-open');
 }
 
 function closeCompanionMenu() {
     if (!els.companionMenu) return;
     els.companionMenu.classList.add('hidden');
     els.companionTrigger.setAttribute('aria-expanded', 'false');
-    els.topbarCompanion.classList.remove('is-open');
+    els.companionPicker.classList.remove('is-open');
 }
 
 async function applyCompanionSelection(styleKey) {
@@ -836,7 +839,7 @@ function setupCompanionPicker() {
         }
     });
     document.addEventListener('click', (e) => {
-        if (!els.topbarCompanion.contains(e.target)) closeCompanionMenu();
+        if (!els.companionPicker.contains(e.target)) closeCompanionMenu();
     });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeCompanionMenu();
@@ -860,9 +863,9 @@ function syncThinkingPickerLabel(personaKey) {
     const key = personaKey || 'neutral';
     const meta = getPersonaMeta(key);
     els.thinkingTriggerValue.textContent = meta.name;
-    if (els.topbarThinking) {
-        els.topbarThinking.dataset.personaKey = key;
-        els.topbarThinking.classList.toggle('has-overlay', key !== 'neutral');
+    if (els.thinkingPicker) {
+        els.thinkingPicker.dataset.personaKey = key;
+        els.thinkingPicker.classList.toggle('has-overlay', key !== 'neutral');
     }
     if (els.thinkingMenu) {
         els.thinkingMenu.querySelectorAll('.thinking-option').forEach(opt => {
@@ -904,30 +907,23 @@ function openThinkingMenu() {
     if (!els.thinkingMenu) return;
     els.thinkingMenu.classList.remove('hidden');
     els.thinkingTrigger.setAttribute('aria-expanded', 'true');
-    els.topbarThinking.classList.add('is-open');
+    els.thinkingPicker.classList.add('is-open');
 }
 
 function closeThinkingMenu() {
     if (!els.thinkingMenu) return;
     els.thinkingMenu.classList.add('hidden');
     els.thinkingTrigger.setAttribute('aria-expanded', 'false');
-    els.topbarThinking.classList.remove('is-open');
+    els.thinkingPicker.classList.remove('is-open');
 }
 
 async function applyPersonaSelection(personaKey) {
+    // picker 只在 home + learning 可见，所以 currentSessionId 必为 null。
+    // 这里只做本地更新；真正的"绑定到会话"由 sendMessage 在创建研习卷时 PUT 一次。
     const key = personaKey || 'neutral';
-    // Optimistic local update so the picker feels instant.
     currentPersonaKey = key === 'neutral' ? null : key;
     currentPersonaName = getPersonaDisplayName(key);
     syncThinkingPickerLabel(key);
-
-    if (!currentSessionId) return; // welcome screen — bind when session is created
-    try {
-        await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: key });
-    } catch (err) {
-        console.warn('更新思路失败:', err);
-        showToast('切换思路失败：' + err.message);
-    }
 }
 
 async function loadPersonaCatalog() {
@@ -951,7 +947,7 @@ function setupThinkingPicker() {
         }
     });
     document.addEventListener('click', (e) => {
-        if (!els.topbarThinking.contains(e.target)) closeThinkingMenu();
+        if (!els.thinkingPicker.contains(e.target)) closeThinkingMenu();
     });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeThinkingMenu();
@@ -1593,18 +1589,21 @@ async function switchMode(mode) {
 }
 
 function syncThinkingPickerVisibility() {
-    // 思路 (persona overlay) 仅服务研习；闲聊已分离，不再暴露思路选择。
-    if (!els.topbarThinking) return;
-    const hideForChat = currentMode === 'chat';
-    els.topbarThinking.classList.toggle('hidden', hideForChat);
-    if (hideForChat) closeThinkingMenu();
+    // 思路 (persona overlay) 仅服务研习的"首界面"；一卷研习开卷后即锁定（picker 整块消失）。
+    // 想换思路只能新开研习卷，避免开卷中途切换让前后语气割裂。
+    if (!els.thinkingPicker) return;
+    const showOnHome = currentMode === 'learning' && currentView === 'home';
+    els.thinkingPicker.classList.toggle('hidden', !showOnHome);
+    if (!showOnHome) closeThinkingMenu();
 }
 
 function syncCompanionPickerVisibility() {
-    if (!els.topbarCompanion) return;
-    const showForChat = currentMode === 'chat';
-    els.topbarCompanion.classList.toggle('hidden', !showForChat);
-    if (!showForChat) closeCompanionMenu();
+    // 陪伴 picker 仅在闲聊模式的"首界面"展示；一旦进入会话即锁定（picker 整块消失）。
+    // 想换风格只能新建对话，避免会话中途切换造成 profile 漂移。
+    if (!els.companionPicker) return;
+    const showOnHome = currentMode === 'chat' && currentView === 'home';
+    els.companionPicker.classList.toggle('hidden', !showOnHome);
+    if (!showOnHome) closeCompanionMenu();
 }
 
 function updateModeToolbar() {

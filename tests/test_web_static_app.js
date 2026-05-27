@@ -447,15 +447,43 @@ test('前端只暴露闲谈与研习入口', () => {
 });
 
 test('闲谈页暴露小月亮陪伴切换入口', () => {
-    assert.match(INDEX_SOURCE, /id="topbar-companion"/);
+    assert.match(INDEX_SOURCE, /id="companion-picker"/);
     assert.match(INDEX_SOURCE, /id="companion-trigger"/);
-    assert.match(INDEX_SOURCE, /companion-trigger-label">陪伴/);
+    // 已下沉到输入框右侧（input-wrapper 内），并去掉了 "陪伴" 这个标签字。
+    assert.doesNotMatch(INDEX_SOURCE, /id="topbar-companion"/);
+    assert.doesNotMatch(INDEX_SOURCE, /companion-trigger-label/);
+    // companion-picker 必须出现在 input-wrapper 里，介于 textarea 和 btn-send 之间。
+    const inputWrapperMatch = INDEX_SOURCE.match(/<div class="input-wrapper">[\s\S]*?<\/div>\s*<div class="input-hint">/);
+    assert.ok(inputWrapperMatch, 'input-wrapper block not found');
+    assert.match(inputWrapperMatch[0], /id="companion-picker"/);
     assert.ok(APP_SOURCE.includes("GET', '/companion-styles'"));
     assert.ok(APP_SOURCE.includes("PUT', `/sessions/${currentSessionId}/companion`"));
     assert.match(APP_SOURCE, /syncCompanionPickerVisibility/);
     assert.match(APP_SOURCE, /setupCompanionPicker/);
+    // home-only 锁：picker 只在 chat mode 的首界面可见，进入会话后整块隐藏。
+    assert.match(APP_SOURCE, /currentMode === 'chat' && currentView === 'home'/);
     assert.match(STYLE_SOURCE, /\.companion-trigger::before/);
     assert.match(STYLE_SOURCE, /content: "☾"/);
+});
+
+test('研习页思路 picker 与陪伴对称：下沉到输入框右侧 + 开卷前可选 + 开卷后锁定', () => {
+    assert.match(INDEX_SOURCE, /id="thinking-picker"/);
+    assert.match(INDEX_SOURCE, /id="thinking-trigger"/);
+    // 不再挂在 topbar，且不再有"思路"小标签字。
+    assert.doesNotMatch(INDEX_SOURCE, /id="topbar-thinking"/);
+    assert.doesNotMatch(INDEX_SOURCE, /thinking-trigger-label/);
+    // thinking-picker 必须和 companion-picker 一样落在 input-wrapper 内。
+    const inputWrapperMatch = INDEX_SOURCE.match(/<div class="input-wrapper">[\s\S]*?<\/div>\s*<div class="input-hint">/);
+    assert.ok(inputWrapperMatch, 'input-wrapper block not found');
+    assert.match(inputWrapperMatch[0], /id="thinking-picker"/);
+    // home-only 锁：picker 只在 learning mode 的首界面可见。
+    assert.match(APP_SOURCE, /currentMode === 'learning' && currentView === 'home'/);
+    // 欢迎页文案已对齐新交互——"开卷前可选 / 开卷后固定"，不再是"右上角切换"。
+    assert.match(INDEX_SOURCE, /开研习卷前可在输入框右侧/);
+    assert.doesNotMatch(INDEX_SOURCE, /右上角.{0,4}思路.{0,4}里切换/);
+    // CSS：思路 picker 有自己的 ::before 图标，且 .topbar-thinking 选择器已退役。
+    assert.match(STYLE_SOURCE, /\.thinking-trigger::before/);
+    assert.doesNotMatch(STYLE_SOURCE, /\.topbar-thinking/);
 });
 
 test('历史回放能显示陪伴徽章', () => {

@@ -68,26 +68,6 @@
                     <span class="topbar-subtitle" id="topbar-subtitle">尚未开始 · 直接输入即可开新一卷</span>
                 </div>
                 <div class="topbar-spacer"></div>
-                <div class="topbar-companion" id="topbar-companion">
-                    <button type="button" class="companion-trigger" id="companion-trigger" aria-haspopup="listbox" aria-expanded="false">
-                        <span class="companion-trigger-label">陪伴</span>
-                        <span class="companion-trigger-value" id="companion-trigger-value">关闭</span>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                    </button>
-                    <div class="companion-menu hidden" id="companion-menu" role="listbox">
-                        <!-- populated by JS from GET /companion-styles -->
-                    </div>
-                </div>
-                <div class="topbar-thinking" id="topbar-thinking">
-                    <button type="button" class="thinking-trigger" id="thinking-trigger" aria-haspopup="listbox" aria-expanded="false">
-                        <span class="thinking-trigger-label">思路</span>
-                        <span class="thinking-trigger-value" id="thinking-trigger-value">默认</span>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                    </button>
-                    <div class="thinking-menu hidden" id="thinking-menu" role="listbox">
-                        <!-- populated by JS from GET /personas -->
-                    </div>
-                </div>
             </header>
 
             <!-- 聊天区域 -->
@@ -101,11 +81,11 @@
                         <span class="welcome-kicker">學齋 · Learning Agent</span>
                         <div class="welcome-logo">學</div>
                         <h1>今日想从哪一题开始？</h1>
-                        <p class="welcome-subtitle">闲谈和研习彼此独立。闲谈适合轻量、放松的日常对话；研习会围绕一个主题形成研习卷，并在必要时先帮你收窄目标。在研习里需要换一种思考风格时，可在右上角「思路」里切换苏格拉底 / 费曼 / 蒙田 / 朱熹 / 笛卡尔等思路覆层。</p>
+                        <p class="welcome-subtitle">闲谈和研习彼此独立。闲谈适合轻量、放松的日常对话；研习会围绕一个主题形成研习卷，并在必要时先帮你收窄目标。开研习卷前可在输入框右侧「思路」里选定苏格拉底 / 费曼 / 蒙田 / 朱熹 / 笛卡尔等思路覆层，开卷后固定不变。</p>
                         <div class="welcome-pill-row">
                             <span class="welcome-pill">闲谈 · 直接对话</span>
                             <span class="welcome-pill">研习 · 单卷闭环</span>
-                            <span class="welcome-pill">思路 · 研习里可选</span>
+                            <span class="welcome-pill">思路 · 开卷前选定</span>
                         </div>
 
                         <!-- 未完成研习卷横幅 - JS 按需填充；无数据时保持 hidden 不占位 -->
@@ -173,6 +153,24 @@
             <div class="input-container">
                 <div class="input-wrapper">
                     <textarea id="message-input" rows="1" placeholder="向学伴提问…" disabled></textarea>
+                    <div class="companion-picker" id="companion-picker">
+                        <button type="button" class="companion-trigger" id="companion-trigger" aria-haspopup="listbox" aria-expanded="false" title="陪伴风格（仅首次开聊时可选）">
+                            <span class="companion-trigger-value" id="companion-trigger-value">关闭</span>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </button>
+                        <div class="companion-menu hidden" id="companion-menu" role="listbox">
+                            <!-- populated by JS from GET /companion-styles -->
+                        </div>
+                    </div>
+                    <div class="thinking-picker" id="thinking-picker">
+                        <button type="button" class="thinking-trigger" id="thinking-trigger" aria-haspopup="listbox" aria-expanded="false" title="思路覆层（仅开研习卷前可选）">
+                            <span class="thinking-trigger-value" id="thinking-trigger-value">默认</span>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </button>
+                        <div class="thinking-menu hidden" id="thinking-menu" role="listbox">
+                            <!-- populated by JS from GET /personas -->
+                        </div>
+                    </div>
                     <button id="btn-send" class="btn-submit" disabled aria-label="发送">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                     </button>
