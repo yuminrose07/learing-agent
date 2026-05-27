@@ -178,6 +178,9 @@ class TestListAndGet:
             result = await get_learning_unit(unit.id)
 
         assert result["id"] == unit.id
+        # Phase 1A：GET 载荷透出铸造状态字段
+        assert result["forge_stage"] == "entry"
+        assert result["temperature_state"] == "steady"
 
     @pytest.mark.asyncio
     async def test_get_missing_returns_404(self, mock_system):

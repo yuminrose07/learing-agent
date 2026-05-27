@@ -106,6 +106,38 @@
     font-weight: 400;
 }
 
+/* Phase 1A 铸造状态：absorbing 阶段在目标文案下展示当前铸造子阶段与本轮学习动作。
+ * 阶段 chip 用 vermillion（与 .lu-status-badge 同语言）；动作徽章用 muted ink
+ * （与 .lu-status-working 同语言），二者对比拉开主/次层级。 */
+.lu-forge-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+}
+.lu-forge-stage {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    padding: 3px 10px;
+    border-radius: 2px;
+    color: var(--vermillion-deep);
+    background: var(--vermillion-soft);
+    border: 1px solid var(--vermillion-line);
+}
+.lu-learning-action {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 3px 10px;
+    border-radius: 2px;
+    color: var(--ink-3);
+    background: rgba(107, 96, 86, 0.08);
+    border: 1px solid rgba(107, 96, 86, 0.22);
+}
+
 .lu-assumption {
     padding: 8px 12px;
     border-left: 2px solid var(--ochre, #b88a3a);

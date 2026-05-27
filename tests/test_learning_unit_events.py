@@ -453,6 +453,81 @@ class TestFirstValueDeliveredEvent:
         assert system.session_event_store.append_event.call_count == 0
 
 
+class TestForgeStageEvents:
+    """Phase 1A：_maybe_advance_forge_stage 推进 entry→collision 并发 FORGE_STAGE_CHANGED。"""
+
+    def _make_prepared_turn(self, mode: AgentMode = AgentMode.STUDY) -> PreparedSessionTurn:
+        profile = build_turn_profile(mode)
+        return PreparedSessionTurn(
+            effective_mode=mode,
+            runtime_input="x",
+            profile=profile,
+            stream_metadata={},
+        )
+
+    def test_first_study_response_advances_and_emits_once(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        _wire_store(system, unit)
+        session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
+
+        prepared = self._make_prepared_turn(AgentMode.STUDY)
+        system._maybe_advance_forge_stage(session, prepared, "首条实质回答")
+        # 二次调用：forge_stage 已是 collision，应静默（once-only 守卫）
+        system._maybe_advance_forge_stage(session, prepared, "再来一条")
+
+        assert unit.forge_stage == "collision"
+        changed = _calls_for(
+            system.session_event_store, "learning_unit.forge_stage_changed"
+        )
+        assert len(changed) == 1
+        _assert_payload_complete(changed[0], unit.id)
+        assert changed[0]["from"] == "entry"
+        assert changed[0]["to"] == "collision"
+        assert changed[0]["temperature_state"] == "steady"
+        assert changed[0]["reason"] == "first_value_delivered"
+
+    def test_empty_response_does_not_advance(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        _wire_store(system, unit)
+        session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
+
+        system._maybe_advance_forge_stage(
+            session, self._make_prepared_turn(AgentMode.STUDY), "   "
+        )
+
+        assert unit.forge_stage == "entry"
+        assert _calls_for(
+            system.session_event_store, "learning_unit.forge_stage_changed"
+        ) == []
+
+    def test_ask_mode_does_not_advance(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        _wire_store(system, unit)
+        session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
+
+        system._maybe_advance_forge_stage(
+            session, self._make_prepared_turn(AgentMode.ASK), "对齐反问的开场"
+        )
+
+        assert unit.forge_stage == "entry"
+        assert _calls_for(
+            system.session_event_store, "learning_unit.forge_stage_changed"
+        ) == []
+
+    def test_no_unit_attached_is_silent(self):
+        system = _build_event_capturing_system()
+        session = LearningSession(id="s-plain", learning_unit_id=None)
+
+        system._maybe_advance_forge_stage(
+            session, self._make_prepared_turn(AgentMode.STUDY), "回答"
+        )
+
+        assert system.session_event_store.append_event.call_count == 0
+
+
 class TestEventEmissionFaultTolerance:
     """append_event 抛异常时主流不应受影响（仅记日志）。"""
 

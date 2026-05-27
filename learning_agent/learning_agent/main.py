@@ -57,6 +57,7 @@ from learning_agent.learning_agent.companion_policy import (
     prepare_companion_turn,
 )
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
+from learning_agent.learning_agent.forge_policy import prepare_forge_stage_metadata
 from learning_agent.learning_agent.learning_unit_store import (
     ActiveUnitExistsError,
     LearningUnitStore,
@@ -1152,6 +1153,8 @@ class LearningAgentSystem:
             "learning_unit_phase": unit.phase,
             "alignment_state": unit.alignment_state,
             "objective_status": unit.objective_status,
+            "forge_stage": unit.forge_stage,
+            "temperature_state": unit.temperature_state,
         }
         if decision is not None and decision.mode != "none":
             unit_metadata["alignment_reason"] = decision.reason
@@ -1161,6 +1164,9 @@ class LearningAgentSystem:
                 unit_metadata["suggested_objective"] = decision.suggested_objective
         if effective_mode == AgentMode.ASK:
             unit_metadata["alignment"] = True
+        if effective_mode == AgentMode.STUDY and unit.phase == "absorbing":
+            forge_plan = prepare_forge_stage_metadata(unit, user_input)
+            unit_metadata["learning_action"] = forge_plan.learning_action
         if effective_mode == AgentMode.TEACH and unit.teach_session is not None:
             unit_metadata["teach_session_id"] = unit.teach_session.id
             unit_metadata["teach_state"] = unit.teach_session.state
@@ -1515,6 +1521,55 @@ class LearningAgentSystem:
             },
         )
 
+    def _maybe_advance_forge_stage(
+        self,
+        session: LearningSession,
+        prepared_turn: PreparedSessionTurn,
+        response_text: str,
+    ) -> None:
+        """Phase 1A：首轮 STUDY absorbing 成功后将 forge_stage 从 entry 推进为 collision。
+
+        守卫与 _maybe_emit_first_value 同构：
+        - 响应非空
+        - 会话挂着 learning_unit
+        - 本轮 effective_mode 是 STUDY
+        - 卷处于 absorbing
+        - forge_stage 仍为 entry（once-only）
+        """
+        if not response_text.strip():
+            return
+        unit_id = session.learning_unit_id
+        if not unit_id:
+            return
+        if prepared_turn.effective_mode != AgentMode.STUDY:
+            return
+        unit = self.learning_unit_store.get(unit_id)
+        if unit is None:
+            return
+        if unit.phase != "absorbing":
+            return
+        if unit.forge_stage != "entry":
+            return
+        unit.forge_stage = "collision"
+        unit.updated_at = datetime.now(timezone.utc)
+        try:
+            self.learning_unit_store.save(unit)
+        except Exception:
+            logger.exception(
+                f"[System] Failed to persist forge_stage advance for unit {unit_id}"
+            )
+            return
+        self._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_FORGE_STAGE_CHANGED,
+            extra={
+                "from": "entry",
+                "to": "collision",
+                "temperature_state": unit.temperature_state,
+                "reason": "first_value_delivered",
+            },
+        )
+
     async def _stream_teach_answer_flow(
         self,
         session: LearningSession,
@@ -1800,6 +1855,9 @@ class LearningAgentSystem:
                     try:
                         if completed:
                             self._maybe_emit_first_value(
+                                prepared_session, prepared_turn, "".join(response_parts)
+                            )
+                            self._maybe_advance_forge_stage(
                                 prepared_session, prepared_turn, "".join(response_parts)
                             )
                             self._maybe_fire_concept_extraction(

@@ -626,6 +626,74 @@ test('研习卷停止动作会调用 stop API 并派发带主题的 stopped 事�
     });
 });
 
+test('absorbing 阶段渲染铸造阶段标签（入局），无 learning_action 时不显示动作徽章', async () => {
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        if (url.endsWith('/learning-units/lu-forge') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-forge',
+                    session_id: 'sess-forge',
+                    phase: 'absorbing',
+                    alignment_state: 'idle',
+                    objective_status: 'working',
+                    objective: { text: '理解 attention' },
+                    forge_stage: 'entry',
+                    temperature_state: 'steady',
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-forge';
+    sandbox.window.__learningUnitUI.state.unitId = 'lu-forge';
+    await sandbox.window.__learningUnitUI.refreshUnit();
+
+    const card = sandbox.document.getElementById('learning-unit-card');
+    assert.match(card.innerHTML, /lu-forge-row/);
+    assert.match(card.innerHTML, /lu-forge-stage/);
+    assert.match(card.innerHTML, /入局/);
+    // 没有 learning_action 时不渲染动作徽章
+    assert.ok(!card.innerHTML.includes('lu-learning-action'));
+    assert.equal(sandbox.window.__learningUnitUI.state.forgeStage, 'entry');
+});
+
+test('absorbing 阶段渲染碰撞阶段与学习动作徽章（准备试答）', async () => {
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        if (url.endsWith('/learning-units/lu-forge2') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-forge2',
+                    session_id: 'sess-forge2',
+                    phase: 'absorbing',
+                    alignment_state: 'idle',
+                    objective_status: 'working',
+                    objective: { text: '理解 attention' },
+                    forge_stage: 'collision',
+                    temperature_state: 'steady',
+                    learning_action: 'prepare_to_guess',
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-forge2';
+    sandbox.window.__learningUnitUI.state.unitId = 'lu-forge2';
+    await sandbox.window.__learningUnitUI.refreshUnit();
+
+    const card = sandbox.document.getElementById('learning-unit-card');
+    assert.match(card.innerHTML, /碰撞/);
+    assert.match(card.innerHTML, /lu-learning-action/);
+    assert.match(card.innerHTML, /准备试答/);
+    assert.equal(sandbox.window.__learningUnitUI.state.forgeStage, 'collision');
+    assert.equal(sandbox.window.__learningUnitUI.state.learningAction, 'prepare_to_guess');
+});
+
 test('renderChatMarkdown 使用 markdown-it 渲染表格与 br 换行', () => {
     const { renderChatMarkdown } = loadAppForTest();
     const html = renderChatMarkdown([

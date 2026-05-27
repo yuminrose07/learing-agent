@@ -255,6 +255,10 @@ class TestTeachProtocol:
         assert meta["alignment"] is True
         assert meta["alignment_state"] == "active"
         assert meta["alignment_reason"] == "missing_learnable_target"
+        # 铸造状态随卷透传，但 ASK 轮不派生 learning_action
+        assert meta["forge_stage"] == "entry"
+        assert meta["temperature_state"] == "steady"
+        assert "learning_action" not in meta
         # unit 状态写回 + 限流计数 +1
         assert unit.alignment_state == "active"
         assert unit.clarification_count == 1
@@ -373,6 +377,10 @@ class TestTeachProtocol:
         assert meta["mode"] == "study"
         assert meta["learning_unit_phase"] == "absorbing"
         assert meta["learning_unit_id"] == unit.id
+        # Phase 1A 铸造状态骨架：STUDY absorbing 轮带 forge_stage + learning_action
+        assert meta["forge_stage"] == "entry"
+        assert meta["temperature_state"] == "steady"
+        assert meta["learning_action"] == "orient"
         # absorbing 阶段不带 alignment / teach_session_id
         assert "alignment" not in meta
         assert "teach_session_id" not in meta
@@ -407,6 +415,10 @@ class TestTeachProtocol:
         assert meta["learning_unit_phase"] == "outputting"
         assert meta["teach_session_id"] == teach.id
         assert meta["teach_state"] == "prompted"
+        # 铸造状态随卷透传，但 TEACH 轮不派生 learning_action
+        assert meta["forge_stage"] == unit.forge_stage
+        assert meta["temperature_state"] == unit.temperature_state
+        assert "learning_action" not in meta
 
     @pytest.mark.asyncio
     async def test_prepare_session_turn_consolidated_phase_raises(self):
