@@ -466,16 +466,16 @@ alignment_state:
 
 ### 9.1 `_prepare_learning_unit_turn()` 的收口方式
 
-当前逻辑是：
+旧逻辑曾是：
 
 - `aligning -> ASK`
 - `absorbing -> CHAT`
 - `outputting -> TEACH`
 
-新逻辑建议改为：
+2026-05-27 闲聊 / 研学 profile 分离后，新逻辑进一步收口为：
 
 1. 先根据 `phase` 决定主协议：
-   - `absorbing -> CHAT`
+   - `absorbing -> STUDY`
    - `outputting -> TEACH`
    - `consolidated -> 拒绝继续对话`
 2. 再根据 `alignment_state` 和本轮触发器判断是否临时覆写为 `ASK`
@@ -486,7 +486,7 @@ alignment_state:
 if unit.phase == "consolidated":
     reject_read_only()
 
-effective_mode = AgentMode.CHAT if unit.phase == "absorbing" else AgentMode.TEACH
+effective_mode = AgentMode.STUDY if unit.phase == "absorbing" else AgentMode.TEACH
 
 if unit.phase == "absorbing" and should_run_alignment(unit, user_input):
     effective_mode = AgentMode.ASK
@@ -787,3 +787,7 @@ class AlignmentDecision(BaseModel):
 
 - **学习卷入口不再强制 `aligning -> ASK`，改为默认直学、按需对齐。**
 
+2026-05-27 追加收口：
+
+- **学习卷 absorbing 不再借用 `CHAT_PROFILE`，改为默认使用 `STUDY_PROFILE`；只有对齐门本轮临时覆写为 `ASK`。**
+- 这使闲聊模式和研学模式可以独立调整提示词、记忆开关、上下文预算和工具策略。

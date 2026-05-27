@@ -219,7 +219,7 @@ class LearningUnit(BaseModel):
         ``alignment_state`` 决定（adaptive alignment §9.1），不在本方法范围。
         """
         if self.phase == "absorbing":
-            return "chat"
+            return "study"
         if self.phase == "outputting":
             return "teach"
         return ""

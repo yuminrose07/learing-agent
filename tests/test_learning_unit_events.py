@@ -14,7 +14,7 @@
 - ``refine_objective`` → OBJECTIVE_REFINED
 - ``_apply_alignment_decision``：active → STARTED；suggested → SUGGESTED；
   user_request 消费 → RESOLVED；none → 静默
-- ``_maybe_emit_first_value``：absorbing CHAT 首条非空响应 → FIRST_VALUE_DELIVERED；
+- ``_maybe_emit_first_value``：absorbing STUDY 首条非空响应 → FIRST_VALUE_DELIVERED；
   二次调用幂等（once-only 由 ``first_value_delivered_at`` 守卫）
 
 每条事件 payload 必带最小集 ``{learning_unit_id, phase, alignment_state,
@@ -382,7 +382,7 @@ class TestAlignmentEvents:
 
 
 class TestFirstValueDeliveredEvent:
-    def _make_prepared_turn(self, mode: AgentMode = AgentMode.CHAT) -> PreparedSessionTurn:
+    def _make_prepared_turn(self, mode: AgentMode = AgentMode.STUDY) -> PreparedSessionTurn:
         profile = build_turn_profile(mode)
         return PreparedSessionTurn(
             effective_mode=mode,
@@ -391,13 +391,13 @@ class TestFirstValueDeliveredEvent:
             stream_metadata={},
         )
 
-    def test_first_absorbing_chat_response_emits_once(self):
+    def test_first_absorbing_study_response_emits_once(self):
         system = _build_event_capturing_system()
         unit = _make_unit(phase="absorbing")
         _wire_store(system, unit)
         session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
 
-        prepared = self._make_prepared_turn(AgentMode.CHAT)
+        prepared = self._make_prepared_turn(AgentMode.STUDY)
         system._maybe_emit_first_value(session, prepared, "首条实质回答")
         # 二次调用：first_value_delivered_at 已置位，应静默
         system._maybe_emit_first_value(session, prepared, "再来一条")
@@ -419,7 +419,7 @@ class TestFirstValueDeliveredEvent:
         session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
 
         system._maybe_emit_first_value(
-            session, self._make_prepared_turn(AgentMode.CHAT), "   "
+            session, self._make_prepared_turn(AgentMode.STUDY), "   "
         )
 
         assert _calls_for(
@@ -447,7 +447,7 @@ class TestFirstValueDeliveredEvent:
         session = LearningSession(id="s-plain", learning_unit_id=None)
 
         system._maybe_emit_first_value(
-            session, self._make_prepared_turn(AgentMode.CHAT), "回答"
+            session, self._make_prepared_turn(AgentMode.STUDY), "回答"
         )
 
         assert system.session_event_store.append_event.call_count == 0
