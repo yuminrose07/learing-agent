@@ -86,6 +86,13 @@ aside.sidebar {
     font-size: 12px;
 }
 .sidebar-header a:hover { color: var(--vermillion); }
+.sidebar-header-links {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 12px;
+}
+.sidebar-header-sep { color: var(--ink-4); }
 
 .sidebar-section {
     padding: 14px 0 6px;
