@@ -61,8 +61,13 @@ from learning_agent.learning_agent.answer_quality import (
 )
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
 from learning_agent.learning_agent.companion_policy import (
+    CompanionIntent,
     CompanionTurnPlan,
+    classify_companion_intent,
     prepare_companion_turn,
+)
+from learning_agent.learning_agent.companion_intent_classifier import (
+    CompanionIntentClassifier,
 )
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
 from learning_agent.learning_agent.forge_policy import (
@@ -219,6 +224,10 @@ class LearningAgentSystem:
         self.teach_judge = TeachJudge(
             provider=self.provider,
             model_name=self.config.teach_judge_model,
+        )
+        self.companion_intent_classifier = CompanionIntentClassifier(
+            provider=self.provider,
+            model_name=self.config.companion_intent_model,
         )
         # 状态快照只用于观测，不再触发持久化层 snapshot/delta compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
@@ -1133,10 +1142,14 @@ class LearningAgentSystem:
         if session.mode != requested_mode:
             session = self.update_session_mode(session.id, requested_mode)
 
+        intent_override = await self._maybe_classify_companion_intent(
+            user_input, requested_mode
+        )
         companion_plan = prepare_companion_turn(
             session=session,
             user_input=user_input,
             requested_mode=requested_mode,
+            intent_override=intent_override,
         )
         self._apply_companion_turn_plan(session, companion_plan)
 
@@ -1211,8 +1224,33 @@ class LearningAgentSystem:
                     "intent": plan.intent.value,
                     "advice_level": plan.advice_level.value,
                     "profile_changed": plan.profile_changed,
+                    "source": plan.message_metadata.get(
+                        "companion_intent_source", "keyword"
+                    ),
                 },
             )
+
+    async def _maybe_classify_companion_intent(
+        self,
+        user_input: str,
+        requested_mode: AgentMode,
+    ) -> CompanionIntent | None:
+        """关键字未命中时调一次 LLM 做语义级 intent 兜底。
+
+        只在 mode==CHAT、关键字结果是 NONE、且 input 长度 >= 6 字符时调用。
+        任意失败均返回 None，让 ``prepare_companion_turn`` 走关键字结果。
+        """
+        if requested_mode != AgentMode.CHAT:
+            return None
+        stripped = user_input.strip()
+        if len(stripped) < 6:
+            return None
+        if classify_companion_intent(stripped.lower()) != CompanionIntent.NONE:
+            return None
+        classifier = getattr(self, "companion_intent_classifier", None)
+        if classifier is None:
+            return None
+        return await classifier.classify(stripped)
 
     async def _build_compaction_plan(
         self,

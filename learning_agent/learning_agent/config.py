@@ -96,6 +96,14 @@ class Config:
             or learning_unit_from_file.get("teach_judge_model")
         )
 
+        # 闲聊陪伴意图分类的 LLM 兜底（关键字未命中时调一次）。建议指向
+        # cheap-tier，例如本项目接入 DashScope 时用 ``qwen-turbo``；
+        # 主模型 ``qwen-max`` 的延迟和单价对"6 选 1"分类都过重。
+        self.companion_intent_model: Optional[str] = (
+            os.getenv("LA_COMPANION_INTENT_MODEL")
+            or learning_unit_from_file.get("companion_intent_model")
+        )
+
         # Tool Guard 配置
         tool_guard_from_file = file_values.get("tool_guard", {})
         rules_from_file = tool_guard_from_file.get("rules", {})

@@ -187,42 +187,28 @@ def prepare_companion_turn(
     session: LearningSession,
     user_input: str,
     requested_mode: AgentMode,
+    intent_override: CompanionIntent | None = None,
 ) -> CompanionTurnPlan:
     if requested_mode != AgentMode.CHAT:
         return CompanionTurnPlan(enabled=False)
 
     lowered = user_input.strip().lower()
     settings = resolve_companion_settings(session)
-    requested_style = _detect_style_request(lowered)
-    requested_disable = _detect_disable_request(lowered)
     intent = classify_companion_intent(lowered)
+    intent_source = "keyword"
+    if intent == CompanionIntent.NONE and intent_override is not None and intent_override != CompanionIntent.NONE:
+        intent = intent_override
+        intent_source = "llm"
     turn_triggered = _contains_any(lowered, _TURN_TRIGGER_KEYWORDS)
+    llm_triggered = intent_source == "llm"
 
-    if requested_disable:
-        return CompanionTurnPlan(
-            enabled=False,
-            profile_changed=settings.enabled,
-            metadata_updates={
-                "chat_profile": None,
-                "companion_style": None,
-                "companion_last_intent": CompanionIntent.NONE.value,
-            },
-            message_metadata={
-                "chat_profile": "default",
-                "companion_enabled": False,
-                "companion_intent": CompanionIntent.NONE.value,
-            },
-        )
-
-    profile_changed = False
     style = settings.style
-    if requested_style is not None:
-        style = requested_style
-        profile_changed = True
-    elif not settings.enabled and turn_triggered:
+    if not settings.enabled and (turn_triggered or llm_triggered):
+        # 用户在首页没显式开陪伴，但本轮表达了减压信号，单轮给一次温柔兜底，
+        # 不写回 session metadata（profile_changed 保持 False）。
         style = CompanionStyle.WARM_GIRLFRIEND
 
-    enabled = settings.enabled or requested_style is not None or turn_triggered
+    enabled = settings.enabled or turn_triggered or llm_triggered
     if not enabled or style == CompanionStyle.OFF:
         return CompanionTurnPlan(enabled=False)
 
@@ -242,20 +228,13 @@ def prepare_companion_turn(
     metadata_updates: dict[str, Any] = {
         "companion_last_intent": intent.value,
     }
-    if profile_changed or requested_style is not None:
-        metadata_updates.update(
-            {
-                "chat_profile": "companion",
-                "companion_style": style.value,
-                "companion_advice_level": advice_level.value,
-            }
-        )
     message_metadata = {
         "chat_profile": "companion",
         "companion_enabled": True,
         "companion_style": style.value,
         "companion_style_name": _STYLE_DISPLAY_NAMES[style],
         "companion_intent": intent.value,
+        "companion_intent_source": intent_source,
         "companion_advice_level": advice_level.value,
         "stress_relief": True,
     }
@@ -266,8 +245,8 @@ def prepare_companion_turn(
         advice_level=advice_level,
         prompt_addendum=prompt_addendum,
         disable_tools=intent != CompanionIntent.RETURN_TO_STUDY,
-        signal_detected=turn_triggered or requested_style is not None,
-        profile_changed=profile_changed,
+        signal_detected=turn_triggered or llm_triggered,
+        profile_changed=False,
         metadata_updates=metadata_updates,
         message_metadata=message_metadata,
     )
@@ -314,32 +293,6 @@ def build_companion_prompt_addendum(
         "- 可以有温柔、偏爱、轻微撒娇感，但不要伪装真人伴侣。\n"
         "- 不使用控制欲、占有欲、羞辱、PUA 式表达。\n"
         "- 如果用户表达严重自伤风险，立刻退出角色扮演，给出安全支持与求助建议。"
-    )
-
-
-def _detect_style_request(text: str) -> CompanionStyle | None:
-    if any(key in text for key in ("女友模式", "电子女友", "女朋友模式", "陪伴模式")):
-        return CompanionStyle.WARM_GIRLFRIEND
-    if any(key in text for key in ("活泼点", "撒娇", "逗我", "开心点")):
-        return CompanionStyle.PLAYFUL_GIRLFRIEND
-    if any(key in text for key in ("安静陪", "安静点", "话少点", "别太腻")):
-        return CompanionStyle.QUIET_COMPANION
-    if any(key in text for key in ("温柔点", "温柔陪")):
-        return CompanionStyle.WARM_GIRLFRIEND
-    return None
-
-
-def _detect_disable_request(text: str) -> bool:
-    return any(
-        key in text
-        for key in (
-            "关闭女友模式",
-            "退出女友模式",
-            "关闭陪伴模式",
-            "退出陪伴模式",
-            "正常模式",
-            "不用哄",
-        )
     )
 
 
