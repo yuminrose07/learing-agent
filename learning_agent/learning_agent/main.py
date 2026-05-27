@@ -1,16 +1,15 @@
 """
 Learning-Agent 主入口。
 
-本文件同时承载两类代码：
-- Product/Application 层的 `LearningAgentSystem`，负责系统装配与产品级编排
-- Interface 层的 CLI 入口，负责命令解析与终端交互适配
+承载 Product/Application 层的 ``LearningAgentSystem``，负责系统装配与产品级编排。
+Interface 层的交互式 CLI 已下沉到 ``cli.py``；本文件末尾仅保留 ``__main__``
+启动器，按 ``--web`` 在 web server 与 ``cli.interactive_cli`` 之间路由。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -49,6 +48,8 @@ from learning_agent.ai.openai_provider import OpenAIProvider
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
     COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
+    apply_alignment_decision,
+    build_absorbing_opening_addendum,
     should_run_alignment,
 )
 from learning_agent.learning_agent.answer_quality import (
@@ -93,27 +94,6 @@ from learning_agent.learning_agent.session_migration import migrate_all_sessions
 from learning_agent.learning_agent.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
-
-
-_ABSORBING_OPENING_TEMPLATE = """\
-本轮是这个学习卷的首轮回答。请严格按以下结构输出，先教再建议：
-
-1. 工作目标卡片（一句话）
-   开头复述："我先按这个目标带你学：<对学习目标的简短复述>"
-   学习目标原文：{objective}
-
-2. 学习地图（3-5 个 bullet）
-   列出本卷会涵盖的模块 / 概念 / 学习顺序。
-
-3. 第一段实质讲解
-   从地图的第一项切口开始，直接给一段有内容的解释——不要只是大纲。
-{suggestion_block}\
-不要先反问、不要先要求确认。"""
-
-_ABSORBING_OPENING_SUGGESTION_BLOCK = """
-4. 收窄建议（仅本轮）
-   在最末尾附一句："如果你想更聚焦，我可以帮你收窄成 <更具体的方向>"。
-"""
 
 
 class SessionNotFoundError(LookupError):
@@ -1112,23 +1092,8 @@ class LearningAgentSystem:
         decision: Optional[AlignmentDecision],
         effective_mode: AgentMode,
     ) -> Optional[str]:
-        """absorbing 首轮的 system prompt 增量（adaptive alignment §6.1 / §6.2）。
-
-        触发条件：absorbing + STUDY + 本卷此前没有过 assistant 回答。
-        B 档（suggested）追加"收窄建议"段；A 档不附加。C 档走 ASK 不进这里。
-        """
-        if effective_mode != AgentMode.STUDY or unit.phase != "absorbing":
-            return None
-        if any(e.role == MessageRole.ASSISTANT for e in session.entries):
-            return None
-        suggestion_block = (
-            _ABSORBING_OPENING_SUGGESTION_BLOCK
-            if decision is not None and decision.mode == "suggested"
-            else ""
-        )
-        return _ABSORBING_OPENING_TEMPLATE.format(
-            objective=unit.objective.text.strip() or "（待定）",
-            suggestion_block=suggestion_block,
+        return build_absorbing_opening_addendum(
+            session, unit, decision, effective_mode
         )
 
     async def _apply_alignment_decision(
@@ -1136,77 +1101,12 @@ class LearningAgentSystem:
         unit: LearningUnit,
         decision: AlignmentDecision,
     ) -> None:
-        """把策略结果写回 unit；同时维护 §9.3 #2/#3 的持久化计数器。
-
-        ``alignment_state`` 映射：``none → idle`` / ``suggested → suggested`` /
-        ``active → active``。``user_request`` 是一次性消费：本轮以 active 表达，
-        但 apply 时立刻转入 ``resolved``，不参与 §9.3 #1 限流计数。
-
-        计数器：
-        - ``active`` 且非 ``user_request``：``clarification_count += 1`` (§9.3 #1)
-        - ``suggested``：``suggestion_count += 1`` (§9.3 #2)
-        - 每次进入此方法（一次 absorbing turn 入口）：``nag_cooldown_remaining``
-          若大于 0 则减 1 (§9.3 #3)。冷静期与策略判断结果无关，是绝对回合数。
-        """
-        state_map = {"none": "idle", "suggested": "suggested", "active": "active"}
-        new_state = state_map[decision.mode]
-        is_user_request = decision.reason == "user_request"
-        if is_user_request:
-            # 用户主动触发的对齐本轮即被消费，下一轮回归 heuristic
-            new_state = "resolved"
-        will_bump_clarification = decision.mode == "active" and not is_user_request
-        will_bump_suggestion = decision.mode == "suggested"
-
-        async with self.learning_unit_store.lock(unit.id):
-            latest = self.learning_unit_store.get(unit.id) or unit
-            latest.alignment_state = new_state
-            latest.alignment_reason = decision.reason
-            latest.assumption_note = decision.assumption_note
-            if will_bump_clarification:
-                latest.clarification_count += 1
-                latest.last_alignment_at = datetime.now(timezone.utc)
-            if will_bump_suggestion:
-                latest.suggestion_count += 1
-                latest.last_alignment_at = datetime.now(timezone.utc)
-            if latest.nag_cooldown_remaining > 0:
-                latest.nag_cooldown_remaining -= 1
-            self.learning_unit_store.save(latest)
-            # caller 持有的 unit 与 store 缓存指向同一对象，确保元数据立刻可见
-            if latest is not unit:
-                unit.alignment_state = latest.alignment_state
-                unit.alignment_reason = latest.alignment_reason
-                unit.assumption_note = latest.assumption_note
-                unit.clarification_count = latest.clarification_count
-                unit.suggestion_count = latest.suggestion_count
-                unit.nag_cooldown_remaining = latest.nag_cooldown_remaining
-                unit.last_alignment_at = latest.last_alignment_at
-
-        # M1：把策略结果翻译成产品事件。idle 静默；user_request 在本轮被消费
-        # 为 resolved，发 RESOLVED；suggested 发 SUGGESTED；其余 active 发 STARTED。
-        if is_user_request:
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_ALIGNMENT_RESOLVED,
-                extra={"trigger": "user_request_consumed"},
-            )
-        elif decision.mode == "suggested":
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_ALIGNMENT_SUGGESTED,
-                extra={
-                    "suggested_objective": decision.suggested_objective or "",
-                    "suggestion_count": latest.suggestion_count,
-                },
-            )
-        elif decision.mode == "active":
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_ALIGNMENT_STARTED,
-                extra={
-                    "trigger": decision.reason or "policy",
-                    "clarification_count": latest.clarification_count,
-                },
-            )
+        await apply_alignment_decision(
+            store=self.learning_unit_store,
+            emit_unit_event=self._emit_unit_event,
+            unit=unit,
+            decision=decision,
+        )
 
     async def _prepare_session_turn(
         self,
@@ -1696,170 +1596,6 @@ class LearningAgentSystem:
         )
         return session.id
 
-    async def chat(self, user_input: str, mode: AgentMode = AgentMode.CHAT) -> None:
-        """
-        执行一轮对话，流式输出到 stdout。
-        """
-        if not self._current_session:
-            await self.start_session()
-
-        session = self._current_session
-        if mode == AgentMode.ASK:
-            print(f"\n[You (Ask)] {user_input}\n")
-        else:
-            print(f"\n[You] {user_input}\n")
-        print("[Assistant] ", end="", flush=True)
-
-        try:
-            async for chunk in self.stream_session_chat(session.id, user_input, mode=mode):
-                print(chunk.content, end="", flush=True)
-            print()  # 换行
-        except Exception as e:
-            logger.exception(f"[System] Chat error: {e}")
-            print(f"\n[Error] {e}")
-
-    async def show_memory(self) -> None:
-        """展示当前记忆状态。"""
-        print("\n=== Memory Status ===")
-        print(f"L1 Working candidates: {len(self.memory_manager.get_l1_candidates())}")
-        print(f"L2 Long-term nodes: {len(self.memory_manager.get_l2_nodes())}")
-        print(f"L3 Archive nodes: {len(self.memory_manager.get_l3_nodes())}")
-        due = self.memory_manager.get_due_reviews()
-        print(f"Due reviews: {len(due)}")
-        for node in due[:5]:
-            print(f"  - [{node.mastery_level.value}] {node.content[:60]}...")
-        print("====================\n")
-
-    async def confirm_knowledge(self, node_id: str) -> None:
-        """手动确认 L1 候选知识晋升到 L2。"""
-        promoted = await self.confirm_knowledge_candidate(node_id, source="user")
-        if promoted:
-            print(f"Knowledge node {node_id} confirmed and promoted to L2.")
-        else:
-            print(f"Candidate {node_id} not found in working memory.")
-
-    async def show_metrics(self) -> None:
-        """展示可观测性指标。"""
-        summary = self.observability.get_metrics_summary()
-        print("\n=== Metrics Summary ===")
-        print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
-        print("=======================\n")
-
-
-async def interactive_cli(argv: Optional[list[str]] = None) -> None:
-    """Interface 层 CLI 入口。"""
-    parser = argparse.ArgumentParser(description="Learning-Agent CLI")
-    parser.add_argument(
-        "--config", "-c",
-        type=str,
-        default=None,
-        help="Path to config file (YAML/JSON/TOML). "
-             "Defaults to config.yaml / config.json in current directory.",
-    )
-    parser.add_argument(
-        "--show-config",
-        action="store_true",
-        help="Print loaded configuration and exit.",
-    )
-    parser.add_argument(
-        "--web",
-        action="store_true",
-        help="Start the web API server instead of interactive CLI.",
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="Host to bind the web server (default: 127.0.0.1).",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to bind the web server (default: 8000).",
-    )
-    args = parser.parse_args(argv)
-
-    config = Config(config_path=args.config)
-
-    if args.show_config:
-        print(json.dumps(config.to_dict(), indent=2, ensure_ascii=False))
-        sys.exit(0)
-
-    system = LearningAgentSystem(config)
-
-    try:
-        await system.initialize()
-    except RuntimeError as e:
-        print(f"Initialization failed: {e}")
-        print("Please set OPENAI_API_KEY environment variable.")
-        sys.exit(1)
-
-    print("\n🧠 Learning-Agent v0.1.0")
-    print("Type /help for available commands.\n")
-
-    # 自动创建默认目标与会话
-    obj = await system.create_objective("General Learning", "Default learning objective")
-    session_id = await system.start_session(obj.id)
-    print(f"Created default objective: {obj.title}")
-    print(f"Started session: {session_id}\n")
-
-    while True:
-        try:
-            user_input = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
-            break
-
-        if not user_input:
-            continue
-
-        if user_input.startswith("/"):
-            parts = user_input.split()
-            cmd = parts[0].lower()
-
-            if cmd == "/quit" or cmd == "/exit":
-                break
-            elif cmd == "/help":
-                print(
-                    """
-Commands:
-  /quit, /exit          Exit the application
-  /memory               Show memory status
-  /metrics              Show observability metrics
-  /confirm <node_id>    Confirm a knowledge candidate to L2
-  /save                 Save state manually
-  /ask <message>        Send message in Ask mode (alignment first)
-  /help                 Show this help message
-"""
-                )
-            elif cmd == "/memory":
-                await system.show_memory()
-            elif cmd == "/metrics":
-                await system.show_metrics()
-            elif cmd == "/confirm":
-                if len(parts) < 2:
-                    print("Usage: /confirm <node_id>")
-                else:
-                    await system.confirm_knowledge(parts[1])
-            elif cmd == "/save":
-                await system.save_state()
-                print("State saved.")
-            elif cmd == "/ask":
-                ask_input = user_input[len("/ask "):].strip()
-                if not ask_input:
-                    print("Usage: /ask <your question>")
-                else:
-                    await system.chat(ask_input, mode=AgentMode.ASK)
-            else:
-                print(f"Unknown command: {cmd}")
-            continue
-
-        # 普通对话
-        await system.chat(user_input)
-
-    await system.shutdown()
-
 
 if __name__ == "__main__":
     # 提前解析参数，web 模式需要在 asyncio.run 之外启动，避免嵌套事件循环
@@ -1883,4 +1619,5 @@ if __name__ == "__main__":
             reload=False,
         )
     else:
+        from learning_agent.learning_agent.cli import interactive_cli
         asyncio.run(interactive_cli(sys.argv[1:]))

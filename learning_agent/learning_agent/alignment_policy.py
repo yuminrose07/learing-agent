@@ -10,12 +10,23 @@ Product 层 (``_prepare_learning_unit_turn``) 调用它拿 ``AlignmentDecision``
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Literal, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Callable, Literal, Optional
 
 from pydantic import BaseModel
 
+from learning_agent.ai import AgentMode, MessageRole
 from learning_agent.ai.learning_unit import LearningUnit
+from learning_agent.learning_agent.session_events import SessionEventType
+
+if TYPE_CHECKING:
+    from learning_agent.ai import LearningSession
+    from learning_agent.learning_agent.learning_unit_store import LearningUnitStore
+
+
+logger = logging.getLogger(__name__)
 
 AlignmentMode = Literal["none", "suggested", "active"]
 AlignmentReason = Literal[
@@ -250,6 +261,144 @@ def _apply_rate_limits(
     return decision
 
 
+# ---------------------------------------------------------------------------
+# 注入式 advance（带副作用）
+#
+# 上面是「纯 plan 派生」逻辑：无 I/O、无事件、可单测。
+# 下面是「副作用编排」：把 store/事件回调由调用方注入，本模块只负责
+# 守卫判定与状态推进的纯逻辑组合，与 forge_policy 同 pattern。
+# ---------------------------------------------------------------------------
+
+
+ABSORBING_OPENING_TEMPLATE = """\
+本轮是这个学习卷的首轮回答。请严格按以下结构输出，先教再建议：
+
+1. 工作目标卡片（一句话）
+   开头复述："我先按这个目标带你学：<对学习目标的简短复述>"
+   学习目标原文：{objective}
+
+2. 学习地图（3-5 个 bullet）
+   列出本卷会涵盖的模块 / 概念 / 学习顺序。
+
+3. 第一段实质讲解
+   从地图的第一项切口开始，直接给一段有内容的解释——不要只是大纲。
+{suggestion_block}\
+不要先反问、不要先要求确认。"""
+
+ABSORBING_OPENING_SUGGESTION_BLOCK = """
+4. 收窄建议（仅本轮）
+   在最末尾附一句："如果你想更聚焦，我可以帮你收窄成 <更具体的方向>"。
+"""
+
+
+def build_absorbing_opening_addendum(
+    session: "LearningSession",
+    unit: LearningUnit,
+    decision: Optional[AlignmentDecision],
+    effective_mode: AgentMode,
+) -> Optional[str]:
+    """absorbing 首轮的 system prompt 增量（adaptive alignment §6.1 / §6.2）。
+
+    触发条件：absorbing + STUDY + 本卷此前没有过 assistant 回答。
+    B 档（suggested）追加"收窄建议"段；A 档不附加。C 档走 ASK 不进这里。
+    """
+    if effective_mode != AgentMode.STUDY or unit.phase != "absorbing":
+        return None
+    if any(e.role == MessageRole.ASSISTANT for e in session.entries):
+        return None
+    suggestion_block = (
+        ABSORBING_OPENING_SUGGESTION_BLOCK
+        if decision is not None and decision.mode == "suggested"
+        else ""
+    )
+    return ABSORBING_OPENING_TEMPLATE.format(
+        objective=unit.objective.text.strip() or "（待定）",
+        suggestion_block=suggestion_block,
+    )
+
+
+async def apply_alignment_decision(
+    *,
+    store: "LearningUnitStore",
+    emit_unit_event: Callable[..., None],
+    unit: LearningUnit,
+    decision: AlignmentDecision,
+) -> None:
+    """把策略结果写回 unit；同时维护 §9.3 #2/#3 的持久化计数器。
+
+    ``alignment_state`` 映射：``none → idle`` / ``suggested → suggested`` /
+    ``active → active``。``user_request`` 是一次性消费：本轮以 active 表达，
+    但 apply 时立刻转入 ``resolved``，不参与 §9.3 #1 限流计数。
+
+    计数器：
+    - ``active`` 且非 ``user_request``：``clarification_count += 1`` (§9.3 #1)
+    - ``suggested``：``suggestion_count += 1`` (§9.3 #2)
+    - 每次进入此方法（一次 absorbing turn 入口）：``nag_cooldown_remaining``
+      若大于 0 则减 1 (§9.3 #3)。冷静期与策略判断结果无关，是绝对回合数。
+
+    副作用（持久化 + 事件发射）由注入的 ``store`` 与 ``emit_unit_event`` 承担。
+    """
+    state_map = {"none": "idle", "suggested": "suggested", "active": "active"}
+    new_state = state_map[decision.mode]
+    is_user_request = decision.reason == "user_request"
+    if is_user_request:
+        # 用户主动触发的对齐本轮即被消费，下一轮回归 heuristic
+        new_state = "resolved"
+    will_bump_clarification = decision.mode == "active" and not is_user_request
+    will_bump_suggestion = decision.mode == "suggested"
+
+    async with store.lock(unit.id):
+        latest = store.get(unit.id) or unit
+        latest.alignment_state = new_state
+        latest.alignment_reason = decision.reason
+        latest.assumption_note = decision.assumption_note
+        if will_bump_clarification:
+            latest.clarification_count += 1
+            latest.last_alignment_at = datetime.now(timezone.utc)
+        if will_bump_suggestion:
+            latest.suggestion_count += 1
+            latest.last_alignment_at = datetime.now(timezone.utc)
+        if latest.nag_cooldown_remaining > 0:
+            latest.nag_cooldown_remaining -= 1
+        store.save(latest)
+        # caller 持有的 unit 与 store 缓存指向同一对象，确保元数据立刻可见
+        if latest is not unit:
+            unit.alignment_state = latest.alignment_state
+            unit.alignment_reason = latest.alignment_reason
+            unit.assumption_note = latest.assumption_note
+            unit.clarification_count = latest.clarification_count
+            unit.suggestion_count = latest.suggestion_count
+            unit.nag_cooldown_remaining = latest.nag_cooldown_remaining
+            unit.last_alignment_at = latest.last_alignment_at
+
+    # M1：把策略结果翻译成产品事件。idle 静默；user_request 在本轮被消费
+    # 为 resolved，发 RESOLVED；suggested 发 SUGGESTED；其余 active 发 STARTED。
+    if is_user_request:
+        emit_unit_event(
+            latest,
+            SessionEventType.LEARNING_UNIT_ALIGNMENT_RESOLVED,
+            extra={"trigger": "user_request_consumed"},
+        )
+    elif decision.mode == "suggested":
+        emit_unit_event(
+            latest,
+            SessionEventType.LEARNING_UNIT_ALIGNMENT_SUGGESTED,
+            extra={
+                "suggested_objective": decision.suggested_objective or "",
+                "suggestion_count": latest.suggestion_count,
+            },
+        )
+    elif decision.mode == "active":
+        emit_unit_event(
+            latest,
+            SessionEventType.LEARNING_UNIT_ALIGNMENT_STARTED,
+            extra={
+                "trigger": decision.reason or "policy",
+                "clarification_count": latest.clarification_count,
+            },
+        )
+
+
 __all__ = [
     "AlignmentDecision",
     "AlignmentMode",
@@ -257,4 +406,8 @@ __all__ = [
     "should_run_alignment",
     "MAX_SUGGESTIONS_PER_UNIT",
     "COOLDOWN_AFTER_ACCEPT_ASSUMPTION",
+    "ABSORBING_OPENING_TEMPLATE",
+    "ABSORBING_OPENING_SUGGESTION_BLOCK",
+    "build_absorbing_opening_addendum",
+    "apply_alignment_decision",
 ]
