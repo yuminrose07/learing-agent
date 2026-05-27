@@ -31,6 +31,15 @@ from pydantic import BaseModel
 
 from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
+from learning_agent.learning_agent.companion_policy import (
+    CompanionAdviceLevel,
+    CompanionStyle,
+    build_companion_settings_payload,
+    companion_metadata_for_update,
+    companion_style_options,
+    normalize_advice_level,
+    normalize_companion_style,
+)
 from learning_agent.learning_agent.learning_unit_store import ActiveUnitExistsError
 from learning_agent.learning_agent.learning_unit_metrics import summary_to_dict
 from learning_agent.learning_agent.main import LearningAgentSystem, SessionNotFoundError
@@ -40,6 +49,7 @@ from learning_agent.learning_agent.mode_service import (
     resolve_persona,
 )
 from learning_agent.learning_agent.session_event_store import filter_events
+from learning_agent.learning_agent.session_events import SessionEventType
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +92,12 @@ class UpdateModeRequest(BaseModel):
 class UpdatePersonaRequest(BaseModel):
     # ``None`` / empty / "neutral" all mean "no overlay" (default).
     persona_key: Optional[str] = None
+
+
+class UpdateCompanionRequest(BaseModel):
+    enabled: bool = True
+    style: Optional[str] = None
+    advice_level: Optional[str] = None
 
 
 class CreateLearningUnitRequest(BaseModel):
@@ -213,6 +229,13 @@ async def _stream_chat_chunks(
                     "question_total",
                     "verdict",
                     "feedback_card",
+                    "chat_profile",
+                    "companion_enabled",
+                    "companion_style",
+                    "companion_style_name",
+                    "companion_intent",
+                    "companion_advice_level",
+                    "stress_relief",
                 ):
                     value = chunk_metadata.get(key)
                     if value is not None:
@@ -487,6 +510,96 @@ async def update_session_persona(session_id: str, req: UpdatePersonaRequest) -> 
         "display_name": persona.display_name,
         "role_name": persona.role_name,
     }
+
+
+# ───────────────────────────────
+# 闲聊陪伴档案(companion / 减压)
+# ───────────────────────────────
+
+@app.get("/companion-styles")
+async def list_companion_styles() -> dict[str, Any]:
+    return {
+        "styles": companion_style_options(),
+        "default_style": CompanionStyle.WARM_GIRLFRIEND.value,
+        "default_advice_level": CompanionAdviceLevel.LOW.value,
+    }
+
+
+@app.get("/sessions/{session_id}/companion")
+async def get_session_companion(session_id: str) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return build_companion_settings_payload(session)
+
+
+@app.put("/sessions/{session_id}/companion")
+async def update_session_companion(
+    session_id: str,
+    req: UpdateCompanionRequest,
+) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    requested_style = (req.style or "").strip() or None
+    if requested_style is not None:
+        style = normalize_companion_style(requested_style)
+        if style == CompanionStyle.OFF and requested_style != CompanionStyle.OFF.value:
+            raise HTTPException(status_code=400, detail=f"Unknown companion style: {requested_style}")
+
+    requested_advice = (req.advice_level or "").strip() or None
+    if requested_advice is not None:
+        advice = normalize_advice_level(requested_advice)
+        if advice.value != requested_advice:
+            raise HTTPException(status_code=400, detail=f"Unknown companion advice level: {requested_advice}")
+
+    effective_style = requested_style
+    if req.enabled and effective_style is None:
+        effective_style = (
+            session.mode_metadata.get("companion_style")
+            or CompanionStyle.WARM_GIRLFRIEND.value
+        )
+    effective_advice = requested_advice
+    if effective_advice is None:
+        effective_advice = session.mode_metadata.get("companion_advice_level")
+
+    updates = companion_metadata_for_update(
+        enabled=req.enabled,
+        style=effective_style,
+        advice_level=effective_advice,
+    )
+    changed: dict[str, Any] = {}
+    for key, value in updates.items():
+        if value is None:
+            if key in session.mode_metadata:
+                session.mode_metadata.pop(key, None)
+                changed[key] = None
+        elif session.mode_metadata.get(key) != value:
+            session.mode_metadata[key] = value
+            changed[key] = value
+
+    if hasattr(system, "session_manager"):
+        system.session_manager.persist_mode_metadata(session.id)
+    if changed:
+        system._emit_companion_event(
+            session,
+            SessionEventType.COMPANION_PROFILE_CHANGED,
+            {
+                "enabled": req.enabled,
+                "style": (
+                    session.mode_metadata.get("companion_style")
+                    or CompanionStyle.OFF.value
+                ),
+                "advice_level": session.mode_metadata.get("companion_advice_level")
+                or CompanionAdviceLevel.LOW.value,
+                "metadata_changed": changed,
+                "source": "api",
+            },
+        )
+    return build_companion_settings_payload(session)
 
 
 # ───────────────────────────────

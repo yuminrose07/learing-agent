@@ -47,6 +47,11 @@ class SessionEventType:
     LEARNING_UNIT_CONSOLIDATED = "learning_unit.consolidated"
     LEARNING_UNIT_STOPPED = "learning_unit.stopped"
     LEARNING_UNIT_REUSE_FEEDBACK = "learning_unit.reuse_feedback"
+    # 闲聊陪伴档案事件。陪伴状态仍通过 session.mode_metadata 重建；
+    # 这些事件用于观测触发、偏好变更与研学后的减压建议。
+    COMPANION_PROFILE_CHANGED = "companion.profile_changed"
+    COMPANION_SIGNAL_DETECTED = "companion.signal_detected"
+    COMPANION_RECOVERY_SUGGESTED = "companion.recovery_suggested"
 
 
 class EventVisibility:

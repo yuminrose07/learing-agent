@@ -52,6 +52,10 @@ from learning_agent.learning_agent.alignment_policy import (
     should_run_alignment,
 )
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
+from learning_agent.learning_agent.companion_policy import (
+    CompanionTurnPlan,
+    prepare_companion_turn,
+)
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
 from learning_agent.learning_agent.learning_unit_store import (
     ActiveUnitExistsError,
@@ -567,9 +571,58 @@ class LearningAgentSystem:
             payload.update(extra)
         try:
             store.append_event(unit.session_id, event_type, payload=payload)
+            if event_type in {
+                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                SessionEventType.LEARNING_UNIT_STOPPED,
+            }:
+                self._emit_companion_recovery_suggestion(unit, source_event=event_type)
         except Exception:
             logger.exception(
                 f"[System] Failed to emit {event_type} for unit {unit.id}"
+            )
+
+    def _emit_companion_recovery_suggestion(
+        self,
+        unit: LearningUnit,
+        *,
+        source_event: str,
+    ) -> None:
+        store = getattr(self, "session_event_store", None)
+        if store is None:
+            return
+        try:
+            store.append_event(
+                unit.session_id,
+                SessionEventType.COMPANION_RECOVERY_SUGGESTED,
+                payload={
+                    "learning_unit_id": unit.id,
+                    "source_event": source_event,
+                    "suggested_style": "warm_girlfriend",
+                    "reason": "study_recovery",
+                },
+            )
+        except Exception:
+            logger.exception(
+                "[System] Failed to emit companion recovery suggestion for unit %s",
+                unit.id,
+            )
+
+    def _emit_companion_event(
+        self,
+        session: LearningSession,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        store = getattr(self, "session_event_store", None)
+        if store is None:
+            return
+        try:
+            store.append_event(session.id, event_type, payload=payload)
+        except Exception:
+            logger.exception(
+                "[System] Failed to emit %s for session %s",
+                event_type,
+                session.id,
             )
 
     def create_learning_unit(
@@ -1265,9 +1318,20 @@ class LearningAgentSystem:
         if session.mode != requested_mode:
             session = self.update_session_mode(session.id, requested_mode)
 
+        companion_plan = prepare_companion_turn(
+            session=session,
+            user_input=user_input,
+            requested_mode=requested_mode,
+        )
+        self._apply_companion_turn_plan(session, companion_plan)
+
         profile = build_turn_profile(
             requested_mode,
             persona_key=self._resolve_session_persona_key(session, requested_mode),
+            system_prompt_addendum=companion_plan.prompt_addendum,
+            override_tools=[] if companion_plan.disable_tools else None,
+            user_message_metadata=companion_plan.message_metadata,
+            assistant_message_metadata=companion_plan.message_metadata,
         )
         compaction_plan = await self._build_compaction_plan(
             session,
@@ -1282,6 +1346,58 @@ class LearningAgentSystem:
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
         )
+
+    def _apply_companion_turn_plan(
+        self,
+        session: LearningSession,
+        plan: CompanionTurnPlan,
+    ) -> None:
+        changed: dict[str, Any] = {}
+        for key, value in plan.metadata_updates.items():
+            if value is None:
+                if key in session.mode_metadata:
+                    session.mode_metadata.pop(key, None)
+                    changed[key] = None
+            elif session.mode_metadata.get(key) != value:
+                session.mode_metadata[key] = value
+                changed[key] = value
+
+        if changed:
+            manager = getattr(self, "session_manager", None)
+            persist = getattr(manager, "persist_mode_metadata", None)
+            if callable(persist):
+                try:
+                    persist(session.id)
+                except Exception:
+                    logger.exception(
+                        "[System] Failed to persist companion metadata for %s",
+                        session.id,
+                    )
+
+        if plan.profile_changed or changed.get("chat_profile") is not None:
+            self._emit_companion_event(
+                session,
+                SessionEventType.COMPANION_PROFILE_CHANGED,
+                {
+                    "enabled": plan.enabled,
+                    "style": plan.style.value,
+                    "intent": plan.intent.value,
+                    "advice_level": plan.advice_level.value,
+                    "metadata_changed": changed,
+                },
+            )
+        if plan.signal_detected:
+            self._emit_companion_event(
+                session,
+                SessionEventType.COMPANION_SIGNAL_DETECTED,
+                {
+                    "enabled": plan.enabled,
+                    "style": plan.style.value,
+                    "intent": plan.intent.value,
+                    "advice_level": plan.advice_level.value,
+                    "profile_changed": plan.profile_changed,
+                },
+            )
 
     async def _build_compaction_plan(
         self,
