@@ -51,13 +51,23 @@ from learning_agent.learning_agent.alignment_policy import (
     COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
     should_run_alignment,
 )
+from learning_agent.learning_agent.answer_quality import (
+    PARTIAL_AFTER_ERROR_MAX_LEN as _PARTIAL_AFTER_ERROR_MAX_LEN,
+    SAFE_FALLBACK_ANSWER as _SAFE_FALLBACK_ANSWER,
+    build_rescue_answer,
+    classify_incomplete_answer as _classify_incomplete_answer,
+    final_answer_verdict as _final_answer_verdict,
+)
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
 from learning_agent.learning_agent.companion_policy import (
     CompanionTurnPlan,
     prepare_companion_turn,
 )
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
-from learning_agent.learning_agent.forge_policy import prepare_forge_stage_metadata
+from learning_agent.learning_agent.forge_policy import (
+    maybe_advance_forge_stage,
+    prepare_forge_stage_metadata,
+)
 from learning_agent.learning_agent.learning_unit_store import (
     ActiveUnitExistsError,
     LearningUnitStore,
@@ -68,6 +78,10 @@ from learning_agent.learning_agent.learning_unit_metrics import (
 )
 from learning_agent.learning_agent.teach_generator import TeachQuestionGenerator
 from learning_agent.learning_agent.teach_judge import TeachJudge
+from learning_agent.learning_agent.teach_flow import (
+    TeachFlow,
+    finalize_consolidation as _finalize_consolidation_impl,
+)
 from learning_agent.learning_agent.mode_service import (
     PreparedSessionTurn,
     TurnExecutionProfile,
@@ -105,69 +119,6 @@ _ABSORBING_OPENING_SUGGESTION_BLOCK = """
 class SessionNotFoundError(LookupError):
     """指定 session_id 不存在。与其他业务 ValueError 区分，避免
     web 层一刀切误把"学习卷已 consolidated"映射成"session 不存在"。"""
-
-
-# Final Answer Guarantee 的最终静态兜底文本。仅在 rescue LLM 也失败时使用，
-# 不可包含任何"错误 / 重试 / 失败"字样。保持中性，让用户可以继续对话。
-_SAFE_FALLBACK_ANSWER = (
-    "我这边暂时没有抓到你需要的具体信息——能再告诉我一些上下文吗？"
-    "比如你想了解的方向、目标场景，或者你已经看过的资料，我会基于这些继续帮你梳理。"
-)
-
-
-# 视为"承诺下文却没有下文"的悬挂结尾标点。正常答案极少以这些字符收尾。
-_DANGLING_TAILS = ("：", ":", "，", ",", "、", "；", ";", "…", "—", "－", "-")
-# 残句判定的长度上限：超过则认为是正常长答案，不因结尾标点误判。
-_INCOMPLETE_MAX_LEN = 48
-# 流错误后"部分片段"判定的长度上限：短于此且本轮发生过系统级流错误，视为被截断。
-_PARTIAL_AFTER_ERROR_MAX_LEN = 120
-
-
-def _classify_incomplete_answer(visible_text: str) -> Optional[str]:
-    """对已流式输出的可见答案做"是否是可用答案"判定。
-
-    返回非 None 的 reason_code 表示判定为"对用户不可用"、需要 rescue 收口；
-    返回 None 表示是可用答案。
-
-    保守策略：只命中高置信信号，避免误伤正常答案。
-    - 空：完全没有可见内容。
-    - 残句：很短且以悬挂标点（冒号/逗号/顿号/破折号等）收尾，例如
-      "让我尝试其他来源："——模型承诺下文却以无工具调用的纯文本收场，
-      ReAct 循环把它当成最终答案提前终止。
-    """
-    stripped = visible_text.strip()
-    if not stripped:
-        return "empty_stream"
-    if len(stripped) <= _INCOMPLETE_MAX_LEN and stripped[-1] in _DANGLING_TAILS:
-        return "incomplete_answer"
-    return None
-
-
-def _final_answer_verdict(
-    *,
-    visible_text: str,
-    stream_error_reason: Optional[str],
-    inner_reason: Optional[str],
-) -> Optional[str]:
-    """综合判定本轮是否需要 rescue 收口，返回 reason_code 或 None（可用答案）。
-
-    判定顺序（保守优先）：
-    1. 完全无可见输出（含被抑制的系统错误 chunk / inner 异常）→ 必然 rescue。
-    2. 有可见输出但是残句/截断 → rescue。
-    3. 有可见输出、本轮发生过系统级流错误、且可见内容很短（疑似被截断的片段）→ rescue。
-    4. 其余视为可用答案，不 rescue。
-
-    第 3 条带长度上限，避免把"完整长答案 + 末尾一次延迟流错误"误判成需要兜底。
-    """
-    stripped = visible_text.strip()
-    if not stripped:
-        return stream_error_reason or inner_reason or "empty_stream"
-    incomplete = _classify_incomplete_answer(stripped)
-    if incomplete:
-        return incomplete
-    if stream_error_reason is not None and len(stripped) <= _PARTIAL_AFTER_ERROR_MAX_LEN:
-        return stream_error_reason
-    return None
 
 
 class LearningAgentSystem:
@@ -846,54 +797,12 @@ class LearningAgentSystem:
         )
 
     def _finalize_consolidation(self, unit: LearningUnit) -> None:
-        """从已答题的 TeachSession 聚合 mastered/gaps 反馈卡，并落进 consolidated。
+        """委托给 teach_flow.finalize_consolidation（纯函数）。
 
-        - 若 ``unit.teach_session`` 不存在或全空：mastered/gaps 都为空，
-          ``next_topic_suggestion`` 走兜底文案。
-        - 已经判过的题：``verdict="passed"`` → 概念 name 进 mastered；
-          其余进 gaps。
-        - 调用方负责后续 ``transition_to("consolidated")`` 与 save。
+        保留方法名是为了 advance_learning_unit 内部仍通过 self.xxx 调用，
+        同时让 test_learning_unit_acceptance 等测试通过同样的入口生效。
         """
-        concept_name_by_id = {c.id: c.name for c in unit.concept_list}
-        mastered: list[str] = []
-        gaps: list[str] = []
-        seen: set[str] = set()
-        if unit.teach_session is not None:
-            for q in unit.teach_session.questions:
-                name = concept_name_by_id.get(q.concept_id, "").strip()
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                if q.verdict == "passed":
-                    mastered.append(name)
-                elif q.verdict == "needs_review":
-                    gaps.append(name)
-                # 没判过的（None）忽略，避免误打掌握或空缺标签
-
-        if gaps:
-            next_suggestion = (
-                f"建议下一卷优先补强：{gaps[0]}。"
-            )
-        elif mastered:
-            next_suggestion = "本卷掌握度良好，可以挑选相邻方向继续深入。"
-        else:
-            next_suggestion = "本卷未进入评估环节；下次可在 absorbing 中多沉淀几个概念再讲讲看。"
-
-        unit.feedback_card = TeachFeedbackCard(
-            mastered=mastered,
-            gaps=gaps,
-            next_topic_suggestion=next_suggestion,
-        )
-        # MVP 取舍：verification_status 仅区分"完成评估" vs "跳过评估"两态，
-        # 是否全过由 feedback_card.gaps 表达。已为 skipped 的不覆盖。
-        if unit.verification_status != "skipped":
-            unit.verification_status = "passed"
-        if unit.teach_session is not None:
-            unit.teach_session.state = (
-                "needs_review" if gaps else "passed"
-            )
-            unit.teach_session.aggregate_passed = not gaps
-            unit.teach_session.completed_at = datetime.now(timezone.utc)
+        _finalize_consolidation_impl(unit)
 
     async def request_alignment(self, unit_id: str) -> LearningUnit:
         """用户主动点"帮我收窄"：把卷拉成 (active + user_request)，下一轮走 ASK。
@@ -1527,47 +1436,16 @@ class LearningAgentSystem:
         prepared_turn: PreparedSessionTurn,
         response_text: str,
     ) -> None:
-        """Phase 1A：首轮 STUDY absorbing 成功后将 forge_stage 从 entry 推进为 collision。
+        """委托给 forge_policy.maybe_advance_forge_stage，注入 store 与事件回调。
 
-        守卫与 _maybe_emit_first_value 同构：
-        - 响应非空
-        - 会话挂着 learning_unit
-        - 本轮 effective_mode 是 STUDY
-        - 卷处于 absorbing
-        - forge_stage 仍为 entry（once-only）
+        保留方法名是为了让 test_learning_unit_events 等测试可继续 monkeypatch / 直接调用。
         """
-        if not response_text.strip():
-            return
-        unit_id = session.learning_unit_id
-        if not unit_id:
-            return
-        if prepared_turn.effective_mode != AgentMode.STUDY:
-            return
-        unit = self.learning_unit_store.get(unit_id)
-        if unit is None:
-            return
-        if unit.phase != "absorbing":
-            return
-        if unit.forge_stage != "entry":
-            return
-        unit.forge_stage = "collision"
-        unit.updated_at = datetime.now(timezone.utc)
-        try:
-            self.learning_unit_store.save(unit)
-        except Exception:
-            logger.exception(
-                f"[System] Failed to persist forge_stage advance for unit {unit_id}"
-            )
-            return
-        self._emit_unit_event(
-            unit,
-            SessionEventType.LEARNING_UNIT_FORGE_STAGE_CHANGED,
-            extra={
-                "from": "entry",
-                "to": "collision",
-                "temperature_state": unit.temperature_state,
-                "reason": "first_value_delivered",
-            },
+        maybe_advance_forge_stage(
+            store=self.learning_unit_store,
+            emit_unit_event=self._emit_unit_event,
+            session=session,
+            prepared_turn=prepared_turn,
+            response_text=response_text,
         )
 
     async def _stream_teach_answer_flow(
@@ -1576,221 +1454,23 @@ class LearningAgentSystem:
         unit: LearningUnit,
         user_input: str,
     ) -> AsyncGenerator[ChatChunk, None]:
-        """outputting 阶段：user_input = 当前题答案，judge + 渲染下一题或反馈卡。
+        """委托给 TeachFlow.stream_teach_answer_flow。
 
-        与 ``stream_session_chat`` 默认 agent_loop 路径不同，此函数：
-        - 不走 provider.chat / agent_loop，节省一次主模型调用；
-        - 手动把 user/assistant 两条消息写进 session.entries（与 runtime 行为对齐）；
-        - 单次产出一条 ChatChunk（不流式），content 即"verdict + 下一步"。
-
-        所有写盘动作在持锁后完成；judge 失败会被 TeachJudge 内吞掉，外层
-        看到的就是 verdict=needs_review。
+        现场构造 TeachFlow（构造代价仅 4 个字段赋值），让测试通过
+        ``system.teach_judge=...`` / ``system.session_manager=...`` 等
+        monkeypatch 的最新依赖能够立即被读取，避免协作者持有过期引用。
         """
-        ts = unit.teach_session
-        if ts is None or not ts.questions:
-            # 异常：outputting 状态但没有题目。返回一段诊断 chunk，并直接收束。
-            self._finalize_consolidation(unit)
-            unit.transition_to("consolidated")
-            self.learning_unit_store.save(unit)
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
-                extra={"from": "outputting", "to": "consolidated", "reason": "no_questions"},
-            )
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
-                extra={
-                    "verification_status": unit.verification_status,
-                    "mastered_count": 0,
-                    "gaps_count": 0,
-                    "reason": "no_questions",
-                },
-            )
-            text = "本卷未能生成可评估题目，已自动收束。"
-            self._record_teach_turn(session, unit, user_input, text)
-            yield ChatChunk(
-                content=text,
-                metadata=self._teach_metadata(unit, verdict=None),
-            )
-            return
-
-        idx = ts.current_index
-        if idx >= len(ts.questions):
-            # 已经答完，但 phase 还没切（极少出现的状态）。直接收束。
-            self._finalize_consolidation(unit)
-            unit.transition_to("consolidated")
-            self.learning_unit_store.save(unit)
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
-                extra={"from": "outputting", "to": "consolidated", "reason": "already_answered"},
-            )
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
-                extra={
-                    "verification_status": unit.verification_status,
-                    "mastered_count": (
-                        len(unit.feedback_card.mastered)
-                        if unit.feedback_card else 0
-                    ),
-                    "gaps_count": (
-                        len(unit.feedback_card.gaps)
-                        if unit.feedback_card else 0
-                    ),
-                },
-            )
-            text = self._render_feedback_card(unit)
-            self._record_teach_turn(session, unit, user_input, text)
-            yield ChatChunk(
-                content=text,
-                metadata=self._teach_metadata(unit, verdict=None),
-            )
-            return
-
-        question = ts.questions[idx]
-
-        if self.teach_judge is None:
-            verdict, judge_reason = "needs_review", "评判服务暂不可用。"
-        else:
-            verdict, judge_reason = await self.teach_judge.judge(
-                question=question,
-                user_answer=user_input,
-            )
-
-        async with self.learning_unit_store.lock(unit.id):
-            latest = self.learning_unit_store.get(unit.id) or unit
-            latest_ts = latest.teach_session
-            if latest_ts is None or latest_ts.current_index != idx:
-                # 并发修改：让最新状态赢，本次答题作废。
-                logger.warning(
-                    "[System] teach_session state shifted under concurrent "
-                    f"writers for unit {unit.id}; dropping this answer"
-                )
-                text = "状态已变更，请刷新后重试。"
-                yield ChatChunk(
-                    content=text,
-                    metadata=self._teach_metadata(latest, verdict=None),
-                )
-                return
-            q = latest_ts.questions[idx]
-            q.user_answer = user_input
-            q.verdict = verdict
-            q.judge_reason = judge_reason
-            latest_ts.current_index = idx + 1
-            done = latest_ts.current_index >= len(latest_ts.questions)
-            if done:
-                self._finalize_consolidation(latest)
-                latest.transition_to("consolidated")
-            else:
-                latest_ts.state = "prompted"
-            self.learning_unit_store.save(latest)
-
-        if done:
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
-                extra={"from": "outputting", "to": "consolidated"},
-            )
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
-                extra={
-                    "verification_status": latest.verification_status,
-                    "mastered_count": (
-                        len(latest.feedback_card.mastered)
-                        if latest.feedback_card else 0
-                    ),
-                    "gaps_count": (
-                        len(latest.feedback_card.gaps)
-                        if latest.feedback_card else 0
-                    ),
-                },
-            )
-
-        # 渲染响应文本
-        verdict_glyph = "✓" if verdict == "passed" else "✗"
-        head = f"{verdict_glyph} {judge_reason}".strip()
-        if done:
-            body = self._render_feedback_card(latest)
-            text = f"{head}\n\n{body}"
-        else:
-            next_q = latest_ts.questions[latest_ts.current_index]
-            text = (
-                f"{head}\n\n"
-                f"下一题（{latest_ts.current_index + 1}/{len(latest_ts.questions)}）：{next_q.stem}"
-            )
-
-        self._record_teach_turn(session, latest, user_input, text)
-        yield ChatChunk(
-            content=text,
-            metadata=self._teach_metadata(latest, verdict=verdict),
+        flow = TeachFlow(
+            learning_unit_store=self.learning_unit_store,
+            session_manager=self.session_manager,
+            teach_judge=self.teach_judge,
+            emit_unit_event=self._emit_unit_event,
         )
+        async for chunk in flow.stream_teach_answer_flow(
+            session, unit, user_input
+        ):
+            yield chunk
 
-    def _render_feedback_card(self, unit: LearningUnit) -> str:
-        """把 unit.feedback_card 渲染成一段纯文本，供 chat stream 直接返回。"""
-        card = unit.feedback_card
-        if card is None:
-            return "本卷已收束。"
-        lines = ["**本卷已完成评估。**"]
-        if card.mastered:
-            lines.append("✓ 掌握：" + "、".join(card.mastered))
-        if card.gaps:
-            lines.append("⚠️ 待补强：" + "、".join(card.gaps))
-        if card.next_topic_suggestion:
-            lines.append("→ " + card.next_topic_suggestion)
-        return "\n".join(lines)
-
-    def _teach_metadata(
-        self,
-        unit: LearningUnit,
-        *,
-        verdict: Optional[str],
-    ) -> dict[str, Any]:
-        meta: dict[str, Any] = {
-            "mode": AgentMode.TEACH.value,
-            "learning_unit_id": unit.id,
-            "learning_unit_phase": unit.phase,
-        }
-        if unit.teach_session is not None:
-            meta["teach_session_id"] = unit.teach_session.id
-            meta["teach_state"] = unit.teach_session.state
-            meta["question_index"] = unit.teach_session.current_index
-            meta["question_total"] = len(unit.teach_session.questions)
-        if verdict is not None:
-            meta["verdict"] = verdict
-        if unit.feedback_card is not None:
-            meta["feedback_card"] = unit.feedback_card.model_dump()
-        return meta
-
-    def _record_teach_turn(
-        self,
-        session: LearningSession,
-        unit: LearningUnit,
-        user_input: str,
-        assistant_text: str,
-    ) -> None:
-        """把 outputting 一轮的 user/assistant 消息写入 session.entries。"""
-        common_meta = {
-            "mode": AgentMode.TEACH.value,
-            "learning_unit_id": unit.id,
-            "learning_unit_phase": unit.phase,
-        }
-        if unit.teach_session is not None:
-            common_meta["teach_session_id"] = unit.teach_session.id
-        self.session_manager.append_message(
-            session.id,
-            MessageRole.USER,
-            user_input,
-            metadata=dict(common_meta),
-        )
-        self.session_manager.append_message(
-            session.id,
-            MessageRole.ASSISTANT,
-            assistant_text,
-            metadata=dict(common_meta),
-        )
 
     async def stream_session_chat(
         self,
@@ -1980,44 +1660,14 @@ class LearningAgentSystem:
         reason: str,
         detail: str,
     ) -> tuple[str, str]:
-        """生成最终兜底回答。不允许把内部错误暴露给用户。
-
-        优先：让 provider 基于 user_input 直接给一个不依赖工具的中性回答。
-        次级：返回一段中性静态文本，仍保证 content 非空。
-        """
-        if self.provider is not None:
-            try:
-                prompt = (
-                    "You are answering a user in a personal learning assistant. "
-                    "Earlier internal tools or data lookups did not yield a usable answer, "
-                    "but the user must receive a helpful, self-contained reply. "
-                    "Do NOT mention any internal tools, errors, retries, or system state. "
-                    "Do NOT apologize for technical issues. "
-                    "If you genuinely need more information, ask one concise clarifying question. "
-                    "Otherwise, give a useful answer based on general knowledge. "
-                    "Match the user's language (Chinese or English) automatically.\n\n"
-                    f"User message:\n{user_input}"
-                )
-                chunk = await self.provider.chat(
-                    ChatParams(
-                        model=self.provider.default_model,
-                        messages=[
-                            ChatMessage(role=MessageRole.USER, content=prompt),
-                        ],
-                        temperature=0.4,
-                        stream=False,
-                        max_tokens=800,
-                    )
-                )
-                text = (chunk.content or "").strip()
-                if text:
-                    return text, "rescue_llm"
-            except Exception:
-                logger.exception(
-                    "[System] rescue LLM call failed for session %s (reason=%s)",
-                    session_id, reason,
-                )
-        return _SAFE_FALLBACK_ANSWER, "static_fallback"
+        """生成最终兜底回答。委托给 answer_quality.build_rescue_answer，注入 provider。"""
+        return await build_rescue_answer(
+            self.provider,
+            session_id=session_id,
+            user_input=user_input,
+            reason=reason,
+            detail=detail,
+        )
 
     async def collect_session_chat(
         self,
