@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>學齋 · E2E 评测</title>
+    <link rel="stylesheet" href="static/tokens.css">
+    <link rel="stylesheet" href="static/eval.css">
+</head>
+<body>
+    <div id="app">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>E2E 评测</h1>
+                <a href="index.html">← 返回学齋</a>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-title">数据集</div>
+                <div id="dataset-list" class="entity-list">
+                    <div class="empty">加载中…</div>
+                </div>
+            </div>
+
+            <div class="sidebar-section sidebar-section-grow">
+                <div class="section-title">
+                    运行历史
+                    <button id="btn-refresh-runs" class="mini-btn" type="button" title="刷新">↻</button>
+                </div>
+                <div id="run-list" class="entity-list">
+                    <div class="empty">加载中…</div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main">
+            <!-- 顶部工具栏 -->
+            <div class="toolbar">
+                <div class="toolbar-title" id="view-title">请选择数据集或运行</div>
+                <div class="toolbar-stats" id="view-stats"></div>
+                <div class="toolbar-actions">
+                    <button id="btn-run" type="button" class="btn-primary" disabled>▶ 运行</button>
+                </div>
+            </div>
+
+            <!-- 数据集详情(选中 dataset 但未跑时) -->
+            <section id="panel-dataset" class="panel" hidden>
+                <div class="panel-header">
+                    <span class="panel-eyebrow">数据集</span>
+                    <h2 id="dataset-title">—</h2>
+                </div>
+                <dl class="meta-grid" id="dataset-meta"></dl>
+                <p id="dataset-desc" class="desc"></p>
+            </section>
+
+            <!-- 进度面板(运行中或运行已结束) -->
+            <section id="panel-run" class="panel" hidden>
+                <div class="panel-header">
+                    <span class="panel-eyebrow" id="run-eyebrow">运行</span>
+                    <h2 id="run-title">—</h2>
+                </div>
+                <div class="run-meta">
+                    <span class="badge" id="run-status">—</span>
+                    <span class="run-meta-item">通过 <strong id="run-passed">0</strong> / <strong id="run-total">0</strong></span>
+                    <span class="run-meta-item">失败 <strong id="run-failed">0</strong></span>
+                    <span class="run-meta-item">耗时 <strong id="run-duration">—</strong></span>
+                    <span class="run-meta-item">session <strong id="run-session">—</strong></span>
+                </div>
+                <div id="progress-bar" class="progress-bar" hidden>
+                    <div id="progress-fill" class="progress-fill"></div>
+                </div>
+                <div id="case-list" class="case-list">
+                    <div class="empty">等待数据…</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Case 详情 modal -->
+    <div id="case-modal" class="modal" hidden>
+        <div class="modal-backdrop" data-close="1"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <span class="modal-status" id="modal-status">—</span>
+                <h3 id="modal-title">—</h3>
+                <button class="modal-close" type="button" data-close="1">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-row">
+                    <div class="modal-label">case_id</div>
+                    <div class="modal-value mono" id="modal-case-id">—</div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-label">耗时</div>
+                    <div class="modal-value mono" id="modal-duration">—</div>
+                </div>
+                <div class="modal-row">
+                    <div class="modal-label">工具调用</div>
+                    <div class="modal-value mono" id="modal-tool-count">—</div>
+                </div>
+                <div class="modal-row" id="modal-error-row" hidden>
+                    <div class="modal-label danger">错误</div>
+                    <pre class="modal-pre danger" id="modal-error"></pre>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-section-title">用户输入</div>
+                    <pre class="modal-pre" id="modal-prompt">—</pre>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-section-title">响应</div>
+                    <pre class="modal-pre" id="modal-response">—</pre>
+                </div>
+                <div class="modal-section" id="modal-tools-section">
+                    <div class="modal-section-title">工具调用详情</div>
+                    <pre class="modal-pre" id="modal-tools">—</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/eval.js"></script>
+</body>
+</html>

@@ -50,6 +50,7 @@ from learning_agent.learning_agent.mode_service import (
 )
 from learning_agent.learning_agent.session_event_store import filter_events
 from learning_agent.learning_agent.session_events import SessionEventType
+from learning_agent.web.eval_routes import router as eval_router
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Learning-Agent API",
-    version="0.1.0",
+    version="0.4.0-alpha.1",
     lifespan=lifespan,
 )
 
@@ -165,6 +166,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# E2E 评测控制台路由（/api/eval/*）。独立 router,与现有 /sessions /chat
+# /learning-units 等业务路由完全隔离。
+app.include_router(eval_router)
 
 
 # ───────────────────────────────
@@ -309,7 +314,7 @@ async def _stream_chat_chunks(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.4.0-alpha.1"}
 
 
 # ───────────────────────────────
