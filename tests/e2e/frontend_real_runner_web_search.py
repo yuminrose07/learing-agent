@@ -39,6 +39,10 @@ class CaseResult:
     session_id: Optional[str] = None
     duration_ms: int = 0
     user_message: str = ""
+    # ISO 时间字符串(微秒精度),用于在 save_evidence 阶段按区间从全量 events
+    # 里抽出本 case 的 tool_calls。run_case 起止时刻填写。
+    start_ts: Optional[str] = None
+    end_ts: Optional[str] = None
 
 
 @dataclass
@@ -51,6 +55,19 @@ class RunResult:
     session_id: Optional[str]
     results: list[CaseResult]
     summary: dict
+
+
+def _case_user_message(case: dict) -> str:
+    """Extract the first user message from new `turns` or legacy `input.message`."""
+    turns = case.get("turns")
+    if isinstance(turns, list):
+        for turn in turns:
+            if isinstance(turn, dict) and turn.get("role", "user") == "user":
+                return str(turn.get("message", ""))
+    input_data = case.get("input")
+    if isinstance(input_data, dict):
+        return str(input_data.get("message", ""))
+    return ""
 
 
 class WebSearchFetchRunner:
@@ -87,7 +104,13 @@ class WebSearchFetchRunner:
     async def create_session(self, title: str) -> str:
         resp = await self.client.post(
             f"{self.base_url}/sessions",
-            json={"title": title},
+            json={
+                "title": title,
+                "mode_metadata": {
+                    "source": "eval",
+                    "eval_run_id": self.run_id_override,
+                },
+            },
         )
         resp.raise_for_status()
         data = resp.json()
@@ -112,7 +135,12 @@ class WebSearchFetchRunner:
             f"{self.base_url}/sessions/{session_id}/events",
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        # /sessions/{id}/events 返回 {"events": [...], "next_after_seq": N},
+        # 不是裸数组。直接 for event in data 会迭代到 dict keys。
+        if isinstance(data, dict):
+            return data.get("events", [])
+        return data or []
 
     async def get_session(self, session_id: str) -> dict:
         resp = await self.client.get(
@@ -124,8 +152,7 @@ class WebSearchFetchRunner:
     async def run_case(self, case: dict, session_id: str) -> CaseResult:
         case_id = case["id"]
         title = case.get("title", "")
-        input_data = case.get("input", {})
-        message = input_data.get("message", "")
+        message = _case_user_message(case)
         tool_chain = case.get("tool_chain", [])
 
         print(f"  标题: {title}")
@@ -133,6 +160,7 @@ class WebSearchFetchRunner:
         print(f"  用户: {message[:80]}...")
 
         start = time.time()
+        start_ts = datetime.now(timezone.utc).isoformat()
         response_text = ""
         tool_calls = []
 
@@ -141,9 +169,10 @@ class WebSearchFetchRunner:
             response_text = response.get("content", "")
             tool_calls = response.get("tool_calls", [])
             print(f"      响应: {response_text[:100]}...")
-            print(f"      工具调用: {len(tool_calls)}")
+            print(f"      工具调用(来自/chat响应): {len(tool_calls)}")
 
             success = True
+            end_ts = datetime.now(timezone.utc).isoformat()
 
             return CaseResult(
                 case_id=case_id,
@@ -154,9 +183,12 @@ class WebSearchFetchRunner:
                 session_id=session_id,
                 duration_ms=int((time.time() - start) * 1000),
                 user_message=message,
+                start_ts=start_ts,
+                end_ts=end_ts,
             )
 
         except Exception as e:
+            end_ts = datetime.now(timezone.utc).isoformat()
             return CaseResult(
                 case_id=case_id,
                 title=title,
@@ -167,6 +199,8 @@ class WebSearchFetchRunner:
                 session_id=session_id,
                 duration_ms=int((time.time() - start) * 1000),
                 user_message=message,
+                start_ts=start_ts,
+                end_ts=end_ts,
             )
 
     async def run_dataset(self, dataset_path: Path) -> RunResult:
@@ -289,6 +323,24 @@ class WebSearchFetchRunner:
             json.dumps(run_result.summary, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
+        # 先把 session 全量 events 拉下来,后面 (a) 落盘 events.jsonl
+        # (b) 按 case 时间窗回填每个 result.tool_calls。
+        all_events: list[dict] = []
+        if run_result.session_id:
+            try:
+                all_events = await self.get_session_events(run_result.session_id)
+            except Exception as exc:
+                print(f"  [save_evidence] get_session_events failed: {exc}")
+                all_events = []
+
+        # 用 events 回填 tool_calls(/chat 响应不带,/events 才是权威源)。
+        # 时间窗按 case 自报的 start_ts / end_ts,失败时跳过该 case。
+        for r in run_result.results:
+            collected = _collect_tool_calls_from_events(all_events, r.start_ts, r.end_ts)
+            if collected:
+                # 优先用 events 聚合的,因为它包含 args / result_summary / latency 等关键字段
+                r.tool_calls = collected
+
         with open(run_dir / "results.jsonl", "w", encoding="utf-8") as f:
             for r in run_result.results:
                 record = {
@@ -311,13 +363,9 @@ class WebSearchFetchRunner:
             except Exception:
                 pass
 
-            try:
-                events = await self.get_session_events(run_result.session_id)
-                with open(run_dir / "events.jsonl", "w", encoding="utf-8") as f:
-                    for event in events:
-                        f.write(json.dumps(event, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
+            with open(run_dir / "events.jsonl", "w", encoding="utf-8") as f:
+                for event in all_events:
+                    f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
         cases_dir = run_dir / "cases"
         for r in run_result.results:
@@ -352,6 +400,101 @@ class WebSearchFetchRunner:
 
     async def close(self):
         await self.client.aclose()
+
+
+def _collect_tool_calls_from_events(
+    events: list[dict],
+    start_ts: Optional[str],
+    end_ts: Optional[str],
+) -> list[dict]:
+    """从全量 events 里抽出 [start_ts, end_ts] 时间窗内的 tool 调用对(started+completed)。
+
+    Why: /sessions/{id}/chat 响应里不带 tool_calls,真实工具调用只在 events 流里。
+    评测界面要看 LLM 真传了什么参数(尤其 ② 的 query)、后端返回了什么(pagination_mode 等),
+    必须从 events 反推。按 case 的 ts 区间分桶,串起来给 cases/*/response.json 用。
+    """
+    if start_ts is None:
+        return []
+    in_window: list[dict] = []
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        ts = e.get("ts")
+        if not ts:
+            continue
+        # 字典序比较 ISO8601 时间字符串与 Python datetime 比较等价(同长度同时区)
+        if ts < start_ts:
+            continue
+        if end_ts is not None and ts > end_ts:
+            continue
+        in_window.append(e)
+
+    # 按 call_id 配对 started + completed
+    started_by_call: dict[str, dict] = {}
+    completed_by_call: dict[str, dict] = {}
+    order: list[str] = []
+    for e in in_window:
+        if e.get("type") not in ("tool.exec_started", "tool.exec_completed", "tool.exec_failed"):
+            continue
+        payload = e.get("payload") or {}
+        cid = payload.get("call_id")
+        if not cid:
+            continue
+        if e["type"] == "tool.exec_started":
+            if cid not in started_by_call:
+                started_by_call[cid] = e
+                order.append(cid)
+        else:
+            completed_by_call[cid] = e
+
+    tool_calls: list[dict] = []
+    for cid in order:
+        started = started_by_call[cid]
+        s_payload = started.get("payload") or {}
+        entry: dict[str, Any] = {
+            "call_id": cid,
+            "tool_name": s_payload.get("tool_name"),
+            "args": s_payload.get("args") or {},
+            "started_at": started.get("ts"),
+        }
+        completed = completed_by_call.get(cid)
+        if completed is not None:
+            c_payload = completed.get("payload") or {}
+            entry["completed_at"] = completed.get("ts")
+            entry["latency_ms"] = c_payload.get("latency_ms")
+            entry["result_size"] = c_payload.get("result_size")
+            entry["result_truncated"] = c_payload.get("result_truncated")
+            # 把 result(JSON 字符串)解析出关键字段,降低评测端复杂度
+            raw_result = c_payload.get("result")
+            if isinstance(raw_result, str):
+                try:
+                    parsed = json.loads(raw_result)
+                    if isinstance(parsed, dict):
+                        entry["result_summary"] = {
+                            k: parsed.get(k)
+                            for k in (
+                                "pagination_mode",
+                                "selected_sections",
+                                "selected_section_paths",
+                                "truncated",
+                                "url",
+                                "title",
+                                "query",
+                            )
+                            if k in parsed
+                        }
+                        content_text = parsed.get("content") or ""
+                        if isinstance(content_text, str):
+                            entry["result_summary"]["content_chars"] = len(content_text)
+                            entry["result_summary"]["content_head"] = content_text[:200]
+                except (ValueError, TypeError):
+                    entry["result_summary"] = {"parse_error": True, "raw_head": raw_result[:200]}
+            entry["completed_type"] = completed.get("type")
+        else:
+            entry["completed_at"] = None
+        tool_calls.append(entry)
+
+    return tool_calls
 
 
 async def main():

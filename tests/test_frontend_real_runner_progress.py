@@ -24,6 +24,7 @@ from tests.e2e.frontend_real_runner_web_search import (
     CaseResult,
     RunResult,
     WebSearchFetchRunner,
+    _case_user_message,
     now_str,
 )
 
@@ -49,6 +50,20 @@ def test_emit_progress_noop_when_path_unset(tmp_path: Path):
 def test_case_result_carries_user_message():
     cr = CaseResult(case_id="c-1", title="t", success=True, user_message="你好")
     assert cr.user_message == "你好"
+
+
+def test_case_user_message_prefers_turns_over_legacy_input():
+    case = {
+        "id": "c-1",
+        "input": {"message": "旧输入"},
+        "turns": [{"role": "user", "message": "新输入"}],
+    }
+    assert _case_user_message(case) == "新输入"
+
+
+def test_case_user_message_falls_back_to_input_message():
+    case = {"id": "c-1", "input": {"message": "旧输入"}}
+    assert _case_user_message(case) == "旧输入"
 
 
 def test_save_evidence_writes_user_message_and_honors_run_id_override(tmp_path: Path):
