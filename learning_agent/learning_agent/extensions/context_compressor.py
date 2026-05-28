@@ -198,7 +198,7 @@ def create_context_compressor_extension(config: dict[str, Any] | None = None) ->
     ext = Extension(
         id="builtin-context-compressor",
         name="Context Compressor",
-        version="0.1.0",
+        version="0.4.0-alpha.1",
         type="builtin",
     )
 

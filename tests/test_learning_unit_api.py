@@ -112,6 +112,34 @@ class TestCreateLearningUnit:
         )
 
     @pytest.mark.asyncio
+    async def test_passes_optional_mode_metadata(self, mock_system):
+        from learning_agent.web.web_server import (
+            CreateLearningUnitRequest,
+            create_learning_unit,
+        )
+
+        unit = _make_unit()
+        session = _make_session(unit)
+        mock_system.create_learning_unit.return_value = (session, unit)
+
+        with patch(
+            "learning_agent.web.web_server._get_system", return_value=mock_system
+        ):
+            result = await create_learning_unit(
+                CreateLearningUnitRequest(
+                    seed_text="理解 attention",
+                    mode_metadata={"source": "eval", "eval_run_id": "run-1"},
+                )
+            )
+
+        assert result["session_id"] == session.id
+        mock_system.create_learning_unit.assert_called_once_with(
+            seed_text="理解 attention",
+            source="ai_distilled",
+            mode_metadata={"source": "eval", "eval_run_id": "run-1"},
+        )
+
+    @pytest.mark.asyncio
     async def test_active_unit_conflict_returns_409(self, mock_system):
         from learning_agent.web.web_server import (
             CreateLearningUnitRequest,

@@ -702,7 +702,7 @@ class ToolExecutor:
         if self._event_writer is None:
             return
         try:
-            result_repr = self._safe_result_repr(result)
+            result_repr, original_size, was_truncated = self._safe_result_repr(result)
             self._event_writer.append_event(
                 session_id=session_id,
                 type=SessionEventType.TOOL_EXEC_COMPLETED,
@@ -712,7 +712,8 @@ class ToolExecutor:
                     "attempt": attempt,
                     "latency_ms": round(latency_ms, 3),
                     "result": result_repr,
-                    "result_size": len(result_repr) if isinstance(result_repr, str) else None,
+                    "result_size": original_size,
+                    "result_truncated": was_truncated,
                 },
                 visibility=EventVisibility.OBSERVABILITY,
                 parent_event_id=parent_event_id,
@@ -752,8 +753,14 @@ class ToolExecutor:
             logger.warning("[ToolExecutor] Failed to emit tool.exec_failed event", exc_info=True)
 
     @staticmethod
-    def _safe_result_repr(result: Any) -> str:
-        """把任意 tool 返回值转为字符串表示，限制最大长度避免 L1 文件膨胀。"""
+    def _safe_result_repr(result: Any) -> tuple[str, int, bool]:
+        """把任意 tool 返回值转为字符串表示，限制最大长度避免 L1 文件膨胀。
+
+        返回 (repr_str, original_size, was_truncated):
+        - repr_str: 可能被截断的字符串,截断时附 "...<truncated N chars>" 标记
+        - original_size: 序列化后**原始**字符长度(不含截断标记)
+        - was_truncated: 是否触发了截断
+        """
         try:
             if isinstance(result, str):
                 text = result
@@ -765,10 +772,11 @@ class ToolExecutor:
                     text = repr(result)
         except Exception:
             text = "<unrepresentable result>"
-        max_len = 4096
-        if len(text) > max_len:
-            return text[:max_len] + f"...<truncated {len(text) - max_len} chars>"
-        return text
+        original_size = len(text)
+        max_len = 16384
+        if original_size > max_len:
+            return text[:max_len] + f"...<truncated {original_size - max_len} chars>", original_size, True
+        return text, original_size, False
 
 
 def _default_is_retryable(error: Exception) -> bool:

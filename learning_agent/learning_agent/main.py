@@ -50,8 +50,8 @@ from learning_agent.learning_agent.alignment_policy import (
     COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
     apply_alignment_decision,
     build_absorbing_opening_addendum,
-    should_run_alignment,
 )
+from learning_agent.learning_agent.alignment_classifier import AlignmentClassifier
 from learning_agent.learning_agent.answer_quality import (
     PARTIAL_AFTER_ERROR_MAX_LEN as _PARTIAL_AFTER_ERROR_MAX_LEN,
     SAFE_FALLBACK_ANSWER as _SAFE_FALLBACK_ANSWER,
@@ -89,6 +89,7 @@ from learning_agent.learning_agent.teach_flow import (
     finalize_consolidation as _finalize_consolidation_impl,
 )
 from learning_agent.learning_agent.mode_service import (
+    AlignmentPopupPayload,
     PreparedSessionTurn,
     TurnExecutionProfile,
     build_turn_profile,
@@ -228,6 +229,10 @@ class LearningAgentSystem:
         self.companion_intent_classifier = CompanionIntentClassifier(
             provider=self.provider,
             model_name=self.config.companion_intent_model,
+        )
+        self.alignment_classifier = AlignmentClassifier(
+            provider=self.provider,
+            model_name=self.config.alignment_classifier_model,
         )
         # 状态快照只用于观测，不再触发持久化层 snapshot/delta compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
@@ -383,13 +388,6 @@ class LearningAgentSystem:
     def save_session(self, session_id: str) -> bool:
         """兼容入口。Session 主事实源实时写入 event log，不再保存 snapshot。"""
         return self.get_session(session_id) is not None
-
-    def update_session_mode(
-        self,
-        session_id: str,
-        mode: AgentMode,
-    ) -> LearningSession:
-        return self.session_manager.switch_session_mode(session_id, mode)
 
     async def save_state(self) -> None:
         await self._save_state()
@@ -573,6 +571,7 @@ class LearningAgentSystem:
         source: str = "ai_distilled",
         source_ref: Optional[str] = None,
         title: Optional[str] = None,
+        mode_metadata: Optional[dict[str, Any]] = None,
     ) -> tuple[LearningSession, LearningUnit]:
         """创建一个新的学习卷及其专属会话。
 
@@ -580,6 +579,9 @@ class LearningAgentSystem:
         由路由层翻译成 409。
         """
         session = self.session_manager.create_session(title=title or seed_text[:48])
+        if mode_metadata:
+            session.mode_metadata.update(mode_metadata)
+            self.session_manager.persist_mode_metadata(session.id)
         try:
             unit = self.learning_unit_store.create(
                 session_id=session.id,
@@ -1016,31 +1018,43 @@ class LearningAgentSystem:
                 and not unit.alignment_reason
                 and unit.clarification_count == 0
             )
-            if user_initiated_alignment:
-                decision = AlignmentDecision(
-                    mode="active",
-                    reason="user_request",
-                    assumption_note=unit.assumption_note or "用户主动请求对齐。",
-                )
-            elif legacy_pending_alignment:
-                decision = AlignmentDecision(
-                    mode="active",
-                    reason="missing_learnable_target",
-                    assumption_note=unit.assumption_note
-                    or "旧学习卷需要先确认学习目标。",
-                )
+
+            # §9.3 第 1 条护栏 + 短路优化：已澄清过一次的 unit 不再调 LLM
+            if (
+                not user_initiated_alignment
+                and not legacy_pending_alignment
+                and unit.clarification_count >= 1
+            ):
+                decision = AlignmentDecision(mode="none", reason="clear_enough")
             else:
-                decision = should_run_alignment(unit, user_input)
-                # §9.3 第 1 条护栏：启动期阻塞澄清不超过 1 次
-                if decision.mode == "active" and unit.clarification_count >= 1:
+                decision = await self.alignment_classifier.classify(
+                    unit,
+                    user_input,
+                    recent_messages=list(session.entries[-6:]),
+                )
+                # 用户/旧卷已经显式标记需要对齐 → 即使分类器返回 none 也强制为 active，
+                # 把分类器拿到的 candidates（可能为空）透传给前端 modal。
+                if user_initiated_alignment and decision.mode == "none":
                     decision = AlignmentDecision(
-                        mode="none",
-                        reason="clear_enough",
+                        mode="active",
+                        reason="user_request",
+                        assumption_note=unit.assumption_note or "用户主动请求对齐。",
+                        candidates=decision.candidates,
+                        divergence_cost=decision.divergence_cost,
                     )
+                elif legacy_pending_alignment and decision.mode == "none":
+                    decision = AlignmentDecision(
+                        mode="active",
+                        reason="missing_learnable_target",
+                        assumption_note=unit.assumption_note
+                        or "旧学习卷需要先确认学习目标。",
+                        candidates=decision.candidates,
+                        divergence_cost=decision.divergence_cost,
+                    )
+
             await self._apply_alignment_decision(unit, decision)
-            effective_mode = (
-                AgentMode.ASK if decision.mode == "active" else AgentMode.STUDY
-            )
+            # active 不再切 ASK——下游通过 PreparedSessionTurn.alignment_popup 短路弹 modal
+            effective_mode = AgentMode.STUDY
         else:
             decision = None
             effective_mode = AgentMode.TEACH
@@ -1054,14 +1068,37 @@ class LearningAgentSystem:
             "forge_stage": unit.forge_stage,
             "temperature_state": unit.temperature_state,
         }
+        alignment_popup: AlignmentPopupPayload | None = None
         if decision is not None and decision.mode != "none":
             unit_metadata["alignment_reason"] = decision.reason
             if decision.assumption_note:
                 unit_metadata["assumption_note"] = decision.assumption_note
             if decision.suggested_objective:
                 unit_metadata["suggested_objective"] = decision.suggested_objective
-        if effective_mode == AgentMode.ASK:
+            if decision.candidates:
+                unit_metadata["candidates"] = [
+                    c.model_dump() for c in decision.candidates
+                ]
+            if decision.divergence_cost:
+                unit_metadata["divergence_cost"] = decision.divergence_cost
+        if decision is not None and decision.mode == "active":
             unit_metadata["alignment"] = True
+            placeholder_text = (
+                "我想先和你对齐一下方向——下面是我读到的几种可能解读，"
+                "你挑一个想先学的方向，我就按那个开讲。"
+                if decision.candidates
+                else (
+                    "你想往哪个方向走？把目标说得更具体一点，"
+                    "我就能开始讲了。"
+                )
+            )
+            alignment_popup = AlignmentPopupPayload(
+                candidates=[c.model_dump() for c in decision.candidates],
+                divergence_cost=decision.divergence_cost,
+                assumption_note=decision.assumption_note,
+                placeholder_text=placeholder_text,
+                reason=decision.reason,
+            )
         if effective_mode == AgentMode.STUDY and unit.phase == "absorbing":
             forge_plan = prepare_forge_stage_metadata(unit, user_input)
             unit_metadata["learning_action"] = forge_plan.learning_action
@@ -1092,6 +1129,7 @@ class LearningAgentSystem:
             profile=profile,
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
+            alignment_popup=alignment_popup,
         )
 
     def _build_absorbing_opening_addendum(
@@ -1138,9 +1176,6 @@ class LearningAgentSystem:
         # 内部消费 AgentMode.ASK，不经过这里）。非学习卷会话归一到 CHAT。
         if requested_mode == AgentMode.ASK:
             requested_mode = AgentMode.CHAT
-
-        if session.mode != requested_mode:
-            session = self.update_session_mode(session.id, requested_mode)
 
         intent_override = await self._maybe_classify_companion_intent(
             user_input, requested_mode
@@ -1451,6 +1486,42 @@ class LearningAgentSystem:
                 prepared_session, prepared_turn = await self._prepare_session_turn(
                     session, user_input, mode
                 )
+
+                # active 对齐短路：不调 LLM，写一条占位 assistant 消息，
+                # 把 candidates / divergence_cost 透传给 SSE 让前端弹 modal
+                if prepared_turn.alignment_popup is not None:
+                    popup = prepared_turn.alignment_popup
+                    common_meta = dict(prepared_turn.profile.user_message_metadata)
+                    self.session_manager.append_message(
+                        prepared_session.id,
+                        MessageRole.USER,
+                        prepared_turn.runtime_input,
+                        metadata=common_meta,
+                    )
+                    assistant_meta = dict(
+                        prepared_turn.profile.assistant_message_metadata
+                    )
+                    self.session_manager.append_message(
+                        prepared_session.id,
+                        MessageRole.ASSISTANT,
+                        popup.placeholder_text,
+                        metadata=assistant_meta,
+                    )
+                    chunk_meta = dict(prepared_turn.stream_metadata)
+                    chunk_meta["alignment_popup"] = True
+                    chunk_meta["candidates"] = popup.candidates
+                    chunk_meta["divergence_cost"] = popup.divergence_cost
+                    chunk_meta["placeholder_text"] = popup.placeholder_text
+                    if popup.assumption_note:
+                        chunk_meta["assumption_note"] = popup.assumption_note
+                    if popup.reason:
+                        chunk_meta["alignment_reason"] = popup.reason
+                    yield ChatChunk(
+                        content=popup.placeholder_text,
+                        metadata=chunk_meta,
+                    )
+                    return
+
                 response_parts: list[str] = []
                 completed = False
 

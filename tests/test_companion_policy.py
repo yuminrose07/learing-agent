@@ -22,7 +22,6 @@ def _build_system_stub() -> LearningAgentSystem:
     system = LearningAgentSystem.__new__(LearningAgentSystem)
     system.agent_loop = MagicMock()
     system.save_session = MagicMock(return_value=True)
-    system.update_session_mode = MagicMock()
     system.get_session = MagicMock()
     system.session_event_store = MagicMock()
     learning_unit_store = MagicMock()

@@ -18,10 +18,15 @@ from learning_agent.ai import (
     TeachSession,
     UnitObjective,
 )
-from learning_agent.ai.learning_unit import TeachFeedbackCard
+from learning_agent.ai.learning_unit import Candidate, TeachFeedbackCard
+from learning_agent.learning_agent.alignment_policy import (
+    AlignmentDecision,
+    _apply_rate_limits,
+)
 from learning_agent.learning_agent.main import LearningAgentSystem
 from learning_agent.learning_agent.mode_service import (
     FEYNMAN_PERSONA,
+    NEUTRAL_GUARDRAILS,
     NEUTRAL_PERSONA,
     SOCRATES_PERSONA,
     ZHU_XI_PERSONA,
@@ -31,15 +36,78 @@ from learning_agent.learning_agent.mode_service import (
 )
 
 
-def _build_system_stub() -> LearningAgentSystem:
+class _FakeAlignmentClassifier:
+    """Mimics the real ``AlignmentClassifier`` for tests:
+
+    - Returns a fixed ``AlignmentDecision`` (or cycles through a list).
+    - Still applies §9.3 #2/#3 rate limits via ``_apply_rate_limits`` so tests
+      of ``suggestion_count`` / ``nag_cooldown_remaining`` exercise the same
+      downgrade pipeline as production.
+
+    Tests that don't care about alignment use the default mode=none stub
+    attached in ``_build_system_stub``.
+    """
+
+    def __init__(self, decisions: "AlignmentDecision | list[AlignmentDecision]"):
+        self._decisions = (
+            list(decisions) if isinstance(decisions, list) else [decisions]
+        )
+        self._idx = 0
+
+    async def classify(self, unit, user_input, *, recent_messages=None):
+        if self._idx < len(self._decisions):
+            raw = self._decisions[self._idx]
+            self._idx += 1
+        else:
+            raw = self._decisions[-1]
+        return _apply_rate_limits(unit, raw)
+
+
+def _none_decision() -> AlignmentDecision:
+    return AlignmentDecision(mode="none", reason="clear_enough")
+
+
+def _suggested_decision(divergence: str = "low") -> AlignmentDecision:
+    return AlignmentDecision(
+        mode="suggested",
+        reason="too_broad",
+        candidates=[
+            Candidate(objective="按切口 A 学", first_step="先学 A 的入口"),
+            Candidate(objective="按切口 B 学", first_step="先学 B 的入口"),
+        ],
+        divergence_cost=divergence,
+        suggested_objective="按切口 A 学",
+        assumption_note="目标范围较大，先按一个切口展开。",
+    )
+
+
+def _active_decision(reason: str = "missing_learnable_target") -> AlignmentDecision:
+    return AlignmentDecision(
+        mode="active",
+        reason=reason,  # type: ignore[arg-type]
+        candidates=[
+            Candidate(objective="方向 A", first_step="切入 A"),
+            Candidate(objective="方向 B", first_step="切入 B"),
+        ],
+        divergence_cost="high",
+        assumption_note="输入太短，无法判断你想学的具体对象。",
+    )
+
+
+def _build_system_stub(
+    *,
+    alignment_decisions: "AlignmentDecision | list[AlignmentDecision] | None" = None,
+) -> LearningAgentSystem:
     system = LearningAgentSystem.__new__(LearningAgentSystem)
     system.agent_loop = MagicMock()
     system.save_session = MagicMock(return_value=True)
-    system.update_session_mode = MagicMock()
     system.get_session = MagicMock()
     learning_unit_store = MagicMock()
     learning_unit_store.get = MagicMock(return_value=None)
     system.learning_unit_store = learning_unit_store
+    system.alignment_classifier = _FakeAlignmentClassifier(
+        alignment_decisions if alignment_decisions is not None else _none_decision()
+    )
     return system
 
 
@@ -88,6 +156,11 @@ class TestModeLayering:
         assert profile.turn_kind == TurnExecutionKind.REACT
         assert "web_search" in profile.visible_tools
         assert "web_fetch" in profile.visible_tools
+
+    def test_neutral_guardrails_explain_dependent_tool_calls_must_wait(self):
+        assert "依赖前序结果的工具必须分批调用" in NEUTRAL_GUARDRAILS
+        assert "等结果返回后再把真实 URL 传给 web_fetch" in NEUTRAL_GUARDRAILS
+        assert "不要在同一批工具调用里使用" in NEUTRAL_GUARDRAILS
 
     def test_build_turn_profile_defaults_to_neutral_persona(self):
         profile = build_turn_profile(
@@ -166,9 +239,6 @@ class TestModeLayering:
             mode_metadata={"chat_persona_key": ZHU_XI_PERSONA.key},
         )
 
-        switched_session = session.model_copy(deep=True)
-        system.update_session_mode.return_value = switched_session
-
         prepared_session, prepared_turn = await system._prepare_session_turn(
             session,
             "随便问点啥",
@@ -239,34 +309,42 @@ class TestTeachProtocol:
             unit.transition_to("absorbing")
 
     @pytest.mark.asyncio
-    async def test_prepare_session_turn_absorbing_with_vague_input_yields_ask(self):
-        """absorbing + 模糊输入：策略判 active 时 Product 层临时覆写为 ASK。"""
-        system = _build_system_stub()
+    async def test_prepare_session_turn_absorbing_with_vague_input_yields_active_popup(self):
+        """absorbing + LLM 判 active：STUDY 不切，仅挂 alignment_popup 让前端弹 modal。"""
+        system = _build_system_stub(alignment_decisions=_active_decision())
         unit = _make_unit(phase="absorbing")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # "讲讲这个" 是代词指代，即便 concept_list 非空也不豁免
         _, turn = await system._prepare_session_turn(session, "讲讲这个", AgentMode.CHAT)
 
-        assert turn.effective_mode == AgentMode.ASK
+        # 新契约：active 不切 ASK，effective_mode 仍是 STUDY
+        assert turn.effective_mode == AgentMode.STUDY
+        # 但 PreparedSessionTurn.alignment_popup 不再为 None，下游 stream 路径走短路
+        assert turn.alignment_popup is not None
+        popup = turn.alignment_popup
+        assert popup.placeholder_text  # 非空文案才能写进 assistant 消息
+        assert len(popup.candidates) == 2  # 候选透传给前端
+        assert popup.divergence_cost == "high"
+
         meta = turn.profile.assistant_message_metadata
-        assert meta["mode"] == "ask"
+        assert meta["mode"] == "study"
         assert meta["alignment"] is True
         assert meta["alignment_state"] == "active"
         assert meta["alignment_reason"] == "missing_learnable_target"
-        # 铸造状态随卷透传，但 ASK 轮不派生 learning_action
+        # 铸造状态仍透传，STUDY absorbing 派生 learning_action
         assert meta["forge_stage"] == "entry"
         assert meta["temperature_state"] == "steady"
-        assert "learning_action" not in meta
+        assert meta["learning_action"] == "orient"
         # unit 状态写回 + 限流计数 +1
         assert unit.alignment_state == "active"
         assert unit.clarification_count == 1
 
     @pytest.mark.asyncio
-    async def test_legacy_active_alignment_state_yields_one_ask(self):
-        """旧 phase=aligning 投影出的 active 状态仍应保留一次 ASK 语义。"""
-        system = _build_system_stub()
+    async def test_legacy_active_alignment_state_yields_active_popup(self):
+        """旧 phase=aligning 投影出的 active 状态仍应保留一次对齐语义（弹 popup）。"""
+        # legacy_pending_alignment 分支：分类器即便返 none，也强制升为 active
+        system = _build_system_stub(alignment_decisions=_none_decision())
         unit = _make_unit(phase="absorbing")
         unit.alignment_state = "active"
         unit.alignment_reason = ""
@@ -278,26 +356,32 @@ class TestTeachProtocol:
             session, "讲讲 BaseModel", AgentMode.CHAT
         )
 
-        assert turn.effective_mode == AgentMode.ASK
+        assert turn.effective_mode == AgentMode.STUDY
+        assert turn.alignment_popup is not None
         assert turn.profile.assistant_message_metadata["alignment_state"] == "active"
         assert unit.clarification_count == 1
 
     @pytest.mark.asyncio
     async def test_prepare_session_turn_clarification_rate_limited_to_once(self):
-        """§9.3 第 1 条护栏：单卷启动期阻塞澄清最多 1 次，第二次模糊输入强制走 STUDY。"""
-        system = _build_system_stub()
+        """§9.3 第 1 条护栏：单卷启动期阻塞澄清最多 1 次，第二次模糊输入不再调 LLM。"""
+        # 第 1 轮 active；第 2 轮即便分类器返 active，§9.3 #1 在 LLM 调用前短路为 none
+        system = _build_system_stub(
+            alignment_decisions=[_active_decision(), _active_decision()]
+        )
         unit = _make_unit(phase="absorbing")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 第一轮：触发澄清
+        # 第一轮：触发对齐 popup
         _, turn1 = await system._prepare_session_turn(session, "讲讲这个", AgentMode.CHAT)
-        assert turn1.effective_mode == AgentMode.ASK
+        assert turn1.effective_mode == AgentMode.STUDY
+        assert turn1.alignment_popup is not None
         assert unit.clarification_count == 1
 
-        # 第二轮：同样模糊但限流命中 → 强制 STUDY，不再递增
+        # 第二轮：同样模糊但限流命中 → 不再弹 popup，alignment_state 回到 idle
         _, turn2 = await system._prepare_session_turn(session, "再讲讲", AgentMode.CHAT)
         assert turn2.effective_mode == AgentMode.STUDY
+        assert turn2.alignment_popup is None
         assert unit.clarification_count == 1
         meta2 = turn2.profile.assistant_message_metadata
         assert meta2["alignment_state"] == "idle"
@@ -305,58 +389,57 @@ class TestTeachProtocol:
     @pytest.mark.asyncio
     async def test_prepare_session_turn_suggestion_count_bumps_and_caps(self):
         """§9.3 第 2 条护栏：suggested 写入时 suggestion_count +1，超过 2 后降级为 none。"""
-        system = _build_system_stub()
+        # 三轮都返 suggested；分类器内部的 _apply_rate_limits 负责降级
+        system = _build_system_stub(
+            alignment_decisions=[_suggested_decision() for _ in range(3)]
+        )
         unit = _make_unit(phase="absorbing")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 第 1 次 B 档输入：策略判 suggested，counter 0 → 1
         _, t1 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         assert t1.profile.assistant_message_metadata["alignment_state"] == "suggested"
         assert unit.suggestion_count == 1
 
-        # 第 2 次：counter 1 → 2，仍 suggested
         _, t2 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         assert t2.profile.assistant_message_metadata["alignment_state"] == "suggested"
         assert unit.suggestion_count == 2
 
-        # 第 3 次：counter 已达上限，策略降级为 none → alignment_state 回到 idle
+        # 第 3 次：suggestion_count 已达上限，rate_limits 把 suggested 降级为 none
         _, t3 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         meta3 = t3.profile.assistant_message_metadata
         assert meta3["alignment_state"] == "idle"
-        assert "alignment_reason" not in meta3  # none 不应暴露原因
-        # counter 不再继续涨
+        assert "alignment_reason" not in meta3
         assert unit.suggestion_count == 2
 
     @pytest.mark.asyncio
     async def test_prepare_session_turn_cooldown_ticks_down_each_absorbing_turn(self):
-        """§9.3 第 3 条护栏：nag_cooldown_remaining 每个 absorbing turn 减 1，期间 B 档降级。"""
-        system = _build_system_stub()
+        """§9.3 第 3 条护栏：nag_cooldown_remaining 每个 absorbing turn 减 1，期间 suggested 降级。"""
+        # 全程都让分类器返 suggested；冷静期内由 _apply_rate_limits 降级
+        system = _build_system_stub(
+            alignment_decisions=[_suggested_decision() for _ in range(4)]
+        )
         unit = _make_unit(phase="absorbing")
-        # 模拟用户已 accept_assumption，进入 3 轮冷静期
         unit.nag_cooldown_remaining = 3
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 第 1 轮：B 档输入应被降级；冷静期 3 → 2
         _, t1 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         assert t1.profile.assistant_message_metadata["alignment_state"] == "idle"
         assert unit.nag_cooldown_remaining == 2
 
-        # 第 2 轮：仍降级；2 → 1
         _, t2 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         assert t2.profile.assistant_message_metadata["alignment_state"] == "idle"
         assert unit.nag_cooldown_remaining == 1
 
-        # 第 3 轮：仍降级；1 → 0
         _, t3 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         assert t3.profile.assistant_message_metadata["alignment_state"] == "idle"
         assert unit.nag_cooldown_remaining == 0
 
-        # 第 4 轮：冷静期结束，B 档恢复
+        # 第 4 轮：冷静期结束，suggested 恢复
         _, t4 = await system._prepare_session_turn(session, "教我整个项目", AgentMode.CHAT)
         assert t4.profile.assistant_message_metadata["alignment_state"] == "suggested"
-        assert unit.nag_cooldown_remaining == 0  # 已经触底不再减
+        assert unit.nag_cooldown_remaining == 0
 
     @pytest.mark.asyncio
     async def test_prepare_session_turn_absorbing_phase_yields_study_mode(self):
@@ -530,12 +613,11 @@ class TestAbsorbingOpeningTemplate:
     @pytest.mark.asyncio
     async def test_first_absorbing_turn_with_suggested_appends_narrowing_block(self):
         """B 档 alignment_state=suggested 时附加收窄建议段。"""
-        system = _build_system_stub()
+        system = _build_system_stub(alignment_decisions=_suggested_decision())
         unit = _make_unit(phase="absorbing")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # "教我整个项目" 命中 too_broad → B 档
         _, turn = await system._prepare_session_turn(
             session, "教我整个项目", AgentMode.CHAT
         )
@@ -567,20 +649,25 @@ class TestAbsorbingOpeningTemplate:
         assert "工作目标卡片" not in turn.profile.system_prompt
 
     @pytest.mark.asyncio
-    async def test_ask_overlay_does_not_get_opening_template(self):
-        """C 档（active）走 ASK，开场模板不应注入到 ASK turn 上。"""
-        system = _build_system_stub()
+    async def test_active_popup_still_gets_opening_template(self):
+        """C 档（active）现在保留 STUDY，opening template 仍按 STUDY+absorbing 首轮规则注入。
+
+        旧契约里 active 切到 ASK 轮，开场模板被 skip；refactor 后 active 不切模式，
+        仅由 alignment_popup 决定下游短路。此测试钉住新契约。
+        """
+        system = _build_system_stub(alignment_decisions=_active_decision())
         unit = _make_unit(phase="absorbing")
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # "讲讲这个" → C 档 → ASK 覆写
         _, turn = await system._prepare_session_turn(
             session, "讲讲这个", AgentMode.CHAT
         )
 
-        assert turn.effective_mode == AgentMode.ASK
-        assert "工作目标卡片" not in turn.profile.system_prompt
+        assert turn.effective_mode == AgentMode.STUDY
+        assert turn.alignment_popup is not None
+        # opening template 仍按 STUDY+absorbing 首轮注入（下游短路前 profile 已建好）
+        assert "工作目标卡片" in turn.profile.system_prompt
 
     @pytest.mark.asyncio
     async def test_outputting_turn_has_no_opening_template(self):
@@ -690,24 +777,25 @@ class TestNarrowingActions:
 
 
 class TestUserRequestedAlignmentFlow:
-    """B4 D3: /align 之后的下一轮调度 —— 必须走 ASK，本轮结束后转 resolved。"""
+    """B4 D3: /align 之后的下一轮调度 —— 必须弹 popup，本轮结束后转 resolved。"""
 
     @pytest.mark.asyncio
-    async def test_next_turn_after_request_alignment_yields_ask(self):
-        system = _build_system_stub()
+    async def test_next_turn_after_request_alignment_yields_popup(self):
+        # 分类器在用户主动对齐场景下即便返回 none，主流程也会强制升为 active
+        system = _build_system_stub(alignment_decisions=_none_decision())
         unit = _make_unit(phase="absorbing")
-        # 模拟 /align 端点写入的状态
         unit.alignment_state = "active"
         unit.alignment_reason = "user_request"
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 下一轮即便是清晰输入，也应被强制 ASK
+        # 下一轮即便是清晰输入，也应强制走对齐 popup
         _, turn = await system._prepare_session_turn(
             session, "讲讲 BaseModel", AgentMode.CHAT
         )
 
-        assert turn.effective_mode == AgentMode.ASK
+        assert turn.effective_mode == AgentMode.STUDY
+        assert turn.alignment_popup is not None
         meta = turn.profile.assistant_message_metadata
         assert meta["alignment"] is True
         assert meta["alignment_reason"] == "user_request"
@@ -718,30 +806,34 @@ class TestUserRequestedAlignmentFlow:
     @pytest.mark.asyncio
     async def test_third_turn_after_request_alignment_returns_to_heuristic(self):
         """user_request 是一次性的：下一轮立即消费，再下一轮走 heuristic。"""
-        system = _build_system_stub()
+        system = _build_system_stub(
+            alignment_decisions=[_none_decision(), _none_decision()]
+        )
         unit = _make_unit(phase="absorbing")
         unit.alignment_state = "active"
         unit.alignment_reason = "user_request"
         _attach_unit(system, unit)
         session = _make_session_with_unit(unit)
 
-        # 第 1 轮：消费 user_request → ASK，state 转 resolved
+        # 第 1 轮：消费 user_request → STUDY+popup，state 转 resolved
         _, t1 = await system._prepare_session_turn(
             session, "讲讲 BaseModel", AgentMode.CHAT
         )
-        assert t1.effective_mode == AgentMode.ASK
+        assert t1.effective_mode == AgentMode.STUDY
+        assert t1.alignment_popup is not None
 
-        # 第 2 轮：state 已 resolved，正常走 heuristic；清晰输入 → STUDY
+        # 第 2 轮：state 已 resolved，正常走 heuristic；清晰输入 → STUDY 无 popup
         _, t2 = await system._prepare_session_turn(
             session, "讲讲 BaseModel", AgentMode.CHAT
         )
         assert t2.effective_mode == AgentMode.STUDY
+        assert t2.alignment_popup is None
         assert unit.alignment_state == "idle"
 
     @pytest.mark.asyncio
     async def test_user_request_bypasses_clarification_rate_limit(self):
-        """即便启动期已经用掉 1 次澄清额度，/align 仍应触发 ASK。"""
-        system = _build_system_stub()
+        """即便启动期已经用掉 1 次澄清额度，/align 仍应触发 popup。"""
+        system = _build_system_stub(alignment_decisions=_none_decision())
         unit = _make_unit(phase="absorbing")
         unit.clarification_count = 1  # 已经被系统打断过一次
         unit.alignment_state = "active"
@@ -753,7 +845,8 @@ class TestUserRequestedAlignmentFlow:
             session, "讲讲 BaseModel", AgentMode.CHAT
         )
 
-        assert turn.effective_mode == AgentMode.ASK
+        assert turn.effective_mode == AgentMode.STUDY
+        assert turn.alignment_popup is not None
         # 不计入限流额度
         assert unit.clarification_count == 1
 

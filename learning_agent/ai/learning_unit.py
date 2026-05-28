@@ -112,6 +112,21 @@ class TangentNote(BaseModel):
     detected_at: datetime = Field(default_factory=_now)
 
 
+class Candidate(BaseModel):
+    """LLM 对齐分类器列出的「导向不同 first_step」的可能解读。
+
+    ``objective`` 是一句给用户挑选用的目标复述，``first_step`` 是配套的
+    可操作切入点，用于前端 modal 卡片的标题 / 副标题。
+
+    定义在此模块（``ai`` 层）而非 ``learning_agent`` 层是为了让 ``LearningUnit``
+    可以把它当作字段直接序列化；``learning_agent.alignment_policy.Candidate``
+    会从这里 re-export，对外接口不变。
+    """
+
+    objective: str
+    first_step: str
+
+
 class TeachQuestion(BaseModel):
     id: str = Field(default_factory=lambda: f"tq-{uuid.uuid4().hex[:8]}")
     concept_id: str
@@ -198,6 +213,9 @@ class LearningUnit(BaseModel):
     # 后，N 轮内不再弹建议条；每个 absorbing 轮进入时减 1，归零后恢复。
     nag_cooldown_remaining: int = 0
     last_alignment_at: Optional[datetime] = None
+    # LLM 对齐分类器最近一次列出的候选解读。前端在用户刷新页面时
+    # 仍能恢复 modal；non-active 档也会写入，便于观测分类器输出质量。
+    last_candidates: list[Candidate] = Field(default_factory=list)
 
     teach_session: Optional[TeachSession] = None
     verification_status: Optional[VerificationStatus] = None

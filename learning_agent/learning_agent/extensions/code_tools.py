@@ -356,7 +356,7 @@ def create_code_tools_extension() -> Extension:
     ext = Extension(
         id="core-code-tools",
         name="Code Tools",
-        version="0.1.0",
+        version="0.4.0-alpha.1",
         type="builtin",
     )
 

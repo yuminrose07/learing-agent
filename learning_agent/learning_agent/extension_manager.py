@@ -70,7 +70,7 @@ class Extension:
         self,
         id: str,
         name: str,
-        version: str = "0.1.0",
+        version: str = "0.4.0-alpha.1",
         type: str = "builtin",
         dependencies: Optional[list[str]] = None,
         config: Optional[dict[str, Any]] = None,
