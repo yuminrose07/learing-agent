@@ -145,6 +145,9 @@ class WebSearchServiceConfig:
     fetch_overall_timeout_seconds: float = 30.0
     tls_ca_bundle_path: str | None = None
     prefer_system_trust_store: bool = True
+    web_fetch_trafilatura_enabled: bool = True
+    web_fetch_jina_reader_enabled: bool = False
+    web_fetch_jina_reader_base_url: str = "https://r.jina.ai"
     allowed_source_types: tuple[str, ...] = tuple(DEFAULT_ALLOWED_SOURCE_TYPES)
 
 
@@ -167,6 +170,11 @@ def build_web_search_config(values: Optional[dict]) -> WebSearchServiceConfig:
             else None
         ),
         prefer_system_trust_store=bool(values.get("prefer_system_trust_store", True)),
+        web_fetch_trafilatura_enabled=bool(values.get("web_fetch_trafilatura_enabled", True)),
+        web_fetch_jina_reader_enabled=bool(values.get("web_fetch_jina_reader_enabled", False)),
+        web_fetch_jina_reader_base_url=str(
+            values.get("web_fetch_jina_reader_base_url") or "https://r.jina.ai"
+        ),
         allowed_source_types=tuple(str(item) for item in allowed),
     )
 
@@ -209,6 +217,21 @@ def _path_has_marker(path: str, markers: tuple[str, ...]) -> bool:
 
 def _query_terms(query: str) -> list[str]:
     return [term for term in re.findall(r"[a-z0-9_./+-]{2,}", query.lower()) if term not in {"site", "http", "https"}]
+
+
+def _query_terms_for_section_match(query: str) -> list[str]:
+    """块级匹配用的 query 词项:在 _query_terms 的 ASCII 词基础上补 CJK token。
+
+    Why: _query_terms 只抽 ASCII,中文 query("任务组")直接返回空,
+    会让块级打分全失效。把空格切分后长度 ≥2 的非 ASCII 段也作为 term 加入,
+    让中文 query 也能在块级命中。
+    """
+    terms = list(_query_terms(query))
+    for raw_token in (query or "").split():
+        token = raw_token.strip().lower()
+        if len(token) >= 2 and not token.isascii() and token not in terms:
+            terms.append(token)
+    return terms
 
 
 def _degrade_query(query: str) -> str | None:
@@ -261,6 +284,29 @@ def _build_query_aware_excerpt(query: str, snippet: str, title: str) -> str:
         return normalized_snippet
 
     return best_sentence
+
+
+def _score_section_against_query(query: str, section_content: str, section_heading: str) -> int:
+    """块级相关度打分:heading 命中权重 ×3,content 命中带密度上限。
+
+    沿用 _build_query_aware_excerpt 的 term-specificity 思路升级到块级 —— 长 term
+    更稀有权重高,heading 命中比正文重要(标题是结构化提示),content 内同 term
+    重复 5 次以上不再加分(避免单段被关键词刷屏占满 limit)。
+    """
+    terms = _query_terms_for_section_match(query)
+    if not terms:
+        return 0
+    content_lower = (section_content or "").lower()
+    heading_lower = (section_heading or "").lower()
+    score = 0
+    for term in terms:
+        h_count = heading_lower.count(term)
+        c_count = content_lower.count(term)
+        if h_count + c_count == 0:
+            continue
+        specificity = len(term)
+        score += specificity * (h_count * 3 + min(5, c_count))
+    return score
 
 
 def _parse_section_cursor(section_cursor: str, total_sections: int) -> int:
@@ -339,14 +385,18 @@ def _fetch_guidance(
     is_specific_section = bool(current_heading) and current_heading not in _GENERIC_SECTION_HEADINGS
     has_nested_section_path = len(normalized_section_path) > 1
     section_has_enough_detail = bool(code_blocks) or not truncated or next_section_cursor is None
-    should_stop = authoritative and (
-        (pagination_mode == "offset" and not truncated)
-        or (
-            pagination_mode == "section"
-            and section_has_enough_detail
-            and (is_specific_section or has_nested_section_path)
+    # query 模式已经按相关度精选段,默认鼓励 answer_now —— 模型再翻页等于浪费 budget
+    if pagination_mode == "query":
+        should_stop = True
+    else:
+        should_stop = authoritative and (
+            (pagination_mode == "offset" and not truncated)
+            or (
+                pagination_mode == "section"
+                and section_has_enough_detail
+                and (is_specific_section or has_nested_section_path)
+            )
         )
-    )
     if should_stop:
         recommended = "answer_now"
     elif authoritative and pagination_mode == "section" and next_section_cursor:
@@ -545,6 +595,7 @@ class WebSearchService:
         offset: int = 0,
         limit_chars: Optional[int] = None,
         section_cursor: str | None = None,
+        query: str | None = None,
     ) -> dict:
         canonical_url = canonicalize_url(url)
         if not canonical_url:
@@ -556,6 +607,20 @@ class WebSearchService:
         if not page.content.strip():
             raise UnsupportedPageError("Fetched page has no readable content.")
         source_type = classify_source(canonical_url)
+
+        normalized_query = (query or "").strip()
+        if normalized_query and page.sections:
+            query_aware_result = self._fetch_query_aware(
+                canonical_url=canonical_url,
+                page=page,
+                source_type=source_type,
+                query=normalized_query,
+                bounded_limit=bounded_limit,
+            )
+            if query_aware_result is not None:
+                return query_aware_result
+            # 命中为 0 时降级到 section/offset 原路径,不让 ② 把"找不到相关段"
+            # 变成空回复 —— 至少返回页面默认首段,让模型仍能拿到内容。
 
         if page.sections and (section_cursor is not None or bounded_offset == 0):
             section_index = _parse_section_cursor(section_cursor or "s0", len(page.sections))
@@ -634,6 +699,93 @@ class WebSearchService:
                 code_blocks=list(page.code_blocks),
                 next_section_cursor=None,
                 section_path=[],
+                config=self._config,
+            ),
+        }
+
+    def _fetch_query_aware(
+        self,
+        *,
+        canonical_url: str,
+        page,
+        source_type: str,
+        query: str,
+        bounded_limit: int,
+    ) -> dict | None:
+        """按 query 在 page.sections 上做块级相关度打分,选 top-N 段拼接返回。
+
+        没有任何段命中(score 全 0)时返回 None,让上层降级到 section/offset 原路径。
+        命中段的累计字符不超过 bounded_limit,超过时按降序优先保留高分段。
+        """
+        scored: list[tuple[int, int, object]] = []
+        for index, section in enumerate(page.sections):
+            score = _score_section_against_query(query, section.content, section.heading)
+            if score > 0:
+                # -index 保证同分时保留页面原顺序
+                scored.append((score, -index, section))
+        if not scored:
+            return None
+        scored.sort(reverse=True)
+
+        selected: list = []
+        total_chars = 0
+        for _score, _neg_index, section in scored:
+            section_chars = len(section.content)
+            if selected and total_chars + section_chars > bounded_limit:
+                # 已经至少选了一段,再加这段会超额 —— 停下
+                break
+            selected.append(section)
+            total_chars += section_chars
+            if total_chars >= bounded_limit:
+                break
+
+        # 拼接选中段,带上 section_path 作为小标题,便于模型理解结构
+        parts: list[str] = []
+        for section in selected:
+            heading_line = " > ".join(section.section_path) if section.section_path else section.heading
+            parts.append(f"## {heading_line}\n\n{section.content}".rstrip())
+        content = "\n\n".join(parts)
+        if len(content) > bounded_limit:
+            content = content[:bounded_limit]
+
+        truncated = len(selected) < len(scored)
+        selected_cursors = [section.cursor for section in selected]
+        selected_paths = [list(section.section_path) for section in selected]
+        selected_headings = list(dict.fromkeys(section.heading for section in selected))
+        selected_code_blocks = list(
+            dict.fromkeys(code for section in selected for code in section.code_blocks)
+        )
+
+        return {
+            "url": canonical_url,
+            "title": page.title.strip() or domain_from_url(canonical_url),
+            "domain": domain_from_url(canonical_url),
+            "content": content,
+            "content_type": page.content_type,
+            "published_at": page.published_at,
+            "source_type": source_type,
+            "truncated": truncated,
+            "next_offset": None,
+            "offset": 0,
+            "limit_chars": bounded_limit,
+            "pagination_mode": "query",
+            "section_cursor": None,
+            "section_path": [],
+            "headings": selected_headings,
+            "code_blocks": selected_code_blocks,
+            "next_section_cursor": None,
+            "next_section_hint": None,
+            "available_sections": _section_summaries(page),
+            "query": query,
+            "selected_sections": selected_cursors,
+            "selected_section_paths": selected_paths,
+            "guidance": _fetch_guidance(
+                source_type=source_type,
+                pagination_mode="query",
+                truncated=truncated,
+                code_blocks=selected_code_blocks,
+                next_section_cursor=None,
+                section_path=selected_paths[0] if selected_paths else [],
                 config=self._config,
             ),
         }

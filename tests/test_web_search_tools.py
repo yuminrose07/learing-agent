@@ -6,6 +6,7 @@ from urllib import error
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from learning_agent.agent.event_bus import EventBus
 from learning_agent.agent.hook_system import HookSystem
@@ -18,6 +19,7 @@ from learning_agent.ai import (
 )
 from learning_agent.learning_agent.extension_manager import ExtensionContext
 from learning_agent.learning_agent.extensions.web_search_tools import (
+    WebFetchInput,
     _build_web_search_service,
     create_web_search_tools_extension,
 )
@@ -207,6 +209,24 @@ async def test_web_search_service_builds_query_aware_excerpt():
 )
 def test_classify_source_prioritizes_high_value_learning_sources(url: str, expected: str):
     assert classify_source(url) == expected
+
+
+def test_web_fetch_input_rejects_placeholder_urls():
+    with pytest.raises(ValidationError) as exc_info:
+        WebFetchInput.model_validate(
+            {"url": "{从web_search结果中选择最权威的官方页面URL}"}
+        )
+
+    message = str(exc_info.value)
+    assert "concrete http/https URL" in message
+    assert "web_search first" in message
+
+
+def test_web_fetch_input_rejects_non_http_urls():
+    with pytest.raises(ValidationError) as exc_info:
+        WebFetchInput.model_validate({"url": "ftp://example.com/page"})
+
+    assert "Only concrete http/https URLs are supported" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -962,4 +982,7 @@ def test_build_web_search_service_passes_tls_config_to_builtin_providers(
         "overall_timeout_seconds": 30.0,
         "ca_bundle_path": "/tmp/custom-ca.pem",
         "prefer_system_trust_store": False,
+        "trafilatura_enabled": True,
+        "jina_reader_enabled": False,
+        "jina_reader_base_url": "https://r.jina.ai",
     }

@@ -9,7 +9,7 @@ import logging
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from learning_agent.ai import (
     AfterToolExecuteInput,
@@ -73,6 +73,28 @@ def _budget_snapshot(state: _TurnBudgetState, config: WebSearchServiceConfig) ->
     }
 
 
+def _is_placeholder_url(value: str) -> bool:
+    stripped = value.strip()
+    if "{" in stripped or "}" in stripped:
+        return True
+    lowered = stripped.lower()
+    placeholder_fragments = (
+        "from web_search",
+        "search result",
+        "selected result",
+        "从web_search",
+        "从 web_search",
+        "从搜索结果",
+        "搜索结果中",
+        "选择最权威",
+        "官方页面url",
+        "官方 url",
+        "填入",
+        "占位",
+    )
+    return any(fragment in lowered for fragment in placeholder_fragments)
+
+
 class WebSearchInput(BaseModel):
     query: str = Field(description="Search query")
     top_k: int = Field(default=5, description="Maximum number of results to return")
@@ -89,6 +111,29 @@ class WebFetchInput(BaseModel):
     offset: int = Field(default=0, description="Character offset for continued reading")
     section_cursor: str | None = Field(default=None, description="Optional section cursor such as s0 or s1")
     limit_chars: int = Field(default=12000, description="Maximum characters to return")
+    query: str | None = Field(
+        default=None,
+        description=(
+            "Optional query: when provided, the page is scored at the section level and only the "
+            "most relevant sections are returned (instead of paginating from the top). "
+            "Use this when you want a specific concept/API on a long page."
+        ),
+    )
+
+    @field_validator("url")
+    @classmethod
+    def validate_concrete_http_url(cls, value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("URL cannot be empty.")
+        if _is_placeholder_url(raw):
+            raise ValueError(
+                "web_fetch.url must be a concrete http/https URL, not a placeholder. "
+                "Call web_search first, wait for its results, then retry web_fetch with an actual result URL."
+            )
+        if not canonicalize_url(raw):
+            raise ValueError("Only concrete http/https URLs are supported.")
+        return raw
 
 
 def _tool_error(code: str, message: str, *, retryable: bool = False) -> dict[str, Any]:
@@ -116,6 +161,9 @@ def _build_web_search_service(config: Optional[dict[str, Any]]) -> WebSearchServ
         overall_timeout_seconds=web_config.fetch_overall_timeout_seconds,
         ca_bundle_path=web_config.tls_ca_bundle_path,
         prefer_system_trust_store=web_config.prefer_system_trust_store,
+        trafilatura_enabled=web_config.web_fetch_trafilatura_enabled,
+        jina_reader_enabled=web_config.web_fetch_jina_reader_enabled,
+        jina_reader_base_url=web_config.web_fetch_jina_reader_base_url,
     )
     return WebSearchService(search_provider, fetch_provider, config=web_config)
 
@@ -124,7 +172,7 @@ def create_web_search_tools_extension(config: dict | None = None) -> Extension:
     ext = Extension(
         id="core-web-search-tools",
         name="Web Search Tools",
-        version="0.1.0",
+        version="0.4.0-alpha.1",
         type="builtin",
         config=config or {},
     )
@@ -349,6 +397,7 @@ def create_web_search_tools_extension(config: dict | None = None) -> Extension:
             offset: int = 0,
             section_cursor: str | None = None,
             limit_chars: int = 12000,
+            query: str | None = None,
             **kwargs: Any,
         ) -> dict[str, Any]:
             del kwargs
@@ -360,6 +409,7 @@ def create_web_search_tools_extension(config: dict | None = None) -> Extension:
                     offset=offset,
                     section_cursor=section_cursor,
                     limit_chars=limit_chars,
+                    query=query,
                 )
             except ValueError as exc:
                 return _tool_error("INVALID_URL", str(exc))
@@ -404,6 +454,7 @@ def create_web_search_tools_extension(config: dict | None = None) -> Extension:
                 description=(
                     "Fetch readable content from a web page. Returns cleaned text plus structured headings, "
                     "section paths, code blocks, and supports section-based continued reading. "
+                    "Provide `query` to get only the most relevant sections of long pages (recommended). "
                     "Stop after you have enough evidence, and only continue if you still need one specific missing detail."
                 ),
                 parameters={
@@ -416,6 +467,14 @@ def create_web_search_tools_extension(config: dict | None = None) -> Extension:
                             "description": "Optional section cursor such as s0 or s1 for heading-level continuation",
                         },
                         "limit_chars": {"type": "integer", "description": "Maximum characters to return", "default": 12000},
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Optional: when provided, the page is scored at the section level and only the "
+                                "most relevant sections are returned (instead of paginating from the top). "
+                                "Use this for long pages where you want a specific concept/API."
+                            ),
+                        },
                     },
                     "required": ["url"],
                 },
