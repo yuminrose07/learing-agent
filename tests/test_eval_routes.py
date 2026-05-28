@@ -26,21 +26,26 @@ from learning_agent.web import eval_routes
 def fake_layout(tmp_path: Path, monkeypatch):
     """搭一份与生产对齐的 datasets/runs 目录骨架,返回 root。"""
     datasets_dir = tmp_path / "tests" / "e2e" / "real_datasets"
+    dataset_sources_dir = tmp_path / "tests" / "e2e" / "real_datasets_src"
     runs_dir = tmp_path / ".test_artifacts" / "e2e_real_runs"
     progress_dir = tmp_path / ".test_artifacts" / "eval_console"
     datasets_dir.mkdir(parents=True)
+    dataset_sources_dir.mkdir(parents=True)
     runs_dir.mkdir(parents=True)
     progress_dir.mkdir(parents=True)
 
     monkeypatch.setattr(eval_routes, "_REPO_ROOT", tmp_path)
     monkeypatch.setattr(eval_routes, "_DATASETS_DIR", datasets_dir)
+    monkeypatch.setattr(eval_routes, "_DATASET_SOURCES_DIR", dataset_sources_dir)
     monkeypatch.setattr(eval_routes, "_RUNS_DIR", runs_dir)
     monkeypatch.setattr(eval_routes, "_PROGRESS_DIR", progress_dir)
     monkeypatch.setattr(eval_routes, "_active_runs", {}, raising=False)
+    monkeypatch.setattr(eval_routes, "_deleted_cases", {}, raising=False)
 
     return {
         "root": tmp_path,
         "datasets_dir": datasets_dir,
+        "dataset_sources_dir": dataset_sources_dir,
         "runs_dir": runs_dir,
         "progress_dir": progress_dir,
     }
@@ -67,6 +72,26 @@ def _write_dataset(datasets_dir: Path, dataset_id: str, *, case_count: int = 2) 
     }
     path = datasets_dir / f"{dataset_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _write_dataset_source(sources_dir: Path, dataset_id: str) -> Path:
+    path = sources_dir / f"{dataset_id}.txt"
+    path.write_text(
+        """
+suite_id: editable-suite
+description: 可编辑数据集
+session_plan:
+  frontend_mode: chat
+cases:
+  - id: case-a
+    title: A
+    input:
+      message: hello
+    tool_chain: [web_search]
+""".strip() + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -158,6 +183,215 @@ def test_list_datasets_lists_top_level_json_only(client, fake_layout):
     assert first5["suite_id"] == "first5"
 
 
+def test_list_datasets_prefers_txt_source_over_generated_json(client, fake_layout):
+    _write_dataset(fake_layout["datasets_dir"], "editable-suite", case_count=9)
+    _write_dataset_source(fake_layout["dataset_sources_dir"], "editable-suite")
+
+    resp = client.get("/api/eval/datasets")
+    assert resp.status_code == 200
+    items = resp.json()["datasets"]
+    assert len(items) == 1
+    assert items[0]["id"] == "editable-suite"
+    assert items[0]["source_type"] == "txt"
+    assert items[0]["case_count"] == 1
+    assert items[0]["compile_status"]["state"] == "stale"
+    assert items[0]["last_run"] is None
+
+
+def test_list_datasets_includes_latest_run_summary_and_failed_cases(client, fake_layout):
+    _write_dataset(fake_layout["datasets_dir"], "first5", case_count=2)
+    _write_run(
+        fake_layout["runs_dir"], "first5", "old-run",
+        passed=1, failed=0,
+        start_time="2026-05-26T010000Z",
+    )
+    _write_run(
+        fake_layout["runs_dir"], "first5", "new-run",
+        passed=1, failed=1,
+        start_time="2026-05-27T010000Z",
+    )
+
+    resp = client.get("/api/eval/datasets")
+    assert resp.status_code == 200
+    item = resp.json()["datasets"][0]
+    assert item["last_run"]["run_id"] == "new-run"
+    assert item["last_run"]["passed"] == 1
+    assert item["last_run"]["failed"] == 1
+    assert item["last_run"]["failed_case_ids"] == ["fail-1"]
+
+
+def test_list_datasets_compile_status_source_only(client, fake_layout):
+    _write_dataset_source(fake_layout["dataset_sources_dir"], "editable-suite")
+
+    resp = client.get("/api/eval/datasets")
+    assert resp.status_code == 200
+    item = resp.json()["datasets"][0]
+    assert item["compile_status"]["state"] == "source_only"
+
+
+def test_get_dataset_source_returns_editable_cases(client, fake_layout):
+    _write_dataset_source(fake_layout["dataset_sources_dir"], "editable-suite")
+
+    resp = client.get("/api/eval/datasets/editable-suite")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["editable"] is True
+    assert data["dataset"]["source_type"] == "txt"
+    assert data["cases"][0]["id"] == "case-a"
+    assert data["cases"][0]["message"] == "hello"
+
+
+def test_compile_dataset_adds_legacy_input_message_for_turns(fake_layout):
+    src = fake_layout["dataset_sources_dir"] / "turns-suite.txt"
+    src.write_text(
+        """
+suite_id: turns-suite
+cases:
+  - id: case-a
+    turns:
+      - role: user
+        message: hello
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    out = eval_routes.compile_dataset(src, out_dir=fake_layout["datasets_dir"])
+    compiled = json.loads(out.read_text(encoding="utf-8"))
+    case = compiled["cases"][0]
+    assert case["turns"][0]["message"] == "hello"
+    assert case["input"]["message"] == "hello"
+
+
+def test_compile_dataset_preserves_txt_eval_metadata(fake_layout):
+    src = fake_layout["dataset_sources_dir"] / "metadata-suite.txt"
+    src.write_text(
+        """
+suite_id: metadata-suite
+cases:
+  - id: case-a
+    title: A
+    description: metadata should survive compile
+    source: external_search
+    tags: [web_search]
+    tool_chain: [web_search, web_fetch]
+    evidence_required: [request.json, response.json]
+    severity: high
+    turns:
+      - role: user
+        message: hello
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    out = eval_routes.compile_dataset(src, out_dir=fake_layout["datasets_dir"])
+    compiled = json.loads(out.read_text(encoding="utf-8"))
+    case = compiled["cases"][0]
+    assert case["description"] == "metadata should survive compile"
+    assert case["source"] == "external_search"
+    assert case["tool_chain"] == ["web_search", "web_fetch"]
+    assert case["evidence_required"] == ["request.json", "response.json"]
+
+
+def test_dataset_case_crud_and_compile(client, fake_layout):
+    _write_dataset_source(fake_layout["dataset_sources_dir"], "editable-suite")
+
+    create = client.post("/api/eval/datasets/editable-suite/cases", json={
+        "id": "case-b",
+        "message": "hi",
+    })
+    assert create.status_code == 200
+    assert create.json()["case"]["id"] == "case-b"
+    assert create.json()["case"]["message"] == "hi"
+
+    update = client.put("/api/eval/datasets/editable-suite/cases/case-b", json={
+        "id": "case-b",
+        "message": "changed",
+    })
+    assert update.status_code == 200
+    assert update.json()["case"]["message"] == "changed"
+
+    compile_resp = client.post("/api/eval/datasets/editable-suite/compile")
+    assert compile_resp.status_code == 200
+    assert compile_resp.json()["case_count"] == 2
+
+    delete = client.delete("/api/eval/datasets/editable-suite/cases/case-b")
+    assert delete.status_code == 200
+    undo_token = delete.json()["undo_token"]
+    detail = client.get("/api/eval/datasets/editable-suite").json()
+    assert [case["id"] for case in detail["cases"]] == ["case-a"]
+
+    undo = client.post("/api/eval/datasets/editable-suite/cases/undo-delete", json={
+        "undo_token": undo_token,
+    })
+    assert undo.status_code == 200
+    detail = client.get("/api/eval/datasets/editable-suite").json()
+    assert [case["id"] for case in detail["cases"]] == ["case-a", "case-b"]
+
+
+def test_start_run_defaults_base_url_to_eval_request_origin(client, fake_layout, monkeypatch):
+    _write_dataset_source(fake_layout["dataset_sources_dir"], "editable-suite")
+    runner = fake_layout["root"] / "tests" / "e2e" / "frontend_real_runner_web_search.py"
+    runner.parent.mkdir(parents=True, exist_ok=True)
+    runner.write_text("# fake runner\n", encoding="utf-8")
+    monkeypatch.setattr(eval_routes, "_WEB_SEARCH_RUNNER_SCRIPT", runner)
+    monkeypatch.setattr(eval_routes, "_REAL_RUNNER_SCRIPT", runner)
+    captured = {}
+
+    class FakeProcess:
+        returncode = None
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(eval_routes.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    resp = client.post("/api/eval/runs", json={
+        "dataset_id": "editable-suite",
+        "case_id": "case-a",
+    })
+    assert resp.status_code == 200
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--base-url") + 1] == "http://testserver"
+
+    run_id = resp.json()["run_id"]
+    info = eval_routes._active_runs.pop(run_id)
+    info["log_fp"].close()
+
+
+def test_startup_failed_run_is_persisted_for_history(fake_layout):
+    log_path = fake_layout["progress_dir"] / "logs" / "run-startup-failed.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("boom", encoding="utf-8")
+    info = {
+        "dataset_id": "editable-suite",
+        "started_at": "2026-05-29T000000Z",
+        "total_cases": 1,
+        "result_case_ids": ["case-a"],
+        "base_url": "http://testserver",
+        "runner_script": "tests/e2e/frontend_real_runner_web_search.py",
+        "log_path": log_path,
+    }
+
+    eval_routes._persist_startup_failed_run(
+        "run-startup-failed",
+        info,
+        {"reason": "process exited", "returncode": 1},
+    )
+
+    run_dir = fake_layout["runs_dir"] / "editable-suite" / "run-startup-failed"
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    result = json.loads((run_dir / "results.jsonl").read_text(encoding="utf-8").strip())
+    assert summary["failed"] == 1
+    assert summary["startup_failed"] is True
+    assert manifest["base_url"] == "http://testserver"
+    assert result["case_id"] == "case-a"
+    assert result["success"] is False
+    assert "runner exited before writing progress" in result["error"]
+
+
 # ─────────────────────────────
 # GET /api/eval/runs
 # ─────────────────────────────
@@ -246,6 +480,18 @@ def test_get_case_returns_request_and_response(client, fake_layout):
     assert data["request"]["user_message"] == "问点东西"
     assert data["response"]["response_text"] == "答案"
     assert data["response"]["tool_calls"][0]["name"] == "web_search"
+
+
+def test_get_case_backfills_empty_request_from_dataset_source(client, fake_layout):
+    _write_dataset_source(fake_layout["dataset_sources_dir"], "editable-suite")
+    run_dir = _write_run(fake_layout["runs_dir"], "editable-suite", "run-empty-request")
+    _write_case(run_dir, "case-a", user_message="", response_text="跳过")
+
+    resp = client.get("/api/eval/runs/run-empty-request/cases/case-a")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["request"]["user_message"] == "hello"
+    assert data["request"]["turns"] == ["hello"]
 
 
 def test_get_case_404_on_missing_case(client, fake_layout):

@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="static/tokens.css">
     <link rel="stylesheet" href="static/eval.css">
 </head>
-<body>
+<body class="eval-lab">
     <div id="app">
         <aside class="sidebar">
             <div class="sidebar-header">
@@ -19,8 +19,11 @@
                 </div>
             </div>
 
-            <div class="sidebar-section">
+            <div class="sidebar-section sidebar-section-datasets">
                 <div class="section-title">数据集</div>
+                <div class="sidebar-search-wrap">
+                    <input id="dataset-search" class="sidebar-search" type="search" placeholder="搜索数据集">
+                </div>
                 <div id="dataset-list" class="entity-list">
                     <div class="empty">加载中…</div>
                 </div>
@@ -30,6 +33,9 @@
                 <div class="section-title">
                     运行历史
                     <button id="btn-refresh-runs" class="mini-btn" type="button" title="刷新">↻</button>
+                </div>
+                <div class="sidebar-search-wrap">
+                    <input id="run-search" class="sidebar-search" type="search" placeholder="搜索运行">
                 </div>
                 <div id="run-list" class="entity-list">
                     <div class="empty">加载中…</div>
@@ -43,6 +49,11 @@
                 <div class="toolbar-title" id="view-title">请选择数据集或运行</div>
                 <div class="toolbar-stats" id="view-stats"></div>
                 <div class="toolbar-actions">
+                    <select id="run-scope" class="toolbar-select" title="运行范围">
+                        <option value="all">运行全部</option>
+                        <option value="visible">运行当前搜索结果</option>
+                        <option value="failed">运行最近失败</option>
+                    </select>
                     <button id="btn-run" type="button" class="btn-primary" disabled>▶ 运行</button>
                 </div>
             </div>
@@ -55,6 +66,15 @@
                 </div>
                 <dl class="meta-grid" id="dataset-meta"></dl>
                 <p id="dataset-desc" class="desc"></p>
+                <div class="dataset-case-toolbar">
+                    <input id="case-search" class="case-search" type="search" placeholder="搜索 case id 或输入">
+                    <button id="btn-add-case" class="btn-secondary" type="button">新增 case</button>
+                    <button id="btn-compile" class="btn-secondary" type="button">编译校验</button>
+                </div>
+                <div id="dataset-alert" class="dataset-alert" hidden></div>
+                <div id="dataset-case-editor" class="dataset-case-editor">
+                    <div class="empty">选择数据集后加载 case</div>
+                </div>
             </section>
 
             <!-- 进度面板(运行中或运行已结束) -->
@@ -67,11 +87,19 @@
                     <span class="badge" id="run-status">—</span>
                     <span class="run-meta-item">通过 <strong id="run-passed">0</strong> / <strong id="run-total">0</strong></span>
                     <span class="run-meta-item">失败 <strong id="run-failed">0</strong></span>
+                    <span class="run-meta-item">跳过 <strong id="run-skipped">0</strong></span>
                     <span class="run-meta-item">耗时 <strong id="run-duration">—</strong></span>
                     <span class="run-meta-item">session <strong id="run-session">—</strong></span>
                 </div>
                 <div id="progress-bar" class="progress-bar" hidden>
                     <div id="progress-fill" class="progress-fill"></div>
+                </div>
+                <div class="run-filter" id="run-filter">
+                    <button class="filter-btn active" type="button" data-filter="all">全部</button>
+                    <button class="filter-btn" type="button" data-filter="failed">失败</button>
+                    <button class="filter-btn" type="button" data-filter="success">成功</button>
+                    <button class="filter-btn" type="button" data-filter="skipped">跳过</button>
+                    <button class="filter-btn" type="button" data-filter="running">运行中</button>
                 </div>
                 <div id="case-list" class="case-list">
                     <div class="empty">等待数据…</div>
@@ -87,6 +115,7 @@
             <div class="modal-header">
                 <span class="modal-status" id="modal-status">—</span>
                 <h3 id="modal-title">—</h3>
+                <button id="btn-modal-rerun" class="btn-secondary modal-rerun" type="button" title="再跑这个 case" disabled>↻ 再跑</button>
                 <button class="modal-close" type="button" data-close="1">×</button>
             </div>
             <div class="modal-body">
@@ -106,6 +135,10 @@
                     <div class="modal-label danger">错误</div>
                     <pre class="modal-pre danger" id="modal-error"></pre>
                 </div>
+                <div class="modal-section" id="modal-fail-reasons-section" hidden>
+                    <div class="modal-section-title">失败原因</div>
+                    <ul class="modal-fail-list" id="modal-fail-reasons"></ul>
+                </div>
                 <div class="modal-section">
                     <div class="modal-section-title">用户输入</div>
                     <pre class="modal-pre" id="modal-prompt">—</pre>
@@ -118,6 +151,14 @@
                     <div class="modal-section-title">工具调用详情</div>
                     <pre class="modal-pre" id="modal-tools">—</pre>
                 </div>
+                <details class="modal-section modal-details" id="modal-events-section" hidden>
+                    <summary class="modal-section-title">L1 事件流 <span class="modal-section-count" id="modal-events-count"></span></summary>
+                    <ol class="modal-event-list" id="modal-events"></ol>
+                </details>
+                <details class="modal-section modal-details modal-details-danger" id="modal-unresolved-section" hidden>
+                    <summary class="modal-section-title">未恢复失败 <span class="modal-section-count" id="modal-unresolved-count"></span></summary>
+                    <pre class="modal-pre danger" id="modal-unresolved">—</pre>
+                </details>
             </div>
         </div>
     </div>

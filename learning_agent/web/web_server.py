@@ -70,6 +70,7 @@ class CreateObjectiveRequest(BaseModel):
 class CreateSessionRequest(BaseModel):
     objective_id: Optional[str] = None
     title: Optional[str] = "Web Session"
+    mode_metadata: Optional[dict[str, Any]] = None
 
 
 class ChatRequest(BaseModel):
@@ -84,10 +85,6 @@ class ConfirmKnowledgeRequest(BaseModel):
 
 class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
-
-
-class UpdateModeRequest(BaseModel):
-    mode: AgentMode
 
 
 class UpdatePersonaRequest(BaseModel):
@@ -108,6 +105,7 @@ class CreateLearningUnitRequest(BaseModel):
         "user_written",
         "material_imported",
     ] = "ai_distilled"
+    mode_metadata: Optional[dict[str, Any]] = None
 
 
 class AdvanceLearningUnitRequest(BaseModel):
@@ -228,6 +226,10 @@ async def _stream_chat_chunks(
                     "alignment_reason",
                     "assumption_note",
                     "suggested_objective",
+                    "candidates",
+                    "divergence_cost",
+                    "placeholder_text",
+                    "alignment_popup",
                     "teach_session_id",
                     "teach_state",
                     "question_index",
@@ -354,15 +356,28 @@ async def create_session(req: CreateSessionRequest) -> dict[str, Any]:
         objective_id=req.objective_id,
         title=req.title,
     )
+    if req.mode_metadata:
+        session.mode_metadata.update(req.mode_metadata)
+        manager = getattr(system, "session_manager", None)
+        persist = getattr(manager, "persist_mode_metadata", None)
+        if callable(persist):
+            persist(session.id)
     data = session.model_dump(exclude={"entries"})
     data["messages"] = []
     return data
 
 
 @app.get("/sessions")
-async def list_sessions() -> list[dict[str, Any]]:
+async def list_sessions(include_eval: bool = False) -> list[dict[str, Any]]:
     system = _get_system()
-    return [session.model_dump(exclude={"entries"}) for session in system.list_sessions()]
+    sessions = system.list_sessions()
+    if not include_eval:
+        sessions = [
+            session
+            for session in sessions
+            if session.mode_metadata.get("source") != "eval"
+        ]
+    return [session.model_dump(exclude={"entries"}) for session in sessions]
 
 
 @app.get("/sessions/{session_id}")
@@ -427,31 +442,6 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
             "session_id": session_id,
             "content": content,
         }
-
-
-@app.put("/sessions/{session_id}/mode")
-async def update_session_mode(session_id: str, req: UpdateModeRequest) -> dict[str, Any]:
-    system = _get_system()
-    try:
-        session = system.update_session_mode(session_id, req.mode)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "session_id": session.id,
-        "mode": session.mode.value,
-    }
-
-
-@app.get("/sessions/{session_id}/mode")
-async def get_session_mode(session_id: str) -> dict[str, Any]:
-    system = _get_system()
-    session = system.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "session_id": session.id,
-        "mode": session.mode.value,
-    }
 
 
 # ───────────────────────────────
@@ -650,10 +640,13 @@ def _learning_unit_payload(unit, *, session_id: Optional[str] = None) -> dict[st
 async def create_learning_unit(req: CreateLearningUnitRequest) -> dict[str, Any]:
     system = _get_system()
     try:
-        session, unit = system.create_learning_unit(
-            seed_text=req.seed_text,
-            source=req.source,
-        )
+        kwargs: dict[str, Any] = {
+            "seed_text": req.seed_text,
+            "source": req.source,
+        }
+        if req.mode_metadata:
+            kwargs["mode_metadata"] = req.mode_metadata
+        session, unit = system.create_learning_unit(**kwargs)
     except ActiveUnitExistsError as exc:
         return JSONResponse(
             status_code=409,
