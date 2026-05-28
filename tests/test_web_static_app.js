@@ -436,12 +436,12 @@ test('renderHistoryMessage 从 metadata.turn_usage 回放 usage 展示', () => {
 });
 
 test('前端只暴露闲谈与研习入口', () => {
-    assert.match(INDEX_SOURCE, /id="btn-mode-chat"/);
-    assert.match(INDEX_SOURCE, /id="btn-mode-learning"/);
+    assert.match(INDEX_SOURCE, /class="home-mode-card[^"]*"\s+data-mode="chat"/);
+    assert.match(INDEX_SOURCE, /class="home-mode-card[^"]*"\s+data-mode="learning"/);
     assert.match(INDEX_SOURCE, />闲谈</);
     assert.match(INDEX_SOURCE, />研习</);
     assert.match(INDEX_SOURCE, /闲谈和研习彼此独立/);
-    assert.doesNotMatch(INDEX_SOURCE, /btn-mode-ask|btn-mode-study/);
+    assert.doesNotMatch(INDEX_SOURCE, /id="mode-toolbar"|class="btn-mode/);
     assert.doesNotMatch(INDEX_SOURCE, /data-mode="ask"|data-mode="study"/);
     assert.doesNotMatch(INDEX_SOURCE, /Ask|Study|问道|学习模式/);
 });

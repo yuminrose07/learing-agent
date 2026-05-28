@@ -39,8 +39,6 @@ const els = {
     btnMenu: document.getElementById('btn-menu'),
     btnMemory: document.getElementById('btn-memory'),
     btnSave: document.getElementById('btn-save'),
-    btnModeChat: document.getElementById('btn-mode-chat'),
-    btnModeLearning: document.getElementById('btn-mode-learning'),
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
     topbarSubtitle: document.getElementById('topbar-subtitle'),
@@ -67,6 +65,10 @@ const els = {
     learningResumeModalObjective: document.getElementById('learning-resume-modal-objective'),
     btnContinueActive: document.getElementById('btn-continue-active'),
     btnStopAndNew: document.getElementById('btn-stop-and-new'),
+    learningAlignmentModal: document.getElementById('learning-alignment-modal'),
+    learningAlignmentModalTitle: document.getElementById('learning-alignment-modal-title'),
+    learningAlignmentModalHint: document.getElementById('learning-alignment-modal-hint'),
+    learningAlignmentCandidatesList: document.getElementById('learning-alignment-candidates-list'),
     welcomeActiveUnits: document.getElementById('welcome-active-units'),
     btnCancelDelete: document.getElementById('btn-cancel-delete'),
     btnConfirmDelete: document.getElementById('btn-confirm-delete'),
@@ -575,11 +577,13 @@ function renderWelcomeActiveUnits(units) {
     if (!host) return;
     if (!units || units.length === 0) {
         host.classList.add('hidden');
+        document.body.classList.remove('has-active-learning');
         host.innerHTML = '';
         return;
     }
     const phaseLabel = (p) => (p === 'outputting' ? '复述检验' : '研习中');
-    const html = units.map((u) => {
+    const primaryUnits = units.slice(0, 1);
+    const html = primaryUnits.map((u) => {
         const sid = u.session_id || '';
         const uid = u.id || '';
         const objective = (u.objective && u.objective.text) || u.working_objective || '（未确定主题）';
@@ -587,7 +591,7 @@ function renderWelcomeActiveUnits(units) {
         return `
             <div class="welcome-active-unit-card" data-unit-id="${escapeHtml(uid)}" data-session-id="${escapeHtml(sid)}">
                 <div class="welcome-active-unit-head">
-                    <span class="welcome-active-unit-kicker">还有一卷未完成</span>
+                    <span class="welcome-active-unit-kicker">待续研习</span>
                     <span class="lu-phase is-current">${escapeHtml(phaseLabel(phase))}</span>
                 </div>
                 <p class="welcome-active-unit-title">${escapeHtml(objective)}</p>
@@ -602,6 +606,7 @@ function renderWelcomeActiveUnits(units) {
     }).join('');
     host.innerHTML = html;
     host.classList.remove('hidden');
+    document.body.classList.add('has-active-learning');
 }
 
 async function refreshWelcomeActiveUnits() {
@@ -659,6 +664,70 @@ function closeLearningResumeModal() {
     els.learningResumeModal.classList.add('hidden');
     els.learningResumeModal.setAttribute('aria-hidden', 'true');
     pendingResumeContext = null;
+}
+
+// 对齐 modal —— SSE chunk 上挂 alignment_popup=true 时由 sendMessage 路径调起。
+// 用户点击候选卡片即视为「确认这个方向」，把 candidate.objective 作为下一条
+// user message 走标准 chat 流回传。state 用闭包变量保存最近一次 candidates。
+let pendingAlignmentCandidates = [];
+
+function openLearningAlignmentModal({ candidates, placeholderText, assumptionNote }) {
+    if (!els.learningAlignmentModal) return;
+    const list = els.learningAlignmentCandidatesList;
+    if (!list) return;
+    pendingAlignmentCandidates = Array.isArray(candidates) ? candidates.slice() : [];
+    list.innerHTML = '';
+    if (pendingAlignmentCandidates.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'learning-alignment-candidate-empty';
+        empty.textContent = '没列出具体候选——直接把你想学的方向打在输入框里告诉我。';
+        list.appendChild(empty);
+    } else {
+        pendingAlignmentCandidates.forEach((cand, idx) => {
+            const li = document.createElement('li');
+            li.className = 'learning-alignment-candidate';
+            li.dataset.index = String(idx);
+            li.tabIndex = 0;
+            li.setAttribute('role', 'button');
+            const title = document.createElement('div');
+            title.className = 'learning-alignment-candidate-title';
+            title.textContent = cand.objective || '（未命名方向）';
+            const sub = document.createElement('div');
+            sub.className = 'learning-alignment-candidate-step';
+            sub.textContent = cand.first_step || '';
+            li.appendChild(title);
+            li.appendChild(sub);
+            li.addEventListener('click', () => handleAlignmentCandidateClick(idx));
+            li.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    handleAlignmentCandidateClick(idx);
+                }
+            });
+            list.appendChild(li);
+        });
+    }
+    if (els.learningAlignmentModalHint && (placeholderText || assumptionNote)) {
+        els.learningAlignmentModalHint.textContent = placeholderText || assumptionNote;
+    }
+    els.learningAlignmentModal.classList.remove('hidden');
+    els.learningAlignmentModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeLearningAlignmentModal() {
+    if (!els.learningAlignmentModal) return;
+    els.learningAlignmentModal.classList.add('hidden');
+    els.learningAlignmentModal.setAttribute('aria-hidden', 'true');
+    pendingAlignmentCandidates = [];
+}
+
+function handleAlignmentCandidateClick(index) {
+    const cand = pendingAlignmentCandidates[index];
+    if (!cand) return;
+    const objective = (cand.objective || '').trim();
+    closeLearningAlignmentModal();
+    if (!objective) return;
+    sendMessage(objective);
 }
 
 function hideWelcome() {
@@ -1540,9 +1609,9 @@ function updateInputPlaceholderFromSession(session) {
     updateHomeModeCards();
     if (!session) {
         if (currentMode === 'learning') {
-            els.messageInput.placeholder = '输入想研习的主题、概念或材料...';
+            els.messageInput.placeholder = '落一问于此，徐徐开卷。';
         } else {
-            els.messageInput.placeholder = '随便聊点什么，直接开始吧...';
+            els.messageInput.placeholder = '落一句于此，随意闲谈';
         }
         return;
     }
@@ -1607,14 +1676,6 @@ function syncCompanionPickerVisibility() {
 }
 
 function updateModeToolbar() {
-    [els.btnModeChat, els.btnModeLearning].forEach(btn => {
-        if (btn) btn.classList.remove('active');
-    });
-    const activeBtn = {
-        chat: els.btnModeChat,
-        learning: els.btnModeLearning,
-    }[currentMode];
-    if (activeBtn) activeBtn.classList.add('active');
     syncCompanionPickerVisibility();
     syncThinkingPickerVisibility();
     // 把当前模式反映到 body，驱动 mode 维度的视觉（闲聊青瓷 / 研习朱砂）。
@@ -1661,12 +1722,6 @@ els.messageInput.addEventListener('keydown', (e) => {
 
 els.messageInput.addEventListener('input', autoResizeTextarea);
 
-if (els.btnModeChat) {
-    els.btnModeChat.addEventListener('click', () => switchMode('chat'));
-}
-if (els.btnModeLearning) {
-    els.btnModeLearning.addEventListener('click', () => switchMode('learning'));
-}
 document.querySelectorAll('.home-mode-card').forEach(card => {
     if (card.disabled) return;
     card.addEventListener('click', () => switchMode(card.dataset.mode));
@@ -1699,6 +1754,15 @@ document.addEventListener('learning-unit:stopped', (ev) => {
     openLearningStopModal(detail);
 });
 
+document.addEventListener('learning-unit:alignment-popup', (ev) => {
+    const detail = ev.detail || {};
+    openLearningAlignmentModal({
+        candidates: detail.candidates,
+        placeholderText: detail.placeholderText,
+        assumptionNote: detail.assumptionNote,
+    });
+});
+
 // 建议卡片
 document.querySelectorAll('.suggestion-card').forEach(card => {
     card.addEventListener('click', async () => {
@@ -1714,7 +1778,7 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
 // (visibility-change avatar refresh removed along with external avatar fetch.)
 
 // 弹窗关闭
-[els.memoryModal, els.deleteModal, els.learningStopModal, els.learningResumeModal].forEach(modal => {
+[els.memoryModal, els.deleteModal, els.learningStopModal, els.learningResumeModal, els.learningAlignmentModal].forEach(modal => {
     if (!modal) return;
     modal.querySelector('.modal-overlay').addEventListener('click', () => {
         modal.classList.add('hidden');
@@ -1724,6 +1788,9 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
         if (modal === els.learningResumeModal) {
             closeLearningResumeModal();
         }
+        if (modal === els.learningAlignmentModal) {
+            closeLearningAlignmentModal();
+        }
     });
     modal.querySelector('.btn-close').addEventListener('click', () => {
         modal.classList.add('hidden');
@@ -1732,6 +1799,9 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
         }
         if (modal === els.learningResumeModal) {
             closeLearningResumeModal();
+        }
+        if (modal === els.learningAlignmentModal) {
+            closeLearningAlignmentModal();
         }
     });
 });

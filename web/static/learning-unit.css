@@ -304,11 +304,6 @@
     border-color: var(--vermillion-line);
 }
 
-/* Mode toolbar entry */
-.btn-mode[data-mode="learning"].active {
-    color: var(--vermillion-deep);
-}
-
 #learning-stop-modal {
     z-index: 120;
 }
@@ -419,10 +414,56 @@
 }
 
 /* ============================================================
- * 欢迎页"未完成研习卷"横幅
- * 仅在 GET /learning-units 命中 phase ∈ {absorbing, outputting} 时显示。
- * 卡片视觉与 #learning-unit-card 同语言（vermillion 左条 + paper-1 底），
- * 让用户在欢迎页就感知到"上一卷还没学完"，并提供两个明确动作。
+ * 对齐 modal —— SSE 短路时由 alignment_popup chunk 调起
+ * 复刻 #learning-stop-modal 的视觉语言；正文是候选卡片列表。
+ * ============================================================ */
+.learning-alignment-candidates {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.learning-alignment-candidate {
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 6px;
+    padding: 12px 14px;
+    background: #fff;
+    cursor: pointer;
+    transition: border-color 120ms, background 120ms;
+}
+
+.learning-alignment-candidate:hover,
+.learning-alignment-candidate:focus {
+    border-color: var(--accent, #b32d2e);
+    background: #fffaf5;
+    outline: none;
+}
+
+.learning-alignment-candidate-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--ink-strong, #1f1f1f);
+}
+
+.learning-alignment-candidate-step {
+    font-size: 13px;
+    color: var(--ink-muted, #555);
+    line-height: 1.5;
+}
+
+.learning-alignment-candidate-empty {
+    list-style: none;
+    color: var(--ink-muted, #555);
+    font-size: 13px;
+    padding: 12px 0;
+}
+
+/* ============================================================
+ * 欢迎页"未完成研习卷"入口
+ * 默认保留研习卷纸面语言；home-view 下会收敛成轻量待续条。
  * ============================================================ */
 .welcome-active-units {
     width: 100%;
@@ -477,7 +518,197 @@
     justify-content: flex-end;
 }
 
+body.home-view .welcome-active-units {
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: none;
+    margin: -2px 0 0;
+    gap: 8px;
+}
+
+body.home-view .welcome-active-unit-card {
+    position: relative;
+    overflow: hidden;
+    min-height: 92px;
+    padding: 16px 18px 16px 20px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: 8px 22px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 42%),
+        linear-gradient(90deg, rgba(184, 70, 58, 0.08), transparent 26%, transparent 74%, rgba(168, 123, 46, 0.06)),
+        rgba(255, 252, 244, 0.78);
+    border: 1px solid rgba(168, 123, 46, 0.18);
+    border-left: 4px solid var(--vermillion);
+    border-radius: 10px;
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.62) inset,
+        0 18px 36px -30px rgba(26, 23, 20, 0.28);
+}
+
+body.home-view .welcome-active-unit-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(0deg, transparent, transparent 82%, rgba(255, 255, 255, 0.38)),
+        linear-gradient(90deg, rgba(184, 70, 58, 0.05), transparent 16%);
+    pointer-events: none;
+}
+
+body.home-view.has-active-learning .welcome-active-unit-card {
+    min-height: 104px;
+    padding: 18px 20px 18px 22px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: 10px 22px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.5), transparent 42%),
+        linear-gradient(90deg, rgba(184, 70, 58, 0.10), transparent 24%, transparent 76%, rgba(168, 123, 46, 0.08)),
+        rgba(255, 252, 244, 0.86);
+    border-color: rgba(168, 123, 46, 0.2);
+    border-left-width: 4px;
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.68) inset,
+        0 22px 42px -32px rgba(26, 23, 20, 0.3);
+}
+
+body.home-view .welcome-active-unit-head {
+    min-width: 0;
+    gap: 10px;
+    flex-wrap: nowrap;
+    color: var(--ink-3);
+}
+
+body.home-view .welcome-active-unit-kicker {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--vermillion-deep);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+}
+
+body.home-view .welcome-active-unit-kicker::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    flex: 0 0 6px;
+    background: var(--vermillion);
+}
+
+body.home-view .welcome-active-unit-head .lu-phase {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    border: 1px solid rgba(184, 70, 58, 0.16);
+    border-radius: 999px;
+    background: rgba(184, 70, 58, 0.08);
+    color: var(--vermillion-deep);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+body.home-view .welcome-active-unit-head .lu-phase::before {
+    content: "/";
+    margin-right: 8px;
+    color: rgba(26, 23, 20, 0.32);
+}
+
+body.home-view .welcome-active-unit-title {
+    grid-column: 1;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-serif);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.42;
+    color: var(--gate-ink, var(--ink));
+}
+
+body.home-view.has-active-learning .welcome-active-unit-title {
+    grid-column: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-serif);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.46;
+    color: var(--gate-ink, var(--ink));
+}
+
+body.home-view .welcome-active-unit-actions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    flex-wrap: nowrap;
+    gap: 8px;
+}
+
+body.home-view.has-active-learning .welcome-active-unit-actions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    width: auto;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+body.home-view.has-active-learning .welcome-active-unit-actions .lu-btn {
+    min-height: 36px;
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+body.home-view.has-active-learning .welcome-active-unit-actions .lu-btn-primary {
+    min-width: 132px;
+}
+
+body.home-view .welcome-active-unit-actions .lu-btn {
+    min-height: 32px;
+    padding: 6px 12px;
+    font-size: 11.5px;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+body.home-view .welcome-active-unit-actions .lu-btn:not(.lu-btn-primary) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink-3);
+}
+
+body.home-view .welcome-active-unit-actions .lu-btn:not(.lu-btn-primary):hover:not(:disabled) {
+    background: rgba(184, 70, 58, 0.08);
+    border-color: rgba(184, 70, 58, 0.16);
+    color: var(--vermillion-deep);
+}
+
 @media (max-width: 640px) {
+    body.home-view.has-active-learning .welcome-active-unit-card {
+        min-height: 126px;
+        padding: 16px;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: start;
+    }
+    body.home-view.has-active-learning .welcome-active-unit-title {
+        font-size: 18px;
+        white-space: normal;
+    }
+    body.home-view.has-active-learning .welcome-active-unit-actions {
+        grid-column: 1;
+        grid-row: auto;
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
     .welcome-active-unit-actions {
         flex-direction: column-reverse;
         align-items: stretch;

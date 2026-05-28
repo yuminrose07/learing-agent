@@ -79,6 +79,8 @@
         questionTotal: null,
         currentQuestionStem: '',
         feedbackCard: null,
+        candidates: [],
+        divergenceCost: null,
         reuseRecorded: false,
         // Avoid duplicate in-flight POSTs when users mash buttons.
         pendingAction: null,
@@ -181,6 +183,7 @@
         state.alignmentReason = unit.alignment_reason || '';
         state.forgeStage = unit.forge_stage || 'entry';
         state.temperatureState = unit.temperature_state || 'steady';
+        state.candidates = Array.isArray(unit.last_candidates) ? unit.last_candidates : [];
         if (unit.learning_action) state.learningAction = unit.learning_action;
         const teachSession = unit.teach_session || null;
         const questions = teachSession && Array.isArray(teachSession.questions)
@@ -228,6 +231,7 @@
             teachState: delta.teach_state,
             questionIndex: delta.question_index,
             questionTotal: delta.question_total,
+            divergenceCost: delta.divergence_cost,
         };
         for (const [k, v] of Object.entries(fields)) {
             if (v !== undefined && v !== null && state[k] !== v) {
@@ -237,6 +241,23 @@
                 state[k] = v;
                 changed = true;
             }
+        }
+        if (Array.isArray(delta.candidates)) {
+            state.candidates = delta.candidates;
+            changed = true;
+        }
+        if (delta.alignment_popup) {
+            // SSE chunk 标记本轮是对齐短路 —— 弹 modal 让用户挑方向。
+            // 由 app.js 持有 modal DOM；这里只负责派事件。
+            document.dispatchEvent(new CustomEvent('learning-unit:alignment-popup', {
+                detail: {
+                    candidates: Array.isArray(delta.candidates) ? delta.candidates : [],
+                    divergenceCost: delta.divergence_cost || null,
+                    placeholderText: delta.placeholder_text || '',
+                    assumptionNote: delta.assumption_note || '',
+                    reason: delta.alignment_reason || '',
+                },
+            }));
         }
         if (delta.feedback_card) {
             state.feedbackCard = delta.feedback_card;

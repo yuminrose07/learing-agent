@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>學齋 · Learning Agent</title>
     <link rel="stylesheet" href="static/tokens.css">
-    <link rel="stylesheet" href="static/style.css">
-    <link rel="stylesheet" href="static/learning-unit.css">
+    <link rel="stylesheet" href="static/style.css?v=20260528-home-desk-2">
+    <link rel="stylesheet" href="static/learning-unit.css?v=20260528-home-gate-6">
 </head>
 <body>
     <div id="app">
@@ -78,54 +78,58 @@
                 <!-- 欢迎页 -->
                 <div class="welcome-screen hidden" id="welcome-screen">
                     <div class="welcome-content">
-                        <span class="welcome-kicker">學齋 · Learning Agent</span>
-                        <div class="welcome-logo">學</div>
-                        <h1>今日想从哪一题开始？</h1>
-                        <p class="welcome-subtitle">闲谈和研习彼此独立。闲谈适合轻量、放松的日常对话；研习会围绕一个主题形成研习卷，并在必要时先帮你收窄目标。开研习卷前可在输入框右侧「思路」里选定苏格拉底 / 费曼 / 蒙田 / 朱熹 / 笛卡尔等思路覆层，开卷后固定不变。</p>
-                        <div class="welcome-pill-row">
-                            <span class="welcome-pill">闲谈 · 直接对话</span>
-                            <span class="welcome-pill">研习 · 单卷闭环</span>
-                            <span class="welcome-pill">思路 · 开卷前选定</span>
-                        </div>
+                        <section class="welcome-hero" aria-labelledby="welcome-title">
+                            <span class="welcome-kicker">學齋 · Learning Agent</span>
+                            <div class="welcome-logo">學</div>
+                            <h1 id="welcome-title">今日想从哪一题开始？</h1>
+                            <p class="welcome-subtitle">闲谈与研习彼此分途。闲谈宜轻问轻答，随兴往来；研习则围绕一题开卷徐行，由浅入深。开研习卷前，可在输入框右侧「思路」里选定覆层，既定之后便随卷而行，也添几分案前读书、循理求真的书斋气。</p>
+                            <div class="welcome-pill-row" aria-label="首页说明">
+                                <span class="welcome-pill">闲谈 · 直接对话</span>
+                                <span class="welcome-pill">研习 · 单卷闭环</span>
+                                <span class="welcome-pill">思路 · 研习里可选</span>
+                            </div>
+                        </section>
 
                         <!-- 未完成研习卷横幅 - JS 按需填充；无数据时保持 hidden 不占位 -->
                         <div id="welcome-active-units" class="welcome-active-units hidden" aria-live="polite"></div>
 
-                        <div class="home-mode-grid">
-                            <button class="home-mode-card active" data-mode="chat" type="button">
-                                <span class="home-mode-badge">默认</span>
-                                <div class="home-mode-title">闲谈</div>
-                                <div class="home-mode-desc">轻巧的日常对话，保持闲谈，不中途升格成研习。</div>
-                            </button>
-                            <button class="home-mode-card" data-mode="learning" type="button">
-                                <span class="home-mode-badge">新</span>
-                                <div class="home-mode-title">研习</div>
-                                <div class="home-mode-desc">围绕一个概念、模块或设计新开研习卷，独立推进。</div>
-                            </button>
-                        </div>
+                        <section class="welcome-action-panel" aria-label="开始方式">
+                            <div class="home-mode-grid" role="group" aria-label="选择开始方式">
+                                <button class="home-mode-card active" data-mode="chat" type="button">
+                                    <span class="home-mode-badge">默认</span>
+                                    <div class="home-mode-title">闲谈</div>
+                                    <div class="home-mode-desc">轻量对话，不开研习卷。</div>
+                                </button>
+                                <button class="home-mode-card" data-mode="learning" type="button">
+                                    <span class="home-mode-badge">新</span>
+                                    <div class="home-mode-title">研习</div>
+                                    <div class="home-mode-desc">围绕主题，开一卷推进。</div>
+                                </button>
+                            </div>
 
-                        <div class="suggestion-head">
-                            <h2>起手式</h2>
-                            <p>直接选一题开始，系统会在你发第一条消息时新开一卷。</p>
-                        </div>
-                        <div class="suggestion-grid">
-                            <div class="suggestion-card" data-mode="chat" data-text="帮我解释什么是强化学习？">
-                                <div class="suggestion-icon"></div>
-                                <div class="suggestion-text">帮我解释什么是强化学习？</div>
+                            <div class="suggestion-head">
+                                <h2>起手式</h2>
+                                <p>也可以从一个现成问题开始。</p>
                             </div>
-                            <div class="suggestion-card" data-mode="learning" data-text="我准备做一个新的项目，先帮我梳理目标和范围。">
-                                <div class="suggestion-icon"></div>
-                                <div class="suggestion-text">我准备做一个新的项目，先帮我梳理目标和范围。</div>
+                            <div class="suggestion-grid">
+                                <div class="suggestion-card" data-mode="chat" data-text="帮我解释什么是强化学习？">
+                                    <div class="suggestion-icon"></div>
+                                    <div class="suggestion-text">帮我解释什么是强化学习？</div>
+                                </div>
+                                <div class="suggestion-card" data-mode="learning" data-text="我准备做一个新的项目，先帮我梳理目标和范围。">
+                                    <div class="suggestion-icon"></div>
+                                    <div class="suggestion-text">我准备做一个新的项目，先帮我梳理目标和范围。</div>
+                                </div>
+                                <div class="suggestion-card" data-mode="learning" data-text="带我研习这篇设计文档的关键点。">
+                                    <div class="suggestion-icon"></div>
+                                    <div class="suggestion-text">带我研习这篇设计文档的关键点。</div>
+                                </div>
+                                <div class="suggestion-card" data-mode="chat" data-text="我想做一个长期记忆系统，先给我几个靠谱思路。">
+                                    <div class="suggestion-icon"></div>
+                                    <div class="suggestion-text">我想做一个长期记忆系统，先给我几个靠谱思路。</div>
+                                </div>
                             </div>
-                            <div class="suggestion-card" data-mode="learning" data-text="带我研习这篇设计文档的关键点。">
-                                <div class="suggestion-icon"></div>
-                                <div class="suggestion-text">带我研习这篇设计文档的关键点。</div>
-                            </div>
-                            <div class="suggestion-card" data-mode="chat" data-text="我想做一个长期记忆系统，先给我几个靠谱思路。">
-                                <div class="suggestion-icon"></div>
-                                <div class="suggestion-text">我想做一个长期记忆系统，先给我几个靠谱思路。</div>
-                            </div>
-                        </div>
+                        </section>
                     </div>
                 </div>
 
@@ -133,26 +137,10 @@
                 <div class="messages" id="messages"></div>
             </div>
 
-            <!-- 模式工具栏 -->
-            <div class="mode-toolbar" id="mode-toolbar">
-                <button id="btn-mode-chat" class="btn-mode active" data-mode="chat" title="闲谈：日常对话" aria-label="闲谈">
-                    <span class="mode-icon" aria-hidden="true">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
-                    </span>
-                    <span class="mode-label">闲谈</span>
-                </button>
-                <button id="btn-mode-learning" class="btn-mode" data-mode="learning" title="研习：以一个研习卷为单位收束知识" aria-label="研习">
-                    <span class="mode-icon" aria-hidden="true">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-                    </span>
-                    <span class="mode-label">研习</span>
-                </button>
-            </div>
-
             <!-- 输入区域 -->
             <div class="input-container">
                 <div class="input-wrapper">
-                    <textarea id="message-input" rows="1" placeholder="向学伴提问…" disabled></textarea>
+                    <textarea id="message-input" rows="1" placeholder="落一句于此，随意闲谈" disabled></textarea>
                     <div class="companion-picker" id="companion-picker">
                         <button type="button" class="companion-trigger" id="companion-trigger" aria-haspopup="listbox" aria-expanded="false" title="陪伴风格（仅首次开聊时可选）">
                             <span class="companion-trigger-value" id="companion-trigger-value">关闭</span>
@@ -265,8 +253,25 @@
         </div>
     </div>
 
+    <div id="learning-alignment-modal" class="modal hidden" aria-hidden="true">
+        <div class="modal-overlay"></div>
+        <div class="modal-content modal-small learning-alignment-modal-content">
+            <div class="modal-header learning-stop-modal-header">
+                <div class="learning-stop-modal-copy">
+                    <span class="learning-stop-modal-kicker">先对齐一下方向</span>
+                    <h2 id="learning-alignment-modal-title">挑一个想先学的方向</h2>
+                </div>
+                <button class="btn-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="modal-body learning-stop-modal-body">
+                <p id="learning-alignment-modal-hint">下面是几种可能解读，选一个我就按那个开讲。</p>
+                <ul id="learning-alignment-candidates-list" class="learning-alignment-candidates"></ul>
+            </div>
+        </div>
+    </div>
+
     <script src="static/vendor/markdown-it.min.js"></script>
-    <script src="static/app.js"></script>
+    <script src="static/app.js?v=20260528-home-gate-6"></script>
     <script src="static/learning-unit-ui.js"></script>
 </body>
 </html>
