@@ -619,6 +619,7 @@ class ResilienceConfig(BaseModel):
     tool_failure_window_turns: int = 5            # 滑动窗口 turn 数
     tool_failure_threshold: int = 3               # 窗口内失败次数阈值
     tool_default_timeout: int = 60
+    tool_parallel_execution: bool = True          # 同一轮多个 tool_call 是否并行执行(asyncio.gather)
 
     # 【新增】工具执行重试配置
     max_tool_retries: int = 1                     # 工具执行失败后的重试次数（0 = 不重试）

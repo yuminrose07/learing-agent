@@ -12,7 +12,11 @@
         <aside class="sidebar">
             <div class="sidebar-header">
                 <h1>会话事件</h1>
-                <a href="index.html">← 返回学齋</a>
+                <div class="sidebar-header-links">
+                    <a href="index.html">← 返回学齋</a>
+                    <span class="sidebar-header-sep">·</span>
+                    <a href="eval.html">E2E 评测</a>
+                </div>
             </div>
             <div id="session-list" class="session-list">
                 <div class="session-empty">加载中…</div>
@@ -21,11 +25,28 @@
 
         <main class="main">
             <nav class="tabs" role="tablist">
-                <button class="tab active" type="button" data-tab-target="events" role="tab" aria-selected="true">会话时间线</button>
+                <button class="tab active" type="button" data-tab-target="conversation" role="tab" aria-selected="true">对话回放</button>
+                <button class="tab" type="button" data-tab-target="events" role="tab" aria-selected="false">原始事件</button>
                 <button class="tab" type="button" data-tab-target="learning-units" role="tab" aria-selected="false">学习卷指标</button>
             </nav>
 
-            <section class="tab-panel active" data-tab="events" role="tabpanel">
+            <section class="tab-panel active" data-tab="conversation" role="tabpanel">
+                <div class="toolbar">
+                    <span class="session-label" id="conv-current-session">未选择会话</span>
+                    <span class="toolbar-stats" id="conv-stats-text"></span>
+                    <div class="toolbar-actions">
+                        <label class="toggle">
+                            <input type="checkbox" id="conv-show-tech"> 显示技术细节
+                        </label>
+                        <button id="conv-btn-refresh" type="button">↻ 刷新</button>
+                    </div>
+                </div>
+                <div id="conversation" class="conversation">
+                    <div class="empty">从左侧选择一个会话以查看对话回放</div>
+                </div>
+            </section>
+
+            <section class="tab-panel" data-tab="events" role="tabpanel" hidden>
                 <div class="toolbar">
                     <span class="session-label" id="current-session">未选择会话</span>
                     <span class="toolbar-stats" id="stats-text"></span>

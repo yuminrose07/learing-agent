@@ -28,6 +28,37 @@ from learning_agent.learning_agent.extensions.truncate_utils import (
 logger = logging.getLogger(__name__)
 
 
+# ─── 写文件并发保护 ───
+#
+# 同一文件路径上的 write_file / edit_file 并发请求必须串行化,否则会出现
+# read-modify-write 竞态(尤其是 edit_file:读旧内容 → 替换 → 写回)。
+# ToolExecutor 默认对同一轮的多个 tool_call 用 asyncio.gather 并行,所以
+# 这层保护必须在工具实现侧自包含,不能依赖调用方。
+#
+# 锁按"已解析的绝对路径"作 key,避免相对路径或软链接绕过。
+# 不同 path 之间不互相阻塞,真正并发。
+#
+# 字典访问本身在 asyncio 单线程下是原子的(_get_path_lock 内部无 await),
+# 所以不需要 registry lock。Lock 对象首次使用时才绑定 event loop,因此
+# 测试若跨 loop 复用本 module,需要在 setUp 时调用 _reset_file_locks()。
+
+_FILE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _get_path_lock(path: str) -> asyncio.Lock:
+    """按绝对路径返回对应的 asyncio.Lock,惰性创建。"""
+    lock = _FILE_LOCKS.get(path)
+    if lock is None:
+        lock = asyncio.Lock()
+        _FILE_LOCKS[path] = lock
+    return lock
+
+
+def _reset_file_locks() -> None:
+    """清空写文件锁注册表。仅供测试在切换 event loop 时使用。"""
+    _FILE_LOCKS.clear()
+
+
 # ─── Pydantic Input Models（用于 ToolInputValidator 强校验）───
 
 class ReadFileInput(BaseModel):
@@ -185,65 +216,69 @@ async def _tool_read_file(path: str, offset: int = 1, limit: int = 0, **kwargs: 
 async def _tool_write_file(path: str, content: str, **kwargs: Any) -> dict[str, Any]:
     """覆盖写入文件内容。"""
     target = _resolve_and_guard_path(path, allow_write=True)
+    lock = _get_path_lock(str(target))
 
-    # 自动创建父目录
-    target.parent.mkdir(parents=True, exist_ok=True)
+    async with lock:
+        # 自动创建父目录
+        target.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(content)
-        return {
-            "path": str(target.relative_to(Path.cwd())),
-            "bytes_written": len(content.encode("utf-8")),
-            "status": "written",
-        }
-    except Exception as e:
-        return {"error": str(e)}
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(content)
+            return {
+                "path": str(target.relative_to(Path.cwd())),
+                "bytes_written": len(content.encode("utf-8")),
+                "status": "written",
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
 
 async def _tool_edit_file(path: str, old_string: str, new_string: str, **kwargs: Any) -> dict[str, Any]:
     """基于字符串替换编辑文件。"""
     target = _resolve_and_guard_path(path, allow_write=False)
+    lock = _get_path_lock(str(target))
 
-    if not target.exists():
-        return {"error": f"File not found: {path}"}
-    if target.is_dir():
-        return {"error": f"'{path}' is a directory, not a file."}
+    async with lock:
+        if not target.exists():
+            return {"error": f"File not found: {path}"}
+        if target.is_dir():
+            return {"error": f"'{path}' is a directory, not a file."}
 
-    try:
-        with open(target, "r", encoding="utf-8") as f:
-            original = f.read()
-    except Exception as e:
-        return {"error": str(e)}
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                original = f.read()
+        except Exception as e:
+            return {"error": str(e)}
 
-    if old_string not in original:
-        return {
-            "error": f"old_string not found in '{path}'.",
-            "hint": "Make sure the old_string matches exactly (including whitespace).",
-        }
+        if old_string not in original:
+            return {
+                "error": f"old_string not found in '{path}'.",
+                "hint": "Make sure the old_string matches exactly (including whitespace).",
+            }
 
-    # 防止模糊匹配导致多处替换，先检查出现次数
-    occurrences = original.count(old_string)
-    if occurrences > 1:
-        return {
-            "error": f"old_string appears {occurrences} times in '{path}'. "
-                      "Please provide a more unique old_string to avoid ambiguity.",
-        }
+        # 防止模糊匹配导致多处替换，先检查出现次数
+        occurrences = original.count(old_string)
+        if occurrences > 1:
+            return {
+                "error": f"old_string appears {occurrences} times in '{path}'. "
+                          "Please provide a more unique old_string to avoid ambiguity.",
+            }
 
-    new_content = original.replace(old_string, new_string, 1)
+        new_content = original.replace(old_string, new_string, 1)
 
-    try:
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        return {
-            "path": str(target.relative_to(Path.cwd())),
-            "status": "edited",
-            "occurrences_replaced": 1,
-            "old_length": len(old_string),
-            "new_length": len(new_string),
-        }
-    except Exception as e:
-        return {"error": str(e)}
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            return {
+                "path": str(target.relative_to(Path.cwd())),
+                "status": "edited",
+                "occurrences_replaced": 1,
+                "old_length": len(old_string),
+                "new_length": len(new_string),
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
 
 async def _tool_bash(command: str, timeout: int = 60, description: str = "", **kwargs: Any) -> dict[str, Any]:
@@ -321,7 +356,7 @@ def create_code_tools_extension() -> Extension:
     ext = Extension(
         id="core-code-tools",
         name="Code Tools",
-        version="0.1.0",
+        version="0.4.0-alpha.1",
         type="builtin",
     )
 

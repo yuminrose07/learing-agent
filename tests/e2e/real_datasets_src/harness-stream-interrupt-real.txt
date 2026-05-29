@@ -1,0 +1,219 @@
+# E2E dataset source. Edit cases here; JSON is generated before runs.
+suite_id: harness-stream-interrupt-real
+description: 'Harness 流中断兜底真实端到端数据集。验证 LLM stream 在真实环境异常中断后， AgentLoopSession 是否正确走完三段兜底链路：record_message_stream_failed → _ensure_tool_results_for_orphans → _finalize_with_llm，并最终落到合法终态 （COMPLETED 或 ERROR），不留下未补偿的孤儿 tool_call。
+
+  '
+owner: learning-agent
+dataset_version: 2026-05-28-v1
+execution_mode: manual_real_environment
+target_surface: api_or_frontend
+linked_change: docs/changes/2026-05-28-harness-stream-interrupt-real-dataset.md
+linked_refactor_note: '本数据集对应 Agent Runtime 收敛后的契约（基于真实 L1 事件流， L1 不写 agent.* 内存广播事件）：流中断在 L1 写 message.stream_failed； finalize 兜底成功后会在其之后追加 message_end；orphan 补偿在 L1 写 synthetic tool 消息（is_error=True → tool.call_failed）；外层 rescue 触发会落 unresolved_failures.jsonl 一条 layer 含 outer 的记录。
+
+  '
+runner_requirements:
+  requires_real_web_server: true
+  requires_event_log_collection: true
+  requires_unresolved_failure_log_collection: true
+  requires_runtime_overview_capture: true
+  requires_sse_metadata_capture_when_stream_mode: true
+  env_overrides_per_case_supported: true
+  manual_only_cases_supported: true
+  compatible_runner_note: '使用统一 runner tests/e2e/real_runner.py。已支持：按 setup.create_learning_unit 分流 chat / learning_unit 模式、抓 GET /sessions/{id}/events（真实 L1 事件流）、 按 session_id 过滤拷 data_dir/unresolved_failures.jsonl、从 message_end / message.stream_failed 等真实 L1 生命周期事件反推终态。env_overrides 自动注入不支持（runner 不持有 dev server 进程），manual_only case 需手工 export 环境变量后重跑。L1 不写 agent.* 内存广播事件，断言全部基于 message.user_appended / message_end / message.stream_failed / tool.call_* 这套真实事件。
+
+    '
+acceptance_metrics:
+  hard_targets:
+    agent_loop_completes_rate: 1.0
+    state_machine_terminal_in_completed_or_error_rate: 1.0
+    unresolved_failure_unexpected_count_max: 0
+    orphan_compensated_when_interrupted_rate: 1.0
+    runtime_overview_captured_rate: 1.0
+    finalize_message_present_when_interrupted_rate: 1.0
+  quality_targets:
+    happy_path_no_interrupted_event_pass_min: 1
+    interrupted_cases_with_finalize_pass_min: 2
+session_plan:
+  single_session_required: false
+  session_per_case: true
+  frontend_mode: chat
+  ordered_case_ids:
+  - e2e-harness-stream-happy-path-baseline
+  - e2e-harness-stream-interrupt-pure-text-timeout
+  - e2e-harness-stream-interrupt-with-tool-call
+  - e2e-harness-stream-unreachable-provider
+global_expectations:
+  hard_failures:
+  - assistant_message_missing
+  - orphan_tool_call_uncompensated
+  - state_final_not_terminal
+  - agent_unhandled_error_event
+  - unresolved_failure_unexpected
+  minimum_evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  - unresolved_failures.jsonl
+  - runtime_overview.json
+  event_types_relevant:
+  - message.user_appended
+  - message_end
+  - message.stream_failed
+  - message.interrupted
+  - tool.call_started
+  - tool.call_completed
+  - tool.call_failed
+  - tool.exec_started
+  - tool.exec_completed
+  - tool.exec_failed
+defaults:
+  setup:
+    frontend_mode: chat
+    session_per_case: true
+cases:
+- setup:
+    frontend_mode: chat
+    session_per_case: true
+  id: e2e-harness-stream-happy-path-baseline
+  title: 正常对话基线：无中断、无 orphan、终态 COMPLETED
+  tags:
+  - harness
+  - stream_interrupt
+  - baseline
+  - happy_path
+  seed_text: 用一句话告诉我 1+1 等于几
+  turns:
+  - role: user
+    message: 用一句话告诉我 1+1 等于几
+  expect:
+    non_empty_response: true
+    state_final_in:
+    - COMPLETED
+    assistant_message_count_min: 1
+    agent_loop_invoked: true
+    events_should_not_include_any:
+    - message.stream_failed
+    - message.interrupted
+    unresolved_failure_count_max: 0
+    runtime_overview_captured: true
+  forbid:
+    empty_response: true
+    state_final_is_streaming: true
+    assistant_message_missing: true
+    agent_unhandled_error_event: true
+  severity: high
+- setup:
+    frontend_mode: chat
+    session_per_case: true
+  id: e2e-harness-stream-interrupt-pure-text-timeout
+  title: 纯文本流中断：LA_TIMEOUT 极小，stream 中途超时走 finalize
+  tags:
+  - harness
+  - stream_interrupt
+  - no_tool
+  - finalize_fallback
+  manual_only: true
+  manual_only_reason: '需要在启动 web server 前 export LA_TIMEOUT=2，使千问 HTTP 请求在 stream 过程中超时。runner 不控制 dev server 进程生命周期，请手工 export 后跑此 case。
+
+    '
+  env_overrides:
+    LA_TIMEOUT: '2'
+  seed_text: 请用大约 800 字详细解释 Transformer 架构里 multi-head attention 的工作原理，包括 Q/K/V 的来源、维度切分、缩放点积、softmax 与拼接回原维度的完整流程，并举例说明每一步的张量形状变化。
+  turns:
+  - role: user
+    message: 请用大约 800 字详细解释 Transformer 架构里 multi-head attention 的工作原理，包括 Q/K/V 的来源、维度切分、缩放点积、softmax 与拼接回原维度的完整流程，并举例说明每一步的张量形状变化。
+  expect:
+    state_final_in:
+    - COMPLETED
+    - ERROR
+    assistant_message_count_min: 1
+    events_should_include_any:
+    - message.stream_failed
+    unresolved_failure_count_max: 0
+    runtime_overview_captured: true
+  forbid:
+    state_final_is_streaming: true
+    state_final_is_executing_tool: true
+    orphan_tool_call_uncompensated: true
+    agent_unhandled_error_event: true
+    assistant_message_missing: true
+  severity: blocker
+- setup:
+    frontend_mode: chat
+    session_per_case: true
+  id: e2e-harness-stream-interrupt-with-tool-call
+  title: 带工具调用流中断：LLM 流出 tool_call 后断连，orphan 必须补 synthetic 结果
+  tags:
+  - harness
+  - stream_interrupt
+  - orphan_compensation
+  - tool_call
+  manual_only: true
+  manual_only_reason: '需要在启动 web server 前 export LA_TIMEOUT=3，使千问在生成 tool_call 过程中或 tool_call 发完但 finish_reason 之前断连。runner 不控制 dev server。 若运行环境本身网络稳定无法触发，标 flaky 不计入回归失败。
+
+    '
+  env_overrides:
+    LA_TIMEOUT: '3'
+  seed_text: 请帮我搜索 Python 3.13 free-threaded build 的最新进展，并对照 3.12 的 PEP 703 给出 800 字以上的详细对比报告，要覆盖 GIL、性能、ABI 兼容性、第三方库支持四个维度。
+  turns:
+  - role: user
+    message: 请帮我搜索 Python 3.13 free-threaded build 的最新进展，并对照 3.12 的 PEP 703 给出 800 字以上的详细对比报告，要覆盖 GIL、性能、ABI 兼容性、第三方库支持四个维度。
+  expect:
+    state_final_in:
+    - COMPLETED
+    - ERROR
+    assistant_message_count_min: 1
+    events_should_include_any:
+    - message.stream_failed
+    unresolved_failure_count_max: 2
+    runtime_overview_captured: true
+  forbid:
+    orphan_tool_call_uncompensated: true
+    state_final_is_streaming: true
+    state_final_is_executing_tool: true
+    agent_unhandled_error_event: true
+    assistant_message_missing: true
+  severity: blocker
+- setup:
+    frontend_mode: chat
+    session_per_case: true
+  id: e2e-harness-stream-unreachable-provider
+  title: Provider base_url 不可达：连接拒绝，agent_loop 顶层 except 兜底
+  tags:
+  - harness
+  - stream_interrupt
+  - unreachable_provider
+  - top_level_except
+  manual_only: true
+  manual_only_reason: '需要在启动 web server 前 export OPENAI_BASE_URL=http://127.0.0.1:1（确保该端口 无服务监听）。本 case 验 agent_loop.py:970+ 顶层 except 分支：ReActEngine stream_chat_with_retry 全部失败后，外层 except 必须出兜底 assistant 消息， 不向上抛未捕获异常。
+
+    '
+  env_overrides:
+    OPENAI_BASE_URL: http://127.0.0.1:1
+  seed_text: 你好
+  turns:
+  - role: user
+    message: 你好
+  expect:
+    state_final_in:
+    - COMPLETED
+    - ERROR
+    assistant_message_count_min: 1
+    events_should_include_any:
+    - message.stream_failed
+    - message_end
+    unresolved_failure_count_max: 5
+    runtime_overview_captured: true
+  forbid:
+    state_final_is_streaming: true
+    state_final_is_calling_llm: true
+    assistant_message_missing: true
+  severity: high
+- id: e2e-harness-user-quick-prompt
+  title: ''
+  turns:
+  - role: user
+    message: 用一句话告诉我牛顿第二定律是什么
+  expect:
+    non_empty_response: true

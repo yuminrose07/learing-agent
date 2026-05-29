@@ -146,7 +146,7 @@ def create_grep_tools_extension() -> Extension:
     ext = Extension(
         id="core-grep-tools",
         name="Grep Tools",
-        version="0.1.0",
+        version="0.4.0-alpha.1",
         type="builtin",
     )
 

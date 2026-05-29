@@ -58,3 +58,9 @@ observability/
 
 # Node (web/ static tests)
 node_modules/
+
+# --- Local docs and generated/real test datasets ---
+docs/
+test_dataset.json
+tests/e2e/real_baselines/
+tests/e2e/real_datasets/

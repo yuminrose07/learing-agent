@@ -54,6 +54,18 @@ ObjectiveSource = Literal[
 VerificationStatus = Literal["passed", "skipped"]
 
 
+ForgeStage = Literal["entry", "collision", "forge", "fixed", "cooling"]
+
+TemperatureState = Literal[
+    "steady",
+    "needs_example",
+    "needs_structure",
+    "resisting_output",
+    "fatigued",
+    "small_step_crossed",
+]
+
+
 TeachSessionState = Literal[
     "generating",
     "queued",
@@ -98,6 +110,21 @@ class TangentNote(BaseModel):
     summary: str
     relevance: float = 0.0
     detected_at: datetime = Field(default_factory=_now)
+
+
+class Candidate(BaseModel):
+    """LLM 对齐分类器列出的「导向不同 first_step」的可能解读。
+
+    ``objective`` 是一句给用户挑选用的目标复述，``first_step`` 是配套的
+    可操作切入点，用于前端 modal 卡片的标题 / 副标题。
+
+    定义在此模块（``ai`` 层）而非 ``learning_agent`` 层是为了让 ``LearningUnit``
+    可以把它当作字段直接序列化；``learning_agent.alignment_policy.Candidate``
+    会从这里 re-export，对外接口不变。
+    """
+
+    objective: str
+    first_step: str
 
 
 class TeachQuestion(BaseModel):
@@ -186,6 +213,9 @@ class LearningUnit(BaseModel):
     # 后，N 轮内不再弹建议条；每个 absorbing 轮进入时减 1，归零后恢复。
     nag_cooldown_remaining: int = 0
     last_alignment_at: Optional[datetime] = None
+    # LLM 对齐分类器最近一次列出的候选解读。前端在用户刷新页面时
+    # 仍能恢复 modal；non-active 档也会写入，便于观测分类器输出质量。
+    last_candidates: list[Candidate] = Field(default_factory=list)
 
     teach_session: Optional[TeachSession] = None
     verification_status: Optional[VerificationStatus] = None
@@ -198,6 +228,9 @@ class LearningUnit(BaseModel):
     # ``learning_unit.first_value_delivered`` 事件的 once-only 守卫与
     # "首个学习价值时间 (TTFV)" 指标的 t0。None = 尚未投出首条价值。
     first_value_delivered_at: Optional[datetime] = None
+    # ── Phase 1A 铸造状态骨架 ─────────────────────────────────────
+    forge_stage: ForgeStage = "entry"
+    temperature_state: TemperatureState = "steady"
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -219,7 +252,7 @@ class LearningUnit(BaseModel):
         ``alignment_state`` 决定（adaptive alignment §9.1），不在本方法范围。
         """
         if self.phase == "absorbing":
-            return "chat"
+            return "study"
         if self.phase == "outputting":
             return "teach"
         return ""
@@ -245,4 +278,6 @@ __all__ = [
     "QuestionKind",
     "QuestionVerdict",
     "VerificationStatus",
+    "ForgeStage",
+    "TemperatureState",
 ]

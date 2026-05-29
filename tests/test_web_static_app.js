@@ -310,6 +310,7 @@ module.exports = {
     normalizeFrontendMode,
     modeFromSession,
     backendModeForFrontendMode,
+    normalizeCompanionSettings,
     formatUsageNumber,
     formatUsagePercent,
     els,
@@ -435,14 +436,84 @@ test('renderHistoryMessage 从 metadata.turn_usage 回放 usage 展示', () => {
 });
 
 test('前端只暴露闲谈与研习入口', () => {
-    assert.match(INDEX_SOURCE, /id="btn-mode-chat"/);
-    assert.match(INDEX_SOURCE, /id="btn-mode-learning"/);
+    assert.match(INDEX_SOURCE, /class="home-mode-card[^"]*"\s+data-mode="chat"/);
+    assert.match(INDEX_SOURCE, /class="home-mode-card[^"]*"\s+data-mode="learning"/);
     assert.match(INDEX_SOURCE, />闲谈</);
     assert.match(INDEX_SOURCE, />研习</);
     assert.match(INDEX_SOURCE, /闲谈和研习彼此独立/);
-    assert.doesNotMatch(INDEX_SOURCE, /btn-mode-ask|btn-mode-study/);
+    assert.doesNotMatch(INDEX_SOURCE, /id="mode-toolbar"|class="btn-mode/);
     assert.doesNotMatch(INDEX_SOURCE, /data-mode="ask"|data-mode="study"/);
     assert.doesNotMatch(INDEX_SOURCE, /Ask|Study|问道|学习模式/);
+});
+
+test('闲谈页暴露小月亮陪伴切换入口', () => {
+    assert.match(INDEX_SOURCE, /id="companion-picker"/);
+    assert.match(INDEX_SOURCE, /id="companion-trigger"/);
+    // 已下沉到输入框右侧（input-wrapper 内），并去掉了 "陪伴" 这个标签字。
+    assert.doesNotMatch(INDEX_SOURCE, /id="topbar-companion"/);
+    assert.doesNotMatch(INDEX_SOURCE, /companion-trigger-label/);
+    // companion-picker 必须出现在 input-wrapper 里，介于 textarea 和 btn-send 之间。
+    const inputWrapperMatch = INDEX_SOURCE.match(/<div class="input-wrapper">[\s\S]*?<\/div>\s*<div class="input-hint">/);
+    assert.ok(inputWrapperMatch, 'input-wrapper block not found');
+    assert.match(inputWrapperMatch[0], /id="companion-picker"/);
+    assert.ok(APP_SOURCE.includes("GET', '/companion-styles'"));
+    assert.ok(APP_SOURCE.includes("PUT', `/sessions/${currentSessionId}/companion`"));
+    assert.match(APP_SOURCE, /syncCompanionPickerVisibility/);
+    assert.match(APP_SOURCE, /setupCompanionPicker/);
+    // home-only 锁：picker 只在 chat mode 的首界面可见，进入会话后整块隐藏。
+    assert.match(APP_SOURCE, /currentMode === 'chat' && currentView === 'home'/);
+    assert.match(STYLE_SOURCE, /\.companion-trigger::before/);
+    assert.match(STYLE_SOURCE, /content: "☾"/);
+});
+
+test('研习页思路 picker 与陪伴对称：下沉到输入框右侧 + 开卷前可选 + 开卷后锁定', () => {
+    assert.match(INDEX_SOURCE, /id="thinking-picker"/);
+    assert.match(INDEX_SOURCE, /id="thinking-trigger"/);
+    // 不再挂在 topbar，且不再有"思路"小标签字。
+    assert.doesNotMatch(INDEX_SOURCE, /id="topbar-thinking"/);
+    assert.doesNotMatch(INDEX_SOURCE, /thinking-trigger-label/);
+    // thinking-picker 必须和 companion-picker 一样落在 input-wrapper 内。
+    const inputWrapperMatch = INDEX_SOURCE.match(/<div class="input-wrapper">[\s\S]*?<\/div>\s*<div class="input-hint">/);
+    assert.ok(inputWrapperMatch, 'input-wrapper block not found');
+    assert.match(inputWrapperMatch[0], /id="thinking-picker"/);
+    // home-only 锁：picker 只在 learning mode 的首界面可见。
+    assert.match(APP_SOURCE, /currentMode === 'learning' && currentView === 'home'/);
+    // 欢迎页文案已对齐新交互——"开卷前可选 / 开卷后固定"，不再是"右上角切换"。
+    assert.match(INDEX_SOURCE, /开研习卷前可在输入框右侧/);
+    assert.doesNotMatch(INDEX_SOURCE, /右上角.{0,4}思路.{0,4}里切换/);
+    // CSS：思路 picker 有自己的 ::before 图标，且 .topbar-thinking 选择器已退役。
+    assert.match(STYLE_SOURCE, /\.thinking-trigger::before/);
+    assert.doesNotMatch(STYLE_SOURCE, /\.topbar-thinking/);
+});
+
+test('历史回放能显示陪伴徽章', () => {
+    const { renderHistoryMessage, els, normalizeCompanionSettings } = loadAppForTest();
+
+    assert.equal(
+        JSON.stringify(normalizeCompanionSettings({
+            enabled: true,
+            style: 'warm_girlfriend',
+            advice_level: 'none',
+        })),
+        JSON.stringify({ enabled: true, style: 'warm_girlfriend', adviceLevel: 'none' })
+    );
+
+    renderHistoryMessage('assistant', '先歇一下。', {
+        mode: 'chat',
+        companion_enabled: true,
+        companion_style: 'warm_girlfriend',
+        companion_style_name: '温柔',
+    });
+
+    const assistantMessage = els.messages.children[0];
+    const content = assistantMessage.querySelector('.message-content');
+    const badge = content.querySelector('.companion-badge');
+    const avatar = assistantMessage.querySelector('.message-avatar');
+
+    assert.ok(badge);
+    assert.match(badge.textContent, /☾ 温柔陪伴/);
+    assert.ok(avatar.classList.contains('companion-mark'));
+    assert.equal(avatar.textContent, '☾');
 });
 
 test('历史会话列表用服务端绑定状态区分闲谈与研习', () => {
@@ -464,6 +535,22 @@ test('研习 UI 暴露停止动作和常驻状态事件', () => {
     assert.match(APP_SOURCE, /LEARNING_PHASE_LABELS/);
 });
 
+test('欢迎页暴露未完成研习卷入口与显式复用确认弹窗', () => {
+    // 欢迎页占位 + 研习未完成 modal 必须存在于 index.html。
+    assert.match(INDEX_SOURCE, /id="welcome-active-units"/);
+    assert.match(INDEX_SOURCE, /id="learning-resume-modal"/);
+    assert.match(INDEX_SOURCE, /id="btn-continue-active"/);
+    assert.match(INDEX_SOURCE, /id="btn-stop-and-new"/);
+    // app.js 提供横幅渲染 + 复用 modal 的 open/close 入口。
+    assert.match(APP_SOURCE, /fetchActiveLearningUnits/);
+    assert.match(APP_SOURCE, /renderWelcomeActiveUnits/);
+    assert.match(APP_SOURCE, /openLearningResumeModal/);
+    assert.match(APP_SOURCE, /closeLearningResumeModal/);
+    // 旧的静默 toast 不应再出现 —— 已替换为显式 modal。
+    assert.doesNotMatch(APP_SOURCE, /已有未停止的研习卷[;；]先学到这里后再发送新主题/);
+    assert.doesNotMatch(LEARNING_UNIT_UI_SOURCE, /已回到未完成的研习卷/);
+});
+
 test('研习前端模式发送到后端时映射为 chat', () => {
     const {
         normalizeFrontendMode,
@@ -482,7 +569,7 @@ test('研习前端模式发送到后端时映射为 chat', () => {
     assert.match(APP_SOURCE, /created\.reused_active_unit/);
 });
 
-test('创建研习卷遇到 active unit 冲突时自动恢复已有卷', async () => {
+test('创建研习卷遇到 active unit 冲突时仅返回标记不再自动 hydrate 或弹 toast', async () => {
     const calls = [];
     const alerts = [];
     const toasts = [];
@@ -520,13 +607,17 @@ test('创建研习卷遇到 active unit 冲突时自动恢复已有卷', async (
 
     const result = await sandbox.window.__createLearningUnit('新的主题');
 
+    // 仍然返回带 reused_active_unit 标记的 unit，让 app.js 触发 #learning-resume-modal。
     assert.equal(result.session_id, 'sess-active');
     assert.equal(result.id, 'lu-active');
     assert.equal(result.reused_active_unit, true);
-    assert.equal(sandbox.window.__learningUnitUI.state.unitId, 'lu-active');
-    assert.equal(sandbox.window.__learningUnitUI.state.sessionId, 'sess-active');
+    // 关键变化：不再自动 hydrate 内部 state（推迟到 app.js 由用户确认后通过
+    // selectSession 触发 learning-unit:session-loaded 走标准 hydrate 路径），
+    // 也不再静默弹"已回到未完成的研习卷" toast。
+    assert.equal(sandbox.window.__learningUnitUI.state.unitId, null);
+    assert.equal(sandbox.window.__learningUnitUI.state.sessionId, null);
     assert.deepEqual(alerts, []);
-    assert.deepEqual(toasts, ['已回到未完成的研习卷']);
+    assert.deepEqual(toasts, []);
     assert.equal(calls.length, 2);
 });
 
@@ -604,6 +695,74 @@ test('研习卷停止动作会调用 stop API 并派发带主题的 stopped 事�
         method: 'POST',
         body: JSON.stringify({ reason: 'user_stopped' }),
     });
+});
+
+test('absorbing 阶段渲染铸造阶段标签（入局），无 learning_action 时不显示动作徽章', async () => {
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        if (url.endsWith('/learning-units/lu-forge') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-forge',
+                    session_id: 'sess-forge',
+                    phase: 'absorbing',
+                    alignment_state: 'idle',
+                    objective_status: 'working',
+                    objective: { text: '理解 attention' },
+                    forge_stage: 'entry',
+                    temperature_state: 'steady',
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-forge';
+    sandbox.window.__learningUnitUI.state.unitId = 'lu-forge';
+    await sandbox.window.__learningUnitUI.refreshUnit();
+
+    const card = sandbox.document.getElementById('learning-unit-card');
+    assert.match(card.innerHTML, /lu-forge-row/);
+    assert.match(card.innerHTML, /lu-forge-stage/);
+    assert.match(card.innerHTML, /入局/);
+    // 没有 learning_action 时不渲染动作徽章
+    assert.ok(!card.innerHTML.includes('lu-learning-action'));
+    assert.equal(sandbox.window.__learningUnitUI.state.forgeStage, 'entry');
+});
+
+test('absorbing 阶段渲染碰撞阶段与学习动作徽章（准备试答）', async () => {
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        if (url.endsWith('/learning-units/lu-forge2') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-forge2',
+                    session_id: 'sess-forge2',
+                    phase: 'absorbing',
+                    alignment_state: 'idle',
+                    objective_status: 'working',
+                    objective: { text: '理解 attention' },
+                    forge_stage: 'collision',
+                    temperature_state: 'steady',
+                    learning_action: 'prepare_to_guess',
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-forge2';
+    sandbox.window.__learningUnitUI.state.unitId = 'lu-forge2';
+    await sandbox.window.__learningUnitUI.refreshUnit();
+
+    const card = sandbox.document.getElementById('learning-unit-card');
+    assert.match(card.innerHTML, /碰撞/);
+    assert.match(card.innerHTML, /lu-learning-action/);
+    assert.match(card.innerHTML, /准备试答/);
+    assert.equal(sandbox.window.__learningUnitUI.state.forgeStage, 'collision');
+    assert.equal(sandbox.window.__learningUnitUI.state.learningAction, 'prepare_to_guess');
 });
 
 test('renderChatMarkdown 使用 markdown-it 渲染表格与 br 换行', () => {

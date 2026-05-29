@@ -44,7 +44,6 @@ def mock_system():
     system.confirm_knowledge_candidate = AsyncMock(return_value=None)
     system.save_session = MagicMock(return_value=True)
     system.save_state = AsyncMock(return_value=None)
-    system.update_session_mode = MagicMock()
     system.delete_session = AsyncMock(return_value=False)
     system.reset_session_runtime = MagicMock(return_value=None)
     system.clear_all_runtimes = MagicMock()
@@ -77,6 +76,57 @@ class TestSessionEndpointsUseSystemApi:
             title="Web Session",
         )
         mock_system.save_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_session_persists_eval_metadata(self, mock_system):
+        from learning_agent.web.web_server import CreateSessionRequest, create_session
+
+        session = LearningSession(title="Eval Session")
+        mock_system.create_session.return_value = session
+
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
+            result = await create_session(
+                CreateSessionRequest(
+                    title="Eval Session",
+                    mode_metadata={"source": "eval", "eval_run_id": "run-1"},
+                )
+            )
+
+        assert result["mode_metadata"]["source"] == "eval"
+        assert result["mode_metadata"]["eval_run_id"] == "run-1"
+        mock_system.session_manager.persist_mode_metadata.assert_called_once_with(session.id)
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_hides_eval_sessions_by_default(self, mock_system):
+        from learning_agent.web.web_server import list_sessions
+
+        normal = LearningSession(title="Normal Session")
+        eval_session = LearningSession(
+            title="Eval Session",
+            mode_metadata={"source": "eval", "eval_run_id": "run-1"},
+        )
+        mock_system.list_sessions.return_value = [normal, eval_session]
+
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
+            result = await list_sessions()
+
+        assert [item["id"] for item in result] == [normal.id]
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_can_include_eval_sessions(self, mock_system):
+        from learning_agent.web.web_server import list_sessions
+
+        normal = LearningSession(title="Normal Session")
+        eval_session = LearningSession(
+            title="Eval Session",
+            mode_metadata={"source": "eval", "eval_run_id": "run-1"},
+        )
+        mock_system.list_sessions.return_value = [normal, eval_session]
+
+        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
+            result = await list_sessions(include_eval=True)
+
+        assert [item["id"] for item in result] == [normal.id, eval_session.id]
 
     @pytest.mark.asyncio
     async def test_update_session_uses_system_side_persistence(self, mock_system):
@@ -200,22 +250,6 @@ class TestSessionEndpointsUseSystemApi:
         assert payloads[0] == ": stream-open\n\n", "首字节必须是 opener，避免 TTFB 过长"
         assert payloads.count(": ping\n\n") >= 2, "静默期必须发心跳"
         assert payloads[-1] == "data: [DONE]\n\n"
-
-    @pytest.mark.asyncio
-    async def test_update_mode_endpoint_uses_system_api(self, mock_system):
-        from learning_agent.web.web_server import update_session_mode, UpdateModeRequest
-
-        switched = LearningSession(id="sess-mode", mode=AgentMode.STUDY)
-        mock_system.update_session_mode.return_value = switched
-
-        with patch("learning_agent.web.web_server._get_system", return_value=mock_system):
-            result = await update_session_mode("sess-mode", UpdateModeRequest(mode=AgentMode.STUDY))
-
-        assert result == {
-            "session_id": "sess-mode",
-            "mode": "study",
-        }
-        mock_system.update_session_mode.assert_called_once_with("sess-mode", AgentMode.STUDY)
 
     @pytest.mark.asyncio
     async def test_confirm_knowledge_uses_system_api(self, mock_system):

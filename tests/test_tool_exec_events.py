@@ -205,13 +205,17 @@ def test_emit_helpers_swallow_writer_exception():
 
 
 def test_safe_result_repr_truncates_long_payload():
-    long = "x" * 5000
-    repr_ = ToolExecutor._safe_result_repr(long)
-    assert repr_.startswith("x" * 4096)
+    long = "x" * 20000
+    repr_, original_size, was_truncated = ToolExecutor._safe_result_repr(long)
+    assert was_truncated is True
+    assert original_size == 20000
+    assert repr_.startswith("x" * 16384)
     assert "truncated" in repr_
 
 
 def test_safe_result_repr_serializes_non_string():
-    repr_ = ToolExecutor._safe_result_repr({"a": 1, "b": [1, 2]})
+    repr_, original_size, was_truncated = ToolExecutor._safe_result_repr({"a": 1, "b": [1, 2]})
     # 必须是合法 JSON / 至少包含可读形式
     assert '"a": 1' in repr_ or "'a': 1" in repr_
+    assert was_truncated is False
+    assert original_size == len(repr_)

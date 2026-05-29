@@ -96,6 +96,22 @@ class Config:
             or learning_unit_from_file.get("teach_judge_model")
         )
 
+        # 闲聊陪伴意图分类的 LLM 兜底（关键字未命中时调一次）。建议指向
+        # cheap-tier，例如本项目接入 DashScope 时用 ``qwen-turbo``；
+        # 主模型 ``qwen-max`` 的延迟和单价对"6 选 1"分类都过重。
+        self.companion_intent_model: Optional[str] = (
+            os.getenv("LA_COMPANION_INTENT_MODEL")
+            or learning_unit_from_file.get("companion_intent_model")
+        )
+
+        # 研学卷对齐意图分类（替换原规则启发式 ``should_run_alignment``）。
+        # 同样建议 cheap-tier，例如 ``qwen-turbo``：任务轻、延迟敏感、
+        # JSON 解析失败/超时直接 fail-open 不打扰。
+        self.alignment_classifier_model: Optional[str] = (
+            os.getenv("LA_ALIGNMENT_CLASSIFIER_MODEL")
+            or learning_unit_from_file.get("alignment_classifier_model")
+        )
+
         # Tool Guard 配置
         tool_guard_from_file = file_values.get("tool_guard", {})
         rules_from_file = tool_guard_from_file.get("rules", {})
@@ -160,6 +176,18 @@ class Config:
                 os.getenv("LA_WEB_SEARCH_PREFER_SYSTEM_TRUST_STORE")
                 or str(web_search_from_file.get("prefer_system_trust_store", True))
             ).lower() == "true",
+            "web_fetch_trafilatura_enabled": (
+                os.getenv("LA_WEB_FETCH_TRAFILATURA_ENABLED")
+                or str(web_search_from_file.get("web_fetch_trafilatura_enabled", True))
+            ).lower() == "true",
+            "web_fetch_jina_reader_enabled": (
+                os.getenv("LA_WEB_FETCH_JINA_READER_ENABLED")
+                or str(web_search_from_file.get("web_fetch_jina_reader_enabled", False))
+            ).lower() == "true",
+            "web_fetch_jina_reader_base_url": (
+                os.getenv("LA_WEB_FETCH_JINA_READER_BASE_URL")
+                or web_search_from_file.get("web_fetch_jina_reader_base_url", "https://r.jina.ai")
+            ),
             "allowed_source_types": parsed_allowed_source_types,
         }
 

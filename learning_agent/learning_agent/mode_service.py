@@ -60,6 +60,21 @@ class TurnExecutionProfile(BaseModel):
     assistant_message_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AlignmentPopupPayload(BaseModel):
+    """absorbing 首轮 LLM 判定为 active 时挂载到 ``PreparedSessionTurn`` 的负载。
+
+    下游 ``stream_session_chat`` 看到这个标记即短路：不调 LLM，
+    直接把 ``placeholder_text`` 作为合成 assistant 消息写回，并把
+    ``candidates`` / ``divergence_cost`` 透传到 SSE 元数据让前端弹 modal。
+    """
+
+    candidates: list[Any] = Field(default_factory=list)
+    divergence_cost: str | None = None
+    assumption_note: str = ""
+    placeholder_text: str = ""
+    reason: str = ""
+
+
 class PreparedSessionTurn(BaseModel):
     """Product 层收口后的单轮执行计划。"""
 
@@ -68,6 +83,7 @@ class PreparedSessionTurn(BaseModel):
     profile: TurnExecutionProfile
     stream_metadata: dict[str, Any] = Field(default_factory=dict)
     compaction_plan: Any = None
+    alignment_popup: AlignmentPopupPayload | None = None
 
 
 CHAT_PROFILE = ModeProfile(
@@ -152,6 +168,9 @@ NEUTRAL_GUARDRAILS = (
     "\n"
     "### 通用约束\n"
     "- 先搜索、后读取、再修改；不要凭记忆猜测文件内容。\n"
+    "- 依赖前序结果的工具必须分批调用：例如先调用 web_search，等结果返回后再把真实 URL 传给 web_fetch；"
+    "先调用 grep，等结果返回后再把真实路径和行号传给 read_file；"
+    "写入后再用同一个真实路径 read_file 校验。不要在同一批工具调用里使用“从结果中选择...”这类占位符。\n"
     "- 单次工具输出限制为 500 行或 32KB（以先达到者为准）。"
     "注意截断提示，需要完整内容时主动分页读取。"
 )
@@ -160,12 +179,13 @@ NEUTRAL_GUARDRAILS = (
 EMPEROR_ROLEPLAY_GUARDRAILS = NEUTRAL_GUARDRAILS
 
 CHAT_MODE_PROMPT = (
-    "当前为 Chat 模式。\n"
-    "目标是快速、低摩擦地响应用户的问题。\n"
+    "当前为 Chat 模式：一个轻松的对话空间。\n"
+    "目标是快速、低摩擦地响应用户，语气自然亲切，让用户在学习之余能放松地聊。\n"
     "- 优先直接回答，只有在问题确实含糊时才简短澄清。\n"
+    "- 语气温和、带一点轻快，像朋友间聊天；但不牺牲准确与信息密度，不啰嗦、不卖萌。\n"
     "- 保持回答精炼，除非用户明确要求展开。\n"
     "- 工具按需使用，不要无故进入重型流程。\n"
-    "- 讲解概念时，可适度加入回忆提示或一个简短例子。"
+    "- 讲解概念时可给一个简短例子；答完即止，不追加回忆提示、复盘或学习建议式的收尾。"
 )
 
 ASK_MODE_PROMPT = (
@@ -178,12 +198,13 @@ ASK_MODE_PROMPT = (
 )
 
 STUDY_MODE_PROMPT = (
-    "当前为 Study 模式：进行深度讲解与学习推进。\n"
-    "目标是提升学习增益，而不只是给出结论。\n"
-    "- 优先按“结论 / 原理 / 例子 / 小结或下一步”组织内容。\n"
-    "- 鼓励比较、对照、回忆与复盘。\n"
-    "- 必要时主动给出后续学习建议或跟进问题。\n"
-    "- 可以使用更完整的上下文与记忆能力来支撑讲解。"
+    "当前为 Study 模式：服务研学模式的 absorbing 阶段。\n"
+    "目标不是快速给答案，而是把用户的模糊直觉带到可讲清楚的理解。\n"
+    "- 采用“入局 / 碰撞 / 铸造 / 定型”的节奏：先给有张力的小情境，再让用户暴露直觉，"
+    "只补当前最缺的桥，最后邀请用户用自己的话说清楚。\n"
+    "- 控制火候：讲太快时请让用户参与，问太多时请补一个例子或结构；用户刚跨过一小步时先降温，不立刻加码。\n"
+    "- 每轮只推进一小块理解，不追求一次讲完整座雕像。\n"
+    "- 结束或阶段收束时，留下用户自己的那句话、前后变化和下一块发光的地方。"
 )
 
 TEACH_MODE_PROMPT = (

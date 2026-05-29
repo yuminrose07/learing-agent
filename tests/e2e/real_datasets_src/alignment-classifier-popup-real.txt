@@ -1,0 +1,290 @@
+# 对齐分类器真实 E2E 数据集 — 源文件
+# 用法: python tests/e2e/compile_dataset.py tests/e2e/real_datasets_src/alignment-classifier-popup-real.txt
+# 输出: tests/e2e/real_datasets/alignment-classifier-popup-real.json
+
+suite_id: alignment-classifier-popup-real
+description: >
+  对齐分类器真实端到端数据集。验证 LLM-driven AlignmentClassifier 替换规则启发式后的三档输出
+  （none / suggested / active），以及 active 档下『前端弹窗 + 不调 agent_loop』短路路径。
+owner: learning-agent
+dataset_version: "2026-05-28-v1"
+execution_mode: manual_real_environment
+target_surface: frontend_or_api
+linked_change: docs/changes/2026-05-28-alignment-classifier-real-e2e-dataset.md
+linked_refactor_note: >
+  本数据集对应 ASK 重构后的新契约：alignment_state=active 不再切 AgentMode.ASK，
+  改为 PreparedSessionTurn.alignment_popup 短路，stream_session_chat 写一条确定性
+  placeholder assistant 消息后 return，不进 agent_loop。
+
+runner_requirements:
+  requires_real_web_server: true
+  requires_learning_unit_creation: true
+  requires_multi_turn_cases: true
+  requires_event_log_collection: true
+  requires_learning_unit_payload_fetch: true
+  requires_sse_metadata_capture_when_stream_mode: false
+  requires_frontend_screenshot_when_frontend_mode: true
+  env_overrides_per_case_supported: true
+  compatible_runner_note: >
+    使用统一 runner tests/e2e/real_runner.py。已支持 setup.create_learning_unit
+    分流 / GET /learning-units/{id} 抓取（通过 events 反推）/ env_overrides 检测
+    （manual_only 标记，runner 不注入环境变量，需手工 export）。
+
+acceptance_metrics:
+  hard_targets:
+    learning_unit_creation_rate: 1.0
+    non_empty_response_rate: 1.0
+    high_cost_popup_triggers_alignment_event_rate: 1.0
+    clear_input_does_not_trigger_popup_rate: 1.0
+    popup_short_circuits_tool_calls_rate: 1.0
+    clarification_cap_violation_count: 0
+    fail_open_silent_when_model_missing_rate: 1.0
+    ask_mode_overlay_count: 0
+  quality_targets:
+    context_aware_continue_no_popup_pass_min: 1
+    low_cost_suggestion_no_popup_pass_min: 1
+
+session_plan:
+  single_session_required: false
+  session_per_case: true
+  frontend_mode: learning
+  ordered_case_ids:
+    - lm-align-clear-input-no-popup
+    - lm-align-multi-candidate-high-cost-popup
+    - lm-align-multi-candidate-low-cost-suggestion
+    - lm-align-continue-learning-context-aware
+    - lm-align-clarification-cap-respected
+    - lm-align-popup-short-circuits-tool-calls
+    - lm-align-fail-open-when-model-missing
+
+global_expectations:
+  hard_failures:
+    - empty_response
+    - learning_unit_not_created
+    - active_falls_back_to_ask_mode
+    - popup_case_invokes_agent_loop_tool_calls
+    - clear_input_triggers_popup
+    - clarification_count_exceeds_cap
+    - missing_alignment_event_when_popup_expected
+  minimum_evidence_required:
+    - request.json
+    - response.json
+    - session.json
+    - events.jsonl
+  evidence_when_runner_supports:
+    - cases/<case_id>/learning_unit.json
+  frontend_evidence_required_when_applicable:
+    - cases/<case_id>/frontend.png
+  event_types_relevant:
+    - learning_unit.created
+    - learning_unit.alignment_started
+    - learning_unit.alignment_suggested
+    - learning_unit.alignment_resolved
+    - message.user_appended
+    - message_end
+
+# ---------- 公共默认值（用 YAML anchor 消除重复） ----------
+defaults: &defaults
+  setup:
+    create_learning_unit: true
+    frontend_mode: learning
+    session_per_case: true
+
+# ---------- 用例 ----------
+cases:
+  - id: lm-align-clear-input-no-popup
+    <<: *defaults
+    title: "清晰具体输入：直接 STUDY，不弹对齐 popup"
+    tags: [alignment, tier_none, clear_enough, happy_path]
+    seed_text: "带我理解这个项目里 compaction 的完整流程"
+    turns:
+      - role: user
+        message: "带我理解这个项目里 compaction 的完整流程"
+    expect:
+      non_empty_response: true
+      learning_unit_created: true
+      learning_unit_phase: absorbing
+      assistant_metadata_should_include:
+        [learning_unit_id, learning_unit_phase, forge_stage, temperature_state, learning_action]
+      assistant_metadata_should_not_include:
+        [alignment, alignment_popup, candidates, divergence_cost]
+      learning_unit_payload_should_include: [alignment_state]
+      learning_unit_alignment_state_after_turn: idle
+      events_should_not_include_any: [learning_unit.alignment_started]
+      first_value_signal_required: true
+    forbid:
+      contains: ["你想往哪个方向走", "下面是我读到的几种可能解读"]
+      empty_response: true
+      active_alignment_state: true
+    severity: high
+
+  - id: lm-align-multi-candidate-high-cost-popup
+    <<: *defaults
+    title: "多候选高代价：弹 alignment modal，不进 agent_loop"
+    tags: [alignment, tier_active, high_cost, popup, short_circuit]
+    seed_text: "我准备做一个新的项目，先帮我梳理目标和范围"
+    turns:
+      - role: user
+        message: "我准备做一个新的项目，先帮我梳理目标和范围"
+    expect:
+      non_empty_response: true
+      learning_unit_created: true
+      learning_unit_phase: absorbing
+      response_content_should_contain_any: ["对齐", "方向", "可能解读", "挑一个"]
+      assistant_metadata_should_include:
+        [learning_unit_id, alignment, alignment_reason, candidates, divergence_cost]
+      expected_assistant_metadata_values:
+        alignment: true
+        divergence_cost: high
+      candidates_min_count: 2
+      candidates_max_count: 3
+      candidate_schema_required_keys: [objective, first_step]
+      learning_unit_payload_should_include: [alignment_state, last_candidates]
+      learning_unit_alignment_state_after_turn: active
+      learning_unit_last_candidates_min_count: 2
+      events_should_include_any: [learning_unit.alignment_started]
+      no_tool_calls_in_response: true
+      session_assistant_message_should_equal_placeholder: true
+    forbid:
+      contains: ["completion_tokens", "function_call", "TaskCreate", "Bash("]
+      empty_response: true
+      effective_mode_is_ask: true
+      agent_loop_invoked: true
+    severity: high
+
+  - id: lm-align-multi-candidate-low-cost-suggestion
+    <<: *defaults
+    title: "多候选低代价：suggestion bar，不弹 modal，STUDY 正常推进"
+    tags: [alignment, tier_suggested, low_cost, no_popup]
+    seed_text: "想全栈学一下整个项目"
+    turns:
+      - role: user
+        message: "想全栈学一下整个项目"
+    expect:
+      non_empty_response: true
+      learning_unit_created: true
+      assistant_metadata_should_include: [learning_unit_id, alignment_state, suggested_objective]
+      expected_assistant_metadata_values:
+        alignment_state: suggested
+        divergence_cost: low
+      assistant_metadata_should_not_include: [alignment_popup]
+      candidates_min_count: 2
+      learning_unit_payload_should_include: [alignment_state, suggestion_count]
+      learning_unit_alignment_state_after_turn: suggested
+      learning_unit_suggestion_count_after_turn: 1
+      events_should_include_any: [learning_unit.alignment_suggested]
+      events_should_not_include_any: [learning_unit.alignment_started]
+      response_content_should_be_substantive_not_placeholder: true
+    forbid:
+      contains: ["对齐一下方向", "挑一个想先学的方向"]
+      empty_response: true
+      agent_loop_skipped: true
+    severity: medium
+
+  - id: lm-align-continue-learning-context-aware
+    <<: *defaults
+    title: "「继续学」省略式输入：LLM 看到上下文不再弹窗"
+    tags: [alignment, tier_none, context_aware, multi_turn, regression_27bf0af2]
+    seed_text: "讲讲 attention 是怎么工作的"
+    turns:
+      - role: user
+        message: "讲讲 attention 是怎么工作的"
+      - role: user
+        message: "继续学"
+    expect_per_turn:
+      - turn_index: 1
+        non_empty_response: true
+        learning_unit_alignment_state_after_turn: idle
+        events_should_not_include_any: [learning_unit.alignment_started]
+      - turn_index: 2
+        non_empty_response: true
+        assistant_metadata_should_not_include: [alignment_popup, candidates]
+        learning_unit_alignment_state_after_turn: idle
+        events_should_not_include_any_in_window: [learning_unit.alignment_started]
+        concept_extraction_may_fire: true
+        response_content_should_be_substantive_not_placeholder: true
+    forbid:
+      contains_in_any_turn: ["挑一个想先学的方向", "对齐一下方向"]
+      empty_response: true
+      popup_on_second_turn: true
+    severity: high
+
+  - id: lm-align-clarification-cap-respected
+    <<: *defaults
+    title: "§9.3 #1 限流：单卷启动期最多 1 次澄清，第二次模糊输入不再弹窗"
+    tags: [alignment, rate_limit, "9.3_clarification_cap", multi_turn]
+    seed_text: "教"
+    turns:
+      - role: user
+        message: "教"
+      - role: user
+        message: "讲讲"
+    expect_per_turn:
+      - turn_index: 1
+        non_empty_response: true
+        may_pop_alignment_modal: true
+        if_popup_then_assistant_metadata_should_include: [candidates]
+        learning_unit_clarification_count_after_turn: 1
+      - turn_index: 2
+        non_empty_response: true
+        assistant_metadata_should_not_include: [alignment_popup]
+        learning_unit_clarification_count_after_turn: 1
+        learning_unit_alignment_state_after_turn_should_be_in: [idle, resolved]
+        events_should_not_include_any_in_window: [learning_unit.alignment_started]
+    forbid:
+      empty_response: true
+      clarification_count_exceeds_one: true
+      popup_on_second_vague_turn: true
+    severity: high
+
+  - id: lm-align-popup-short-circuits-tool-calls
+    <<: *defaults
+    title: "active 短路：placeholder assistant 消息写入 session，不调任何工具"
+    tags: [alignment, tier_active, short_circuit, placeholder, no_tool_call]
+    seed_text: "随便讲讲什么都行"
+    turns:
+      - role: user
+        message: "随便讲讲什么都行"
+    expect:
+      non_empty_response: true
+      may_pop_alignment_modal: true
+      if_popup_then_response_content_equals_placeholder: true
+      if_popup_then_no_tool_calls_in_response: true
+      if_popup_then_session_last_assistant_metadata_should_include:
+        [alignment_popup, candidates, placeholder_text]
+      if_popup_then_session_last_assistant_content_length_le: 200
+      learning_unit_payload_should_include: [last_candidates, alignment_state]
+    forbid:
+      tool_calls_when_popup: true
+      empty_response: true
+      agent_loop_completion_metadata_when_popup: true
+    severity: medium
+
+  - id: lm-align-fail-open-when-model-missing
+    <<: *defaults
+    title: "fail-open：分类器模型不可用时静默回落 STUDY，不挂不弹窗"
+    tags: [alignment, fail_open, resilience]
+    seed_text: "我准备做一个新的项目，先帮我梳理目标和范围"
+    manual_only: true
+    manual_only_reason: >
+      需要注入 LA_ALIGNMENT_CLASSIFIER_MODEL 为不存在模型名以验证 fail-open。
+      runner 不控制 dev server 进程，请手工 export 后跑此 case。
+    env_overrides:
+      LA_ALIGNMENT_CLASSIFIER_MODEL: "qwen-this-model-does-not-exist-xxxx"
+    turns:
+      - role: user
+        message: "我准备做一个新的项目，先帮我梳理目标和范围"
+    expect:
+      non_empty_response: true
+      learning_unit_created: true
+      assistant_metadata_should_not_include: [alignment_popup, candidates, divergence_cost]
+      learning_unit_alignment_state_after_turn: idle
+      events_should_not_include_any: [learning_unit.alignment_started]
+      no_exception_propagated_to_response: true
+      server_log_should_contain_warning: "AlignmentClassifier"
+      response_content_should_be_substantive_not_placeholder: true
+    forbid:
+      empty_response: true
+      five_hundred_error: true
+      popup_when_classifier_unavailable: true
+    severity: high

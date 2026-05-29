@@ -31,6 +31,15 @@ from pydantic import BaseModel
 
 from learning_agent.ai import AgentMode
 from learning_agent.learning_agent.config import Config
+from learning_agent.learning_agent.companion_policy import (
+    CompanionAdviceLevel,
+    CompanionStyle,
+    build_companion_settings_payload,
+    companion_metadata_for_update,
+    companion_style_options,
+    normalize_advice_level,
+    normalize_companion_style,
+)
 from learning_agent.learning_agent.learning_unit_store import ActiveUnitExistsError
 from learning_agent.learning_agent.learning_unit_metrics import summary_to_dict
 from learning_agent.learning_agent.main import LearningAgentSystem, SessionNotFoundError
@@ -40,6 +49,8 @@ from learning_agent.learning_agent.mode_service import (
     resolve_persona,
 )
 from learning_agent.learning_agent.session_event_store import filter_events
+from learning_agent.learning_agent.session_events import SessionEventType
+from learning_agent.web.eval_routes import router as eval_router
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +70,7 @@ class CreateObjectiveRequest(BaseModel):
 class CreateSessionRequest(BaseModel):
     objective_id: Optional[str] = None
     title: Optional[str] = "Web Session"
+    mode_metadata: Optional[dict[str, Any]] = None
 
 
 class ChatRequest(BaseModel):
@@ -75,13 +87,15 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
 
 
-class UpdateModeRequest(BaseModel):
-    mode: AgentMode
-
-
 class UpdatePersonaRequest(BaseModel):
     # ``None`` / empty / "neutral" all mean "no overlay" (default).
     persona_key: Optional[str] = None
+
+
+class UpdateCompanionRequest(BaseModel):
+    enabled: bool = True
+    style: Optional[str] = None
+    advice_level: Optional[str] = None
 
 
 class CreateLearningUnitRequest(BaseModel):
@@ -91,6 +105,7 @@ class CreateLearningUnitRequest(BaseModel):
         "user_written",
         "material_imported",
     ] = "ai_distilled"
+    mode_metadata: Optional[dict[str, Any]] = None
 
 
 class AdvanceLearningUnitRequest(BaseModel):
@@ -137,7 +152,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Learning-Agent API",
-    version="0.1.0",
+    version="0.4.0-alpha.1",
     lifespan=lifespan,
 )
 
@@ -149,6 +164,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# E2E 评测控制台路由（/api/eval/*）。独立 router,与现有 /sessions /chat
+# /learning-units 等业务路由完全隔离。
+app.include_router(eval_router)
 
 
 # ───────────────────────────────
@@ -207,12 +226,26 @@ async def _stream_chat_chunks(
                     "alignment_reason",
                     "assumption_note",
                     "suggested_objective",
+                    "candidates",
+                    "divergence_cost",
+                    "placeholder_text",
+                    "alignment_popup",
                     "teach_session_id",
                     "teach_state",
                     "question_index",
                     "question_total",
                     "verdict",
                     "feedback_card",
+                    "forge_stage",
+                    "temperature_state",
+                    "learning_action",
+                    "chat_profile",
+                    "companion_enabled",
+                    "companion_style",
+                    "companion_style_name",
+                    "companion_intent",
+                    "companion_advice_level",
+                    "stress_relief",
                 ):
                     value = chunk_metadata.get(key)
                     if value is not None:
@@ -283,7 +316,7 @@ async def _stream_chat_chunks(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.4.0-alpha.1"}
 
 
 # ───────────────────────────────
@@ -323,15 +356,28 @@ async def create_session(req: CreateSessionRequest) -> dict[str, Any]:
         objective_id=req.objective_id,
         title=req.title,
     )
+    if req.mode_metadata:
+        session.mode_metadata.update(req.mode_metadata)
+        manager = getattr(system, "session_manager", None)
+        persist = getattr(manager, "persist_mode_metadata", None)
+        if callable(persist):
+            persist(session.id)
     data = session.model_dump(exclude={"entries"})
     data["messages"] = []
     return data
 
 
 @app.get("/sessions")
-async def list_sessions() -> list[dict[str, Any]]:
+async def list_sessions(include_eval: bool = False) -> list[dict[str, Any]]:
     system = _get_system()
-    return [session.model_dump(exclude={"entries"}) for session in system.list_sessions()]
+    sessions = system.list_sessions()
+    if not include_eval:
+        sessions = [
+            session
+            for session in sessions
+            if session.mode_metadata.get("source") != "eval"
+        ]
+    return [session.model_dump(exclude={"entries"}) for session in sessions]
 
 
 @app.get("/sessions/{session_id}")
@@ -396,31 +442,6 @@ async def chat(session_id: str, req: ChatRequest) -> Any:
             "session_id": session_id,
             "content": content,
         }
-
-
-@app.put("/sessions/{session_id}/mode")
-async def update_session_mode(session_id: str, req: UpdateModeRequest) -> dict[str, Any]:
-    system = _get_system()
-    try:
-        session = system.update_session_mode(session_id, req.mode)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "session_id": session.id,
-        "mode": session.mode.value,
-    }
-
-
-@app.get("/sessions/{session_id}/mode")
-async def get_session_mode(session_id: str) -> dict[str, Any]:
-    system = _get_system()
-    session = system.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "session_id": session.id,
-        "mode": session.mode.value,
-    }
 
 
 # ───────────────────────────────
@@ -490,6 +511,96 @@ async def update_session_persona(session_id: str, req: UpdatePersonaRequest) -> 
 
 
 # ───────────────────────────────
+# 闲聊陪伴档案(companion / 减压)
+# ───────────────────────────────
+
+@app.get("/companion-styles")
+async def list_companion_styles() -> dict[str, Any]:
+    return {
+        "styles": companion_style_options(),
+        "default_style": CompanionStyle.WARM_GIRLFRIEND.value,
+        "default_advice_level": CompanionAdviceLevel.LOW.value,
+    }
+
+
+@app.get("/sessions/{session_id}/companion")
+async def get_session_companion(session_id: str) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return build_companion_settings_payload(session)
+
+
+@app.put("/sessions/{session_id}/companion")
+async def update_session_companion(
+    session_id: str,
+    req: UpdateCompanionRequest,
+) -> dict[str, Any]:
+    system = _get_system()
+    session = system.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    requested_style = (req.style or "").strip() or None
+    if requested_style is not None:
+        style = normalize_companion_style(requested_style)
+        if style == CompanionStyle.OFF and requested_style != CompanionStyle.OFF.value:
+            raise HTTPException(status_code=400, detail=f"Unknown companion style: {requested_style}")
+
+    requested_advice = (req.advice_level or "").strip() or None
+    if requested_advice is not None:
+        advice = normalize_advice_level(requested_advice)
+        if advice.value != requested_advice:
+            raise HTTPException(status_code=400, detail=f"Unknown companion advice level: {requested_advice}")
+
+    effective_style = requested_style
+    if req.enabled and effective_style is None:
+        effective_style = (
+            session.mode_metadata.get("companion_style")
+            or CompanionStyle.WARM_GIRLFRIEND.value
+        )
+    effective_advice = requested_advice
+    if effective_advice is None:
+        effective_advice = session.mode_metadata.get("companion_advice_level")
+
+    updates = companion_metadata_for_update(
+        enabled=req.enabled,
+        style=effective_style,
+        advice_level=effective_advice,
+    )
+    changed: dict[str, Any] = {}
+    for key, value in updates.items():
+        if value is None:
+            if key in session.mode_metadata:
+                session.mode_metadata.pop(key, None)
+                changed[key] = None
+        elif session.mode_metadata.get(key) != value:
+            session.mode_metadata[key] = value
+            changed[key] = value
+
+    if hasattr(system, "session_manager"):
+        system.session_manager.persist_mode_metadata(session.id)
+    if changed:
+        system._emit_companion_event(
+            session,
+            SessionEventType.COMPANION_PROFILE_CHANGED,
+            {
+                "enabled": req.enabled,
+                "style": (
+                    session.mode_metadata.get("companion_style")
+                    or CompanionStyle.OFF.value
+                ),
+                "advice_level": session.mode_metadata.get("companion_advice_level")
+                or CompanionAdviceLevel.LOW.value,
+                "metadata_changed": changed,
+                "source": "api",
+            },
+        )
+    return build_companion_settings_payload(session)
+
+
+# ───────────────────────────────
 # 会话更新与删除
 # ───────────────────────────────
 
@@ -529,10 +640,13 @@ def _learning_unit_payload(unit, *, session_id: Optional[str] = None) -> dict[st
 async def create_learning_unit(req: CreateLearningUnitRequest) -> dict[str, Any]:
     system = _get_system()
     try:
-        session, unit = system.create_learning_unit(
-            seed_text=req.seed_text,
-            source=req.source,
-        )
+        kwargs: dict[str, Any] = {
+            "seed_text": req.seed_text,
+            "source": req.source,
+        }
+        if req.mode_metadata:
+            kwargs["mode_metadata"] = req.mode_metadata
+        session, unit = system.create_learning_unit(**kwargs)
     except ActiveUnitExistsError as exc:
         return JSONResponse(
             status_code=409,

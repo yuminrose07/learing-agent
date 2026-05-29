@@ -1,0 +1,346 @@
+# E2E dataset source. Edit cases here; JSON is generated before runs.
+suite_id: tool-system-golden-6-real
+description: '工具系统黄金 6 题。目标是压测当前 Agent 工具调用系统的真实链路稳定性: 单指令多工具连续调用、前后工具结果依赖、失败恢复、大文件先搜再读、写入后校验、 以及 web_search -> web_fetch -> 本地文件工具的跨域组合。
+
+  '
+owner: learning-agent
+dataset_version: 2026-05-29-v1
+execution_mode: manual_real_environment
+target_surface: frontend_or_api
+runner_requirements:
+  requires_real_web_server: true
+  requires_event_log_collection: true
+  requires_tool_call_capture: true
+  compatible_runner_note: 'Eval console 读取 tests/e2e/real_datasets_src/*.txt,运行前自动编译到 tests/e2e/real_datasets/*.json。本数据集重点看 response.json / events.jsonl 里的工具调用顺序、参数承接、失败恢复和最终回答质量。
+
+    '
+acceptance_metrics:
+  hard_targets:
+    non_empty_response_rate: 1.0
+    no_unhandled_tool_error_rate: 1.0
+    evidence_package_written_rate: 1.0
+    five_tool_single_instruction_pass_min: 1
+    write_then_verify_pass_min: 2
+  quality_targets:
+    tool_result_dependency_pass_min: 4
+    graceful_recovery_pass_min: 1
+    large_context_control_pass_min: 1
+session_plan:
+  single_session_required: true
+  session_per_case: false
+  session_title: 工具系统黄金 6 题
+  frontend_mode: chat
+  conversation_id: tool-system-golden-6-real
+  ordered_case_ids:
+  - tool-golden-one-instruction-five-tools
+  - tool-golden-search-fetch-write-read-chain
+  - tool-golden-grep-read-edit-bash-verify
+  - tool-golden-missing-file-recovery
+  - tool-golden-large-file-search-before-read
+  - tool-golden-cross-domain-source-synthesis
+global_expectations:
+  hard_failures:
+  - empty_response
+  - unhandled_tool_error
+  - tool_chain_stops_after_first_tool
+  - write_without_verify
+  - fabricated_source_after_fetch_failure
+  minimum_evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+defaults:
+  setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+  forbid:
+    empty_response: true
+cases:
+- setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+    min_tool_calls: 5
+    must_call_tools:
+    - web_search
+    - web_fetch
+    - grep
+    - read_file
+    - write_file
+    response_should_reference:
+    - TaskGroup
+    - asyncio
+    - tool chain
+  forbid:
+    empty_response: true
+    contains:
+    - 我没有写文件
+    - 我没有读取本地文件
+    - 无法继续
+  id: tool-golden-one-instruction-five-tools
+  title: '单指令连续至少 5 个工具: 搜索、抓取、本地检索、读取、写入、复读校验'
+  description: '一条用户指令内要求连续完成至少 5 次工具调用,并且后续工具参数依赖前序结果。 这是工具调度稳定性的主力压力题。
+
+    '
+  source: mixed_local_and_web
+  tags:
+  - tool_system
+  - multi_tool
+  - single_instruction
+  - five_tools
+  - chain_stability
+  - high
+  tool_chain:
+  - web_search
+  - web_fetch
+  - grep
+  - read_file
+  - write_file
+  - read_file
+  turns:
+  - role: user
+    message: "请在一个连续流程里完成这件事,不要分多轮问我: 1. 用 web_search 找 业界最新对于agent的可观测性的文档来源; 2. 从搜索结果里选最权威的官方页面,用 web_fetch 抓正文; 3. 在本地项目里用 grep 搜 可观测性 或 exal 的相关代码/文档; 4. 读取你认为最相关的一个本地文件片段; 5. 把“外部官方来源 + 本地项目线索 + 你的结论”写入\n   .test_artifacts/tool_golden/taskgroup_research.md;\n6. 再读回这个文件确认写入内容存在。 最后回答时列出你实际调用过的工具链,并说明每一步为什么接下一步。\n"
+  severity: high
+- setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+    must_call_tools:
+    - web_search
+    - web_fetch
+    - write_file
+    - read_file
+    response_should_reference:
+    - FastAPI
+    - StreamingResponse
+  forbid:
+    empty_response: true
+    contains:
+    - 没有抓取正文
+    - URL 是我猜的
+  id: tool-golden-search-fetch-write-read-chain
+  title: '搜索结果参数承接: web_search URL 必须进入 web_fetch,再写入本地摘要'
+  description: '验证工具结果是否被真实消费:不是搜完就凭印象答,而是把搜索得到的 URL 作为下一步 web_fetch 参数,再把抓取结论写入文件并读回。
+
+    '
+  source: external_search
+  tags:
+  - tool_system
+  - result_dependency
+  - web_search
+  - web_fetch
+  - write_verify
+  tool_chain:
+  - web_search
+  - web_fetch
+  - write_file
+  - read_file
+  turns:
+  - role: user
+    message: '请用 web_search 查 FastAPI StreamingResponse 的官方文档。 必须从搜索结果中选择一个官方 URL 作为 web_fetch 的输入,抓取后总结 StreamingResponse 适用场景和最小用法。然后把摘要写入 .test_artifacts/tool_golden/fastapi_streamingresponse.md, 最后 read_file 读回确认。回答里说明 web_fetch 使用的 URL 来自哪条搜索结果。
+
+      '
+  severity: high
+- setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+    must_call_tools:
+    - grep
+    - read_file
+    - write_file
+    - bash
+    response_should_reference:
+    - real_datasets_src
+    - compile_dataset
+  forbid:
+    empty_response: true
+    contains:
+    - 未校验
+    - 我没有找到相关文件
+  id: tool-golden-grep-read-edit-bash-verify
+  title: '本地链路稳定: grep -> read -> write/edit -> bash 校验'
+  description: '验证本地工具链的连贯性:先定位,再读取,再写入产物,最后用 shell 命令校验文件存在与内容命中。
+
+    '
+  source: local_workspace
+  tags:
+  - tool_system
+  - local_tools
+  - grep
+  - read_file
+  - write_file
+  - bash
+  - verify
+  tool_chain:
+  - grep
+  - read_file
+  - write_file
+  - bash
+  turns:
+  - role: user
+    message: '请在本地项目里先用 grep 找到 eval_routes 或 compile_dataset 的数据集编译逻辑, 然后 read_file 读取相关片段。基于读到的内容,写一个简短说明到 .test_artifacts/tool_golden/dataset_compile_contract.md。 写完后用 bash 执行一个只读校验命令,确认该文件存在且包含 “real_datasets_src” 或 “compile_dataset”。最后用中文总结这个本地工具链是否稳定完成。
+
+      '
+  severity: high
+- setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+    must_call_tools:
+    - read_file
+    - grep
+    response_should_reference:
+    - THIS_FILE_DOES_NOT_EXIST
+    - suite_id
+  forbid:
+    empty_response: true
+    contains:
+    - 因为文件不存在所以无法继续
+  id: tool-golden-missing-file-recovery
+  title: '失败恢复: 读不存在文件后必须降级到 grep/find'
+  description: '工具调用失败不应中断整个任务。该 case 故意要求先读一个不存在路径, 然后观察 Agent 是否能恢复并用检索工具找到正确文件。
+
+    '
+  source: local_workspace
+  tags:
+  - tool_system
+  - failure_recovery
+  - missing_file
+  - grep
+  - read_file
+  tool_chain:
+  - read_file
+  - grep
+  - read_file
+  turns:
+  - role: user
+    message: '请先尝试读取 tests/e2e/real_datasets_src/THIS_FILE_DOES_NOT_EXIST.txt。 这个文件大概率不存在;如果读取失败,不要停止,请立刻用 grep 搜 “suite_id:” 来找到真实的数据集源文件,再读取其中一个真实源文件的开头。 最后回答:第一次失败是什么、你如何恢复、最终读到了哪个真实文件。
+
+      '
+  severity: high
+- setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+    must_call_tools:
+    - grep
+    - read_file
+    response_should_reference_any:
+    - query_aware
+    - pagination_mode
+    - query
+  forbid:
+    empty_response: true
+    contains:
+    - 我读取了整个大型文件
+  id: tool-golden-large-file-search-before-read
+  title: '大上下文控制: 先 grep 精确定位,不要整文件硬读'
+  description: '验证工具系统在大文件/长文件场景下是否遵守“先搜再读”的上下文预算策略。
+
+    '
+  source: local_workspace
+  tags:
+  - tool_system
+  - context_budget
+  - grep_before_read
+  - large_file
+  tool_chain:
+  - grep
+  - read_file
+  turns:
+  - role: user
+    message: '请分析当前项目里 web_fetch 的 query-aware 逻辑是否存在相关测试。 不要一上来整文件读取大型 runner 或长 JSON;先用 grep 搜 “query_aware” 或 “pagination_mode”,再只读取最相关的测试/实现片段。 最后告诉我你读了哪些文件、为什么这些片段足够支撑结论。
+
+      '
+  severity: medium
+- setup:
+    reuse_session: true
+  evidence_required:
+  - request.json
+  - response.json
+  - session.json
+  - events.jsonl
+  expect:
+    non_empty_response: true
+    min_tool_calls: 5
+    must_call_tools:
+    - web_search
+    - web_fetch
+    - grep
+    - read_file
+    - write_file
+    response_should_reference:
+    - tool
+    - report
+  forbid:
+    empty_response: true
+    contains:
+    - 没有本地证据
+    - 没有外部来源
+  id: tool-golden-cross-domain-source-synthesis
+  title: '跨域综合: 外部官方资料 + 本地实现 + 本地写入报告'
+  description: '验证工具系统能把外部知识工具和本地代码工具组合起来,形成可追溯报告。
+
+    '
+  source: mixed_local_and_web
+  tags:
+  - tool_system
+  - cross_domain
+  - web_search
+  - web_fetch
+  - grep
+  - read_file
+  - write_file
+  tool_chain:
+  - web_search
+  - web_fetch
+  - grep
+  - read_file
+  - write_file
+  - read_file
+  turns:
+  - role: user
+    message: '请研究“工具调用结果为什么需要结构化记录”这个问题: 1. web_search 找一篇官方或权威资料,主题是 AI agent tool use / function calling; 2. web_fetch 抓取该来源; 3. grep 本地项目里 tool_calls 或 tool_exec 相关实现; 4. read_file 读取一个最相关的本地实现或测试片段; 5. 写一份对比报告到 .test_artifacts/tool_golden/tool_call_recording_report.md; 6. read_file 读回报告确认。 报告必须分成“外部资料观点”“本地实现证据”“对当前项目的改进建议”三段。
+
+      '
+  severity: high
+- id: new-case-1779990682323
+  title: ''
+  turns:
+  - role: user
+    message: "请在一个连续流程可以多轮工具调用，但不要向用户追问：1. 用 web_search 找 业界最新对于agent的可观测性的文档来源; 2. 从搜索结果里选最权威的官方页面,用 web_fetch 抓正文; 3. 在本地项目里用 grep 搜 可观测性 或 exal 的相关代码/文档; 4. 读取你认为最相关的一个本地文件片段; 5. 把“外部官方来源 + 本地项目线索 + 你的结论”写入\n   .test_artifacts/tool_golden/taskgroup_research.md;\n6. 再读回这个文件确认写入内容存在。 最后回答时列出你实际调用过的工具链,并说明每一步为什么接下一步。"
+  expect:
+    non_empty_response: true

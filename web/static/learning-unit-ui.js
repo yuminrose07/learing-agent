@@ -47,6 +47,19 @@
         confirmed: '已确认',
     };
 
+    const FORGE_STAGE_LABEL = {
+        entry: '入局',
+        collision: '碰撞',
+        forge: '铸造',
+        fixed: '定型',
+        cooling: '降温',
+    };
+
+    const LEARNING_ACTION_LABEL = {
+        orient: '定向',
+        prepare_to_guess: '准备试答',
+    };
+
     /** Frontend representation of the active learning unit, kept in sync with SSE deltas. */
     const state = {
         sessionId: null,
@@ -57,12 +70,17 @@
         objectiveText: '',
         assumptionNote: '',
         alignmentReason: '',
+        forgeStage: null,
+        temperatureState: null,
+        learningAction: null,
         teachSessionId: null,
         teachState: null,
         questionIndex: null,
         questionTotal: null,
         currentQuestionStem: '',
         feedbackCard: null,
+        candidates: [],
+        divergenceCost: null,
         reuseRecorded: false,
         // Avoid duplicate in-flight POSTs when users mash buttons.
         pendingAction: null,
@@ -96,11 +114,10 @@
         const sessionId = unit.session_id || error.payload.active_session_id || null;
         if (!sessionId) return null;
 
-        state.sessionId = sessionId;
-        hydrateFromUnit(unit, sessionId);
-        if (typeof window.__appShowToast === 'function') {
-            window.__appShowToast('已回到未完成的研习卷');
-        }
+        // 仅"探测 + fetch + 打标"，不再自动 hydrate / 不再 toast。
+        // 让 app.js 弹出 #learning-resume-modal 由用户明确选择「继续」/「先停掉开新」。
+        // 用户选「继续」后会走 selectSession → dispatch learning-unit:session-loaded →
+        // 由 learning-unit-ui.js:466-487 触发 hydrateFromUnit，路径与冷启动一致。
         return {
             ...unit,
             session_id: sessionId,
@@ -136,6 +153,9 @@
         state.objectiveText = '';
         state.assumptionNote = '';
         state.alignmentReason = '';
+        state.forgeStage = null;
+        state.temperatureState = null;
+        state.learningAction = null;
         state.teachSessionId = null;
         state.teachState = null;
         state.questionIndex = null;
@@ -161,6 +181,10 @@
         state.objectiveText = (unit.objective && unit.objective.text) || unit.working_objective || '';
         state.assumptionNote = unit.assumption_note || '';
         state.alignmentReason = unit.alignment_reason || '';
+        state.forgeStage = unit.forge_stage || 'entry';
+        state.temperatureState = unit.temperature_state || 'steady';
+        state.candidates = Array.isArray(unit.last_candidates) ? unit.last_candidates : [];
+        if (unit.learning_action) state.learningAction = unit.learning_action;
         const teachSession = unit.teach_session || null;
         const questions = teachSession && Array.isArray(teachSession.questions)
             ? teachSession.questions
@@ -200,10 +224,14 @@
             objectiveStatus: delta.objective_status,
             alignmentReason: delta.alignment_reason,
             assumptionNote: delta.assumption_note,
+            forgeStage: delta.forge_stage,
+            temperatureState: delta.temperature_state,
+            learningAction: delta.learning_action,
             teachSessionId: delta.teach_session_id,
             teachState: delta.teach_state,
             questionIndex: delta.question_index,
             questionTotal: delta.question_total,
+            divergenceCost: delta.divergence_cost,
         };
         for (const [k, v] of Object.entries(fields)) {
             if (v !== undefined && v !== null && state[k] !== v) {
@@ -213,6 +241,23 @@
                 state[k] = v;
                 changed = true;
             }
+        }
+        if (Array.isArray(delta.candidates)) {
+            state.candidates = delta.candidates;
+            changed = true;
+        }
+        if (delta.alignment_popup) {
+            // SSE chunk 标记本轮是对齐短路 —— 弹 modal 让用户挑方向。
+            // 由 app.js 持有 modal DOM；这里只负责派事件。
+            document.dispatchEvent(new CustomEvent('learning-unit:alignment-popup', {
+                detail: {
+                    candidates: Array.isArray(delta.candidates) ? delta.candidates : [],
+                    divergenceCost: delta.divergence_cost || null,
+                    placeholderText: delta.placeholder_text || '',
+                    assumptionNote: delta.assumption_note || '',
+                    reason: delta.alignment_reason || '',
+                },
+            }));
         }
         if (delta.feedback_card) {
             state.feedbackCard = delta.feedback_card;
@@ -267,6 +312,7 @@
 
         const showSuggestion = state.alignmentState === 'suggested' && phase === 'absorbing';
         const showTeachEntry = phase === 'absorbing';
+        const showForge = phase === 'absorbing';
         const showQuestion = phase === 'outputting';
         const showStop = phase === 'absorbing' || phase === 'outputting';
         const showStopped = phase === 'stopped';
@@ -288,6 +334,7 @@
             <div class="lu-objective">
                 <span class="lu-objective-kicker">研习卷</span>
                 <p class="lu-objective-text">${state.objectiveText ? escapeHtml(state.objectiveText) : '<span class="lu-empty">尚未生成工作目标</span>'}</p>
+                ${showForge ? renderForgeRow() : ''}
             </div>
             ${state.assumptionNote ? `<div class="lu-assumption">${escapeHtml(state.assumptionNote)}</div>` : ''}
             ${showSuggestion ? renderSuggestionBar() : ''}
@@ -308,6 +355,19 @@
                     <button class="lu-btn lu-btn-secondary" data-action="reuse-no" ${state.pendingAction ? 'disabled' : ''}>不会</button>
                 ` : ''}
                 ${showReuseDone ? `<span class="lu-reuse-done">谢谢反馈</span>` : ''}
+            </div>
+        `;
+    }
+
+    function renderForgeRow() {
+        const stage = state.forgeStage || 'entry';
+        const stageLabel = FORGE_STAGE_LABEL[stage] || stage;
+        const action = state.learningAction;
+        const actionLabel = action ? (LEARNING_ACTION_LABEL[action] || action) : '';
+        return `
+            <div class="lu-forge-row" aria-label="铸造阶段">
+                <span class="lu-forge-stage lu-forge-${escapeHtml(stage)}">${escapeHtml(stageLabel)}</span>
+                ${actionLabel ? `<span class="lu-learning-action">${escapeHtml(actionLabel)}</span>` : ''}
             </div>
         `;
     }

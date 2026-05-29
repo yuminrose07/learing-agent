@@ -1,4 +1,4 @@
-# Learning-Agent v0.1.0
+# Learning-Agent v0.4.0-alpha.1
 
 面向个人长期学习的 Agent 系统。
 

@@ -1,0 +1,307 @@
+# E2E dataset source. Edit cases here; JSON is generated before runs.
+suite_id: web-search-golden-10-real
+description: >
+  Web Search / Web Fetch 黄金 10 题。目标不是堆数量,而是覆盖学习型 Agent 使用外部知识时
+  最容易退化的 10 个关键行为:官方源优先、时效性、冲突来源、GitHub issue 一手证据、
+  论文 primary source、中文问题仍优先主来源、去重意识、长页预算、抓取失败降级、Top-K 控噪。
+owner: learning-agent
+dataset_version: 2026-05-29-v1
+execution_mode: manual_real_environment
+target_surface: frontend_or_api
+linked_change: docs/changes/2026-05-29-web-search-golden-10-real-dataset.md
+
+runner_requirements:
+  requires_real_web_server: true
+  requires_web_search: true
+  requires_web_fetch: true
+  requires_event_log_collection: true
+  compatible_runner_note: >
+    Eval console 读取 tests/e2e/real_datasets_src/*.txt,运行前自动编译到
+    tests/e2e/real_datasets/*.json。当前 web_search runner 主要判定 transport
+    success,expect/forbid 字段作为人工复盘与后续 runner 增强的结构化依据。
+
+acceptance_metrics:
+  hard_targets:
+    non_empty_response_rate: 1.0
+    no_unhandled_tool_error_rate: 1.0
+    evidence_package_written_rate: 1.0
+  quality_targets:
+    official_or_primary_source_used_min: 7
+    search_fetch_chain_used_min: 6
+    failure_or_budget_behavior_covered_min: 2
+
+session_plan:
+  single_session_required: true
+  session_per_case: false
+  session_title: "Web Search 黄金 10 题"
+  frontend_mode: chat
+  conversation_id: web-search-golden-10-real
+  ordered_case_ids:
+    - ws-golden-fastapi-lifespan-official
+    - ws-golden-openai-responses-latest
+    - ws-golden-python-packaging-conflict
+    - ws-golden-github-issue-primary-evidence
+    - ws-golden-rag-original-paper
+    - ws-golden-react-cleanup-chinese
+    - ws-golden-pytest-fixture-canonical
+    - ws-golden-django-upgrade-long-page
+    - ws-golden-fetch-failure-fallback
+    - ws-golden-typescript-topk-official
+
+global_expectations:
+  hard_failures:
+    - empty_response
+    - unhandled_tool_error
+    - answer_without_source_when_source_required
+    - latest_claim_without_date_or_source
+  minimum_evidence_required:
+    - request.json
+    - response.json
+    - session.json
+    - events.jsonl
+
+defaults: &defaults
+  setup:
+    reuse_session: true
+  evidence_required:
+    - request.json
+    - response.json
+    - session.json
+    - events.jsonl
+  expect:
+    non_empty_response: true
+  forbid:
+    empty_response: true
+
+cases:
+  - id: ws-golden-fastapi-lifespan-official
+    <<: *defaults
+    title: "官方文档优先: FastAPI lifespan"
+    description: >
+      SEO 教程可能排在前面,但实现建议必须以 FastAPI 官方文档为主。
+    source: external_search
+    tags: [web_search, web_fetch, official_docs, ranking, high_value]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          请用 web_search 查 FastAPI 现在推荐如何管理应用 startup/shutdown 逻辑。
+          先找官方文档,再 web_fetch 官方页面正文。回答时说明为什么 lifespan 是主线,
+          并给出官方来源 URL。不要只引用博客。
+    expect:
+      non_empty_response: true
+      response_should_reference: [FastAPI, lifespan]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["没有来源", "我不确定"]
+    severity: high
+
+  - id: ws-golden-openai-responses-latest
+    <<: *defaults
+    title: "最新变化: OpenAI Responses API"
+    description: >
+      时效性问题必须找官方 docs/changelog/blog,并在回答里带来源日期或页面上下文。
+    source: external_search
+    tags: [web_search, web_fetch, freshness, official_docs, latest]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          请查 OpenAI Responses API 相比 Chat Completions 的最新官方说法。
+          用 web_search 搜官方 docs 或官方 blog,再 web_fetch 最相关来源。
+          回答必须标明来源 URL,并避免把过期资料当最新结论。
+    expect:
+      non_empty_response: true
+      response_should_reference: [Responses API, Chat Completions]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["根据我的记忆", "不需要来源"]
+    severity: high
+
+  - id: ws-golden-python-packaging-conflict
+    <<: *defaults
+    title: "冲突来源: pyproject.toml vs setup.py"
+    description: >
+      社区答案可以作为背景,但最终判断应回到 Python Packaging 官方指南。
+    source: external_search
+    tags: [web_search, web_fetch, conflict_resolution, official_docs]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          网上有人说 Python 打包还应该主要写 setup.py,也有人说应该用 pyproject.toml。
+          请用 web_search 找 Python Packaging 官方指南和一个社区讨论作对比,
+          再 fetch 官方来源。回答里明确区分官方结论和社区经验。
+    expect:
+      non_empty_response: true
+      response_should_reference: [pyproject.toml, setup.py]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["只看 Stack Overflow 就够"]
+    severity: high
+
+  - id: ws-golden-github-issue-primary-evidence
+    <<: *defaults
+    title: "一手证据: GitHub issue 用于实现行为"
+    description: >
+      当问题是具体库行为或 bug 时,maintainer issue/discussion 常比二手博客更有证据价值。
+    source: external_search
+    tags: [web_search, web_fetch, github_issue, primary_evidence]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          选择一个 Pydantic v2 行为变更或 bug 讨论作为例子:
+          请用 web_search 找 GitHub issue/discussion 和官方 docs,
+          再 fetch 最相关的 GitHub 或官方来源。回答解释什么时候 GitHub issue
+          可以作为一手证据,什么时候不能替代正式文档。
+    expect:
+      non_empty_response: true
+      response_should_reference: [GitHub, Pydantic]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["所有 issue 都等于官方文档"]
+    severity: medium
+
+  - id: ws-golden-rag-original-paper
+    <<: *defaults
+    title: "论文主来源: RAG 原始论文"
+    description: >
+      研究概念溯源必须优先 primary paper,再用博客辅助解释。
+    source: external_search
+    tags: [web_search, web_fetch, paper, primary_source]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          请查 RAG(Retrieval-Augmented Generation) 最早的论文依据。
+          用 web_search 找原始论文页面,再 web_fetch 论文摘要或页面正文。
+          回答里说明论文名称、作者/机构线索、核心思想,并给出来源 URL。
+    expect:
+      non_empty_response: true
+      response_should_reference: [Retrieval-Augmented Generation, arXiv]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["只参考教程"]
+    severity: high
+
+  - id: ws-golden-react-cleanup-chinese
+    <<: *defaults
+    title: "中文学习问题: React useEffect cleanup"
+    description: >
+      用户用中文提问时,仍应优先 React 官方文档,中文材料只能辅助理解。
+    source: external_search
+    tags: [web_search, web_fetch, chinese, official_docs, i18n]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          我想用中文学习 React useEffect 的 cleanup 函数。
+          请用 web_search 找 React 官方文档和一条中文解释材料,再 fetch 官方文档。
+          用中文回答:cleanup 什么时候执行、常见用途是什么、哪里容易误解。
+    expect:
+      non_empty_response: true
+      response_should_reference: [React, cleanup, useEffect]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["只看中文博客即可"]
+    severity: high
+
+  - id: ws-golden-pytest-fixture-canonical
+    <<: *defaults
+    title: "去重意识: pytest fixture 官方页"
+    description: >
+      搜索结果常带 tracking 参数或 fragment,回答应把同一页面视为同一来源。
+    source: external_search
+    tags: [web_search, web_fetch, canonical_url, dedup]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          请查 pytest fixture scope 的官方说明。用 web_search 找 docs.pytest.org,
+          再 web_fetch 官方 fixtures 页面。回答时只给规范化后的官方页面 URL,
+          不要把带 utm 参数或 fragment 的同一页面当成多个来源。
+    expect:
+      non_empty_response: true
+      response_should_reference: [pytest, fixture, scope]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["utm_source"]
+    severity: medium
+
+  - id: ws-golden-django-upgrade-long-page
+    <<: *defaults
+    title: "长页预算: Django upgrade guide"
+    description: >
+      长文档不能一次性塞满上下文,应抓取重点段或说明后续 offset/续读策略。
+    source: official_docs
+    tags: [web_fetch, long_page, context_budget]
+    tool_chain: [web_fetch]
+    turns:
+      - role: user
+        message: >
+          请直接用 web_fetch 读取 Django 官方升级指南:
+          https://docs.djangoproject.com/en/stable/howto/upgrade-version/
+          先只总结升级前检查和升级流程的前半部分。如果内容被截断,
+          请说明需要 continuation/offset 续读,不要假装读完全文。
+    expect:
+      non_empty_response: true
+      response_should_reference: [Django, upgrade]
+      must_call_tools: [web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["我已经完整读完所有版本迁移细节"]
+    severity: medium
+
+  - id: ws-golden-fetch-failure-fallback
+    <<: *defaults
+    title: "抓取失败降级: 动态页面或不可读页面"
+    description: >
+      当页面不可读时,Agent 应说明失败并换来源,不能基于空正文编造。
+    source: external_search
+    tags: [web_search, web_fetch, failure_recovery, fallback]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          请找一个现代前端框架官方文档页面作为资料来源。先 web_search,
+          然后 web_fetch 你选中的页面。如果抓取结果为空、太短或明显是客户端渲染残片,
+          请明确说明该来源不可读,并换另一个可读来源再回答。不要基于空内容编造。
+    expect:
+      non_empty_response: true
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["虽然没有抓到内容,但我猜"]
+    severity: high
+
+  - id: ws-golden-typescript-topk-official
+    <<: *defaults
+    title: "Top-K 控噪: TypeScript moduleResolution"
+    description: >
+      搜索结果应少而准,优先 TypeScript 官方 handbook/tsconfig,压低聚合教程站。
+    source: external_search
+    tags: [web_search, web_fetch, top_k, official_docs, aggregator_demote]
+    tool_chain: [web_search, web_fetch]
+    turns:
+      - role: user
+        message: >
+          请查 TypeScript tsconfig 里的 moduleResolution。
+          用 web_search 限制 top_k=3,优先官方文档来源,再 web_fetch 最相关官方页面。
+          回答解释 moduleResolution 的作用,并说明为什么不应该把 W3Schools
+          或泛教程站作为主来源。
+    expect:
+      non_empty_response: true
+      response_should_reference: [TypeScript, moduleResolution]
+      must_call_tools: [web_search, web_fetch]
+    forbid:
+      empty_response: true
+      contains: ["W3Schools 是主来源"]
+    severity: high

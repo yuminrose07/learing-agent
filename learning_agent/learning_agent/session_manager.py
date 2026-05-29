@@ -524,53 +524,6 @@ class SessionManager:
             return True
         return False
 
-    def switch_session_mode(
-        self,
-        session_id: str,
-        mode: AgentMode,
-    ) -> LearningSession:
-        """切换会话模式。"""
-        session = self._sessions.get(session_id)
-        if session is None:
-            raise ValueError(f"Session {session_id} not found")
-
-        from_mode = session.mode
-        if from_mode == mode:
-            return session
-
-        session.mode = mode
-        session.mode_metadata["last_mode_switch"] = {
-            "from": from_mode.value,
-            "to": mode.value,
-        }
-        session.last_accessed_at = datetime.now(timezone.utc)
-        state = self._session_memory_states.get(session_id)
-        if state is not None:
-            state.mode = session.mode.value
-            state.updated_at = datetime.now(timezone.utc).timestamp()
-            self._persist_session_memory_state(session_id)
-        logger.info(
-            "[SessionManager] Switched session %s mode: %s -> %s",
-            session_id,
-            from_mode.value,
-            mode.value,
-        )
-        self._append_session_event(
-            session_id,
-            SessionEventType.SESSION_MODE_CHANGED,
-            {
-                "from": from_mode.value,
-                "to": mode.value,
-                "mode_metadata": dict(session.mode_metadata),
-            },
-            visibility="system",
-        )
-        self._emit_event(
-            "session.scalarChanged",
-            {"session_id": session_id, "path": "mode", "value": mode.value},
-        )
-        return session
-
     def apply_full_compact_result(self, session_id: str, result: FullCompactResult) -> bool:
         session = self._sessions.get(session_id)
         if not session:

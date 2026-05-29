@@ -21,7 +21,7 @@ def __getattr__(name: str):
         "LearningAgentSystem": "learning_agent.learning_agent.main",
         "SessionManager": "learning_agent.learning_agent.session_manager",
         "create_builtin_extensions": "learning_agent.learning_agent.extensions",
-        "interactive_cli": "learning_agent.learning_agent.main",
+        "interactive_cli": "learning_agent.learning_agent.cli",
     }
     module_name = module_map.get(name)
     if module_name is None:

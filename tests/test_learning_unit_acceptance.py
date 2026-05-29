@@ -115,10 +115,10 @@ def _simulate_first_value(
     session: LearningSession,
     unit: LearningUnit,
 ) -> None:
-    """模拟 absorbing 阶段一次成功的 CHAT 回答（不真走 SSE）。"""
-    profile = build_turn_profile(AgentMode.CHAT)
+    """模拟 absorbing 阶段一次成功的 STUDY 回答（不真走 SSE）。"""
+    profile = build_turn_profile(AgentMode.STUDY)
     prepared = PreparedSessionTurn(
-        effective_mode=AgentMode.CHAT,
+        effective_mode=AgentMode.STUDY,
         runtime_input="测试用户输入",
         profile=profile,
         stream_metadata={

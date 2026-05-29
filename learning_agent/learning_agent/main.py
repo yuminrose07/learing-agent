@@ -1,16 +1,15 @@
 """
 Learning-Agent 主入口。
 
-本文件同时承载两类代码：
-- Product/Application 层的 `LearningAgentSystem`，负责系统装配与产品级编排
-- Interface 层的 CLI 入口，负责命令解析与终端交互适配
+承载 Product/Application 层的 ``LearningAgentSystem``，负责系统装配与产品级编排。
+Interface 层的交互式 CLI 已下沉到 ``cli.py``；本文件末尾仅保留 ``__main__``
+启动器，按 ``--web`` 在 web server 与 ``cli.interactive_cli`` 之间路由。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -49,10 +48,32 @@ from learning_agent.ai.openai_provider import OpenAIProvider
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
     COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
-    should_run_alignment,
+    apply_alignment_decision,
+    build_absorbing_opening_addendum,
+)
+from learning_agent.learning_agent.alignment_classifier import AlignmentClassifier
+from learning_agent.learning_agent.answer_quality import (
+    PARTIAL_AFTER_ERROR_MAX_LEN as _PARTIAL_AFTER_ERROR_MAX_LEN,
+    SAFE_FALLBACK_ANSWER as _SAFE_FALLBACK_ANSWER,
+    build_rescue_answer,
+    classify_incomplete_answer as _classify_incomplete_answer,
+    final_answer_verdict as _final_answer_verdict,
 )
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
+from learning_agent.learning_agent.companion_policy import (
+    CompanionIntent,
+    CompanionTurnPlan,
+    classify_companion_intent,
+    prepare_companion_turn,
+)
+from learning_agent.learning_agent.companion_intent_classifier import (
+    CompanionIntentClassifier,
+)
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
+from learning_agent.learning_agent.forge_policy import (
+    maybe_advance_forge_stage,
+    prepare_forge_stage_metadata,
+)
 from learning_agent.learning_agent.learning_unit_store import (
     ActiveUnitExistsError,
     LearningUnitStore,
@@ -63,7 +84,12 @@ from learning_agent.learning_agent.learning_unit_metrics import (
 )
 from learning_agent.learning_agent.teach_generator import TeachQuestionGenerator
 from learning_agent.learning_agent.teach_judge import TeachJudge
+from learning_agent.learning_agent.teach_flow import (
+    TeachFlow,
+    finalize_consolidation as _finalize_consolidation_impl,
+)
 from learning_agent.learning_agent.mode_service import (
+    AlignmentPopupPayload,
     PreparedSessionTurn,
     TurnExecutionProfile,
     build_turn_profile,
@@ -76,93 +102,9 @@ from learning_agent.learning_agent.session_manager import SessionManager
 logger = logging.getLogger(__name__)
 
 
-_ABSORBING_OPENING_TEMPLATE = """\
-本轮是这个学习卷的首轮回答。请严格按以下结构输出，先教再建议：
-
-1. 工作目标卡片（一句话）
-   开头复述："我先按这个目标带你学：<对学习目标的简短复述>"
-   学习目标原文：{objective}
-
-2. 学习地图（3-5 个 bullet）
-   列出本卷会涵盖的模块 / 概念 / 学习顺序。
-
-3. 第一段实质讲解
-   从地图的第一项切口开始，直接给一段有内容的解释——不要只是大纲。
-{suggestion_block}\
-不要先反问、不要先要求确认。"""
-
-_ABSORBING_OPENING_SUGGESTION_BLOCK = """
-4. 收窄建议（仅本轮）
-   在最末尾附一句："如果你想更聚焦，我可以帮你收窄成 <更具体的方向>"。
-"""
-
-
 class SessionNotFoundError(LookupError):
     """指定 session_id 不存在。与其他业务 ValueError 区分，避免
     web 层一刀切误把"学习卷已 consolidated"映射成"session 不存在"。"""
-
-
-# Final Answer Guarantee 的最终静态兜底文本。仅在 rescue LLM 也失败时使用，
-# 不可包含任何"错误 / 重试 / 失败"字样。保持中性，让用户可以继续对话。
-_SAFE_FALLBACK_ANSWER = (
-    "我这边暂时没有抓到你需要的具体信息——能再告诉我一些上下文吗？"
-    "比如你想了解的方向、目标场景，或者你已经看过的资料，我会基于这些继续帮你梳理。"
-)
-
-
-# 视为"承诺下文却没有下文"的悬挂结尾标点。正常答案极少以这些字符收尾。
-_DANGLING_TAILS = ("：", ":", "，", ",", "、", "；", ";", "…", "—", "－", "-")
-# 残句判定的长度上限：超过则认为是正常长答案，不因结尾标点误判。
-_INCOMPLETE_MAX_LEN = 48
-# 流错误后"部分片段"判定的长度上限：短于此且本轮发生过系统级流错误，视为被截断。
-_PARTIAL_AFTER_ERROR_MAX_LEN = 120
-
-
-def _classify_incomplete_answer(visible_text: str) -> Optional[str]:
-    """对已流式输出的可见答案做"是否是可用答案"判定。
-
-    返回非 None 的 reason_code 表示判定为"对用户不可用"、需要 rescue 收口；
-    返回 None 表示是可用答案。
-
-    保守策略：只命中高置信信号，避免误伤正常答案。
-    - 空：完全没有可见内容。
-    - 残句：很短且以悬挂标点（冒号/逗号/顿号/破折号等）收尾，例如
-      "让我尝试其他来源："——模型承诺下文却以无工具调用的纯文本收场，
-      ReAct 循环把它当成最终答案提前终止。
-    """
-    stripped = visible_text.strip()
-    if not stripped:
-        return "empty_stream"
-    if len(stripped) <= _INCOMPLETE_MAX_LEN and stripped[-1] in _DANGLING_TAILS:
-        return "incomplete_answer"
-    return None
-
-
-def _final_answer_verdict(
-    *,
-    visible_text: str,
-    stream_error_reason: Optional[str],
-    inner_reason: Optional[str],
-) -> Optional[str]:
-    """综合判定本轮是否需要 rescue 收口，返回 reason_code 或 None（可用答案）。
-
-    判定顺序（保守优先）：
-    1. 完全无可见输出（含被抑制的系统错误 chunk / inner 异常）→ 必然 rescue。
-    2. 有可见输出但是残句/截断 → rescue。
-    3. 有可见输出、本轮发生过系统级流错误、且可见内容很短（疑似被截断的片段）→ rescue。
-    4. 其余视为可用答案，不 rescue。
-
-    第 3 条带长度上限，避免把"完整长答案 + 末尾一次延迟流错误"误判成需要兜底。
-    """
-    stripped = visible_text.strip()
-    if not stripped:
-        return stream_error_reason or inner_reason or "empty_stream"
-    incomplete = _classify_incomplete_answer(stripped)
-    if incomplete:
-        return incomplete
-    if stream_error_reason is not None and len(stripped) <= _PARTIAL_AFTER_ERROR_MAX_LEN:
-        return stream_error_reason
-    return None
 
 
 class LearningAgentSystem:
@@ -283,6 +225,14 @@ class LearningAgentSystem:
         self.teach_judge = TeachJudge(
             provider=self.provider,
             model_name=self.config.teach_judge_model,
+        )
+        self.companion_intent_classifier = CompanionIntentClassifier(
+            provider=self.provider,
+            model_name=self.config.companion_intent_model,
+        )
+        self.alignment_classifier = AlignmentClassifier(
+            provider=self.provider,
+            model_name=self.config.alignment_classifier_model,
         )
         # 状态快照只用于观测，不再触发持久化层 snapshot/delta compaction
         self.event_bus.subscribe("agent.stateSnapshot", self._on_state_snapshot)
@@ -439,13 +389,6 @@ class LearningAgentSystem:
         """兼容入口。Session 主事实源实时写入 event log，不再保存 snapshot。"""
         return self.get_session(session_id) is not None
 
-    def update_session_mode(
-        self,
-        session_id: str,
-        mode: AgentMode,
-    ) -> LearningSession:
-        return self.session_manager.switch_session_mode(session_id, mode)
-
     async def save_state(self) -> None:
         await self._save_state()
 
@@ -567,9 +510,58 @@ class LearningAgentSystem:
             payload.update(extra)
         try:
             store.append_event(unit.session_id, event_type, payload=payload)
+            if event_type in {
+                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
+                SessionEventType.LEARNING_UNIT_STOPPED,
+            }:
+                self._emit_companion_recovery_suggestion(unit, source_event=event_type)
         except Exception:
             logger.exception(
                 f"[System] Failed to emit {event_type} for unit {unit.id}"
+            )
+
+    def _emit_companion_recovery_suggestion(
+        self,
+        unit: LearningUnit,
+        *,
+        source_event: str,
+    ) -> None:
+        store = getattr(self, "session_event_store", None)
+        if store is None:
+            return
+        try:
+            store.append_event(
+                unit.session_id,
+                SessionEventType.COMPANION_RECOVERY_SUGGESTED,
+                payload={
+                    "learning_unit_id": unit.id,
+                    "source_event": source_event,
+                    "suggested_style": "warm_girlfriend",
+                    "reason": "study_recovery",
+                },
+            )
+        except Exception:
+            logger.exception(
+                "[System] Failed to emit companion recovery suggestion for unit %s",
+                unit.id,
+            )
+
+    def _emit_companion_event(
+        self,
+        session: LearningSession,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        store = getattr(self, "session_event_store", None)
+        if store is None:
+            return
+        try:
+            store.append_event(session.id, event_type, payload=payload)
+        except Exception:
+            logger.exception(
+                "[System] Failed to emit %s for session %s",
+                event_type,
+                session.id,
             )
 
     def create_learning_unit(
@@ -579,6 +571,7 @@ class LearningAgentSystem:
         source: str = "ai_distilled",
         source_ref: Optional[str] = None,
         title: Optional[str] = None,
+        mode_metadata: Optional[dict[str, Any]] = None,
     ) -> tuple[LearningSession, LearningUnit]:
         """创建一个新的学习卷及其专属会话。
 
@@ -586,6 +579,9 @@ class LearningAgentSystem:
         由路由层翻译成 409。
         """
         session = self.session_manager.create_session(title=title or seed_text[:48])
+        if mode_metadata:
+            session.mode_metadata.update(mode_metadata)
+            self.session_manager.persist_mode_metadata(session.id)
         try:
             unit = self.learning_unit_store.create(
                 session_id=session.id,
@@ -792,54 +788,12 @@ class LearningAgentSystem:
         )
 
     def _finalize_consolidation(self, unit: LearningUnit) -> None:
-        """从已答题的 TeachSession 聚合 mastered/gaps 反馈卡，并落进 consolidated。
+        """委托给 teach_flow.finalize_consolidation（纯函数）。
 
-        - 若 ``unit.teach_session`` 不存在或全空：mastered/gaps 都为空，
-          ``next_topic_suggestion`` 走兜底文案。
-        - 已经判过的题：``verdict="passed"`` → 概念 name 进 mastered；
-          其余进 gaps。
-        - 调用方负责后续 ``transition_to("consolidated")`` 与 save。
+        保留方法名是为了 advance_learning_unit 内部仍通过 self.xxx 调用，
+        同时让 test_learning_unit_acceptance 等测试通过同样的入口生效。
         """
-        concept_name_by_id = {c.id: c.name for c in unit.concept_list}
-        mastered: list[str] = []
-        gaps: list[str] = []
-        seen: set[str] = set()
-        if unit.teach_session is not None:
-            for q in unit.teach_session.questions:
-                name = concept_name_by_id.get(q.concept_id, "").strip()
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                if q.verdict == "passed":
-                    mastered.append(name)
-                elif q.verdict == "needs_review":
-                    gaps.append(name)
-                # 没判过的（None）忽略，避免误打掌握或空缺标签
-
-        if gaps:
-            next_suggestion = (
-                f"建议下一卷优先补强：{gaps[0]}。"
-            )
-        elif mastered:
-            next_suggestion = "本卷掌握度良好，可以挑选相邻方向继续深入。"
-        else:
-            next_suggestion = "本卷未进入评估环节；下次可在 absorbing 中多沉淀几个概念再讲讲看。"
-
-        unit.feedback_card = TeachFeedbackCard(
-            mastered=mastered,
-            gaps=gaps,
-            next_topic_suggestion=next_suggestion,
-        )
-        # MVP 取舍：verification_status 仅区分"完成评估" vs "跳过评估"两态，
-        # 是否全过由 feedback_card.gaps 表达。已为 skipped 的不覆盖。
-        if unit.verification_status != "skipped":
-            unit.verification_status = "passed"
-        if unit.teach_session is not None:
-            unit.teach_session.state = (
-                "needs_review" if gaps else "passed"
-            )
-            unit.teach_session.aggregate_passed = not gaps
-            unit.teach_session.completed_at = datetime.now(timezone.utc)
+        _finalize_consolidation_impl(unit)
 
     async def request_alignment(self, unit_id: str) -> LearningUnit:
         """用户主动点"帮我收窄"：把卷拉成 (active + user_request)，下一轮走 ASK。
@@ -1036,8 +990,8 @@ class LearningAgentSystem:
 
         - consolidated → 拒绝继续对话（只读）
         - outputting → TEACH (single_pass)
-        - absorbing → 默认 CHAT；若策略判 active 且未澄清过则覆写为 ASK；
-          策略判 suggested 时保留 CHAT 但通过 ``alignment_state`` 让 UI 出建议条。
+        - absorbing → 默认 STUDY；若策略判 active 且未澄清过则覆写为 ASK；
+          策略判 suggested 时保留 STUDY 但通过 ``alignment_state`` 让 UI 出建议条。
 
         adaptive alignment §9.1 / §9.3：限流由 3 道护栏分摊：
         - #1 启动期阻塞澄清不超过 1 次（``clarification_count``，本函数内 override）
@@ -1064,31 +1018,43 @@ class LearningAgentSystem:
                 and not unit.alignment_reason
                 and unit.clarification_count == 0
             )
-            if user_initiated_alignment:
-                decision = AlignmentDecision(
-                    mode="active",
-                    reason="user_request",
-                    assumption_note=unit.assumption_note or "用户主动请求对齐。",
-                )
-            elif legacy_pending_alignment:
-                decision = AlignmentDecision(
-                    mode="active",
-                    reason="missing_learnable_target",
-                    assumption_note=unit.assumption_note
-                    or "旧学习卷需要先确认学习目标。",
-                )
+
+            # §9.3 第 1 条护栏 + 短路优化：已澄清过一次的 unit 不再调 LLM
+            if (
+                not user_initiated_alignment
+                and not legacy_pending_alignment
+                and unit.clarification_count >= 1
+            ):
+                decision = AlignmentDecision(mode="none", reason="clear_enough")
             else:
-                decision = should_run_alignment(unit, user_input)
-                # §9.3 第 1 条护栏：启动期阻塞澄清不超过 1 次
-                if decision.mode == "active" and unit.clarification_count >= 1:
+                decision = await self.alignment_classifier.classify(
+                    unit,
+                    user_input,
+                    recent_messages=list(session.entries[-6:]),
+                )
+                # 用户/旧卷已经显式标记需要对齐 → 即使分类器返回 none 也强制为 active，
+                # 把分类器拿到的 candidates（可能为空）透传给前端 modal。
+                if user_initiated_alignment and decision.mode == "none":
                     decision = AlignmentDecision(
-                        mode="none",
-                        reason="clear_enough",
+                        mode="active",
+                        reason="user_request",
+                        assumption_note=unit.assumption_note or "用户主动请求对齐。",
+                        candidates=decision.candidates,
+                        divergence_cost=decision.divergence_cost,
                     )
+                elif legacy_pending_alignment and decision.mode == "none":
+                    decision = AlignmentDecision(
+                        mode="active",
+                        reason="missing_learnable_target",
+                        assumption_note=unit.assumption_note
+                        or "旧学习卷需要先确认学习目标。",
+                        candidates=decision.candidates,
+                        divergence_cost=decision.divergence_cost,
+                    )
+
             await self._apply_alignment_decision(unit, decision)
-            effective_mode = (
-                AgentMode.ASK if decision.mode == "active" else AgentMode.CHAT
-            )
+            # active 不再切 ASK——下游通过 PreparedSessionTurn.alignment_popup 短路弹 modal
+            effective_mode = AgentMode.STUDY
         else:
             decision = None
             effective_mode = AgentMode.TEACH
@@ -1099,15 +1065,43 @@ class LearningAgentSystem:
             "learning_unit_phase": unit.phase,
             "alignment_state": unit.alignment_state,
             "objective_status": unit.objective_status,
+            "forge_stage": unit.forge_stage,
+            "temperature_state": unit.temperature_state,
         }
+        alignment_popup: AlignmentPopupPayload | None = None
         if decision is not None and decision.mode != "none":
             unit_metadata["alignment_reason"] = decision.reason
             if decision.assumption_note:
                 unit_metadata["assumption_note"] = decision.assumption_note
             if decision.suggested_objective:
                 unit_metadata["suggested_objective"] = decision.suggested_objective
-        if effective_mode == AgentMode.ASK:
+            if decision.candidates:
+                unit_metadata["candidates"] = [
+                    c.model_dump() for c in decision.candidates
+                ]
+            if decision.divergence_cost:
+                unit_metadata["divergence_cost"] = decision.divergence_cost
+        if decision is not None and decision.mode == "active":
             unit_metadata["alignment"] = True
+            placeholder_text = (
+                "我想先和你对齐一下方向——下面是我读到的几种可能解读，"
+                "你挑一个想先学的方向，我就按那个开讲。"
+                if decision.candidates
+                else (
+                    "你想往哪个方向走？把目标说得更具体一点，"
+                    "我就能开始讲了。"
+                )
+            )
+            alignment_popup = AlignmentPopupPayload(
+                candidates=[c.model_dump() for c in decision.candidates],
+                divergence_cost=decision.divergence_cost,
+                assumption_note=decision.assumption_note,
+                placeholder_text=placeholder_text,
+                reason=decision.reason,
+            )
+        if effective_mode == AgentMode.STUDY and unit.phase == "absorbing":
+            forge_plan = prepare_forge_stage_metadata(unit, user_input)
+            unit_metadata["learning_action"] = forge_plan.learning_action
         if effective_mode == AgentMode.TEACH and unit.teach_session is not None:
             unit_metadata["teach_session_id"] = unit.teach_session.id
             unit_metadata["teach_state"] = unit.teach_session.state
@@ -1127,7 +1121,7 @@ class LearningAgentSystem:
             session,
             user_input,
             profile,
-            allow_full_compact=(effective_mode == AgentMode.CHAT),
+            allow_full_compact=(effective_mode == AgentMode.STUDY),
         )
         return session, PreparedSessionTurn(
             effective_mode=effective_mode,
@@ -1135,6 +1129,7 @@ class LearningAgentSystem:
             profile=profile,
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
+            alignment_popup=alignment_popup,
         )
 
     def _build_absorbing_opening_addendum(
@@ -1144,23 +1139,8 @@ class LearningAgentSystem:
         decision: Optional[AlignmentDecision],
         effective_mode: AgentMode,
     ) -> Optional[str]:
-        """absorbing 首轮的 system prompt 增量（adaptive alignment §6.1 / §6.2）。
-
-        触发条件：absorbing + CHAT + 本卷此前没有过 assistant 回答。
-        B 档（suggested）追加"收窄建议"段；A 档不附加。C 档走 ASK 不进这里。
-        """
-        if effective_mode != AgentMode.CHAT or unit.phase != "absorbing":
-            return None
-        if any(e.role == MessageRole.ASSISTANT for e in session.entries):
-            return None
-        suggestion_block = (
-            _ABSORBING_OPENING_SUGGESTION_BLOCK
-            if decision is not None and decision.mode == "suggested"
-            else ""
-        )
-        return _ABSORBING_OPENING_TEMPLATE.format(
-            objective=unit.objective.text.strip() or "（待定）",
-            suggestion_block=suggestion_block,
+        return build_absorbing_opening_addendum(
+            session, unit, decision, effective_mode
         )
 
     async def _apply_alignment_decision(
@@ -1168,77 +1148,12 @@ class LearningAgentSystem:
         unit: LearningUnit,
         decision: AlignmentDecision,
     ) -> None:
-        """把策略结果写回 unit；同时维护 §9.3 #2/#3 的持久化计数器。
-
-        ``alignment_state`` 映射：``none → idle`` / ``suggested → suggested`` /
-        ``active → active``。``user_request`` 是一次性消费：本轮以 active 表达，
-        但 apply 时立刻转入 ``resolved``，不参与 §9.3 #1 限流计数。
-
-        计数器：
-        - ``active`` 且非 ``user_request``：``clarification_count += 1`` (§9.3 #1)
-        - ``suggested``：``suggestion_count += 1`` (§9.3 #2)
-        - 每次进入此方法（一次 absorbing turn 入口）：``nag_cooldown_remaining``
-          若大于 0 则减 1 (§9.3 #3)。冷静期与策略判断结果无关，是绝对回合数。
-        """
-        state_map = {"none": "idle", "suggested": "suggested", "active": "active"}
-        new_state = state_map[decision.mode]
-        is_user_request = decision.reason == "user_request"
-        if is_user_request:
-            # 用户主动触发的对齐本轮即被消费，下一轮回归 heuristic
-            new_state = "resolved"
-        will_bump_clarification = decision.mode == "active" and not is_user_request
-        will_bump_suggestion = decision.mode == "suggested"
-
-        async with self.learning_unit_store.lock(unit.id):
-            latest = self.learning_unit_store.get(unit.id) or unit
-            latest.alignment_state = new_state
-            latest.alignment_reason = decision.reason
-            latest.assumption_note = decision.assumption_note
-            if will_bump_clarification:
-                latest.clarification_count += 1
-                latest.last_alignment_at = datetime.now(timezone.utc)
-            if will_bump_suggestion:
-                latest.suggestion_count += 1
-                latest.last_alignment_at = datetime.now(timezone.utc)
-            if latest.nag_cooldown_remaining > 0:
-                latest.nag_cooldown_remaining -= 1
-            self.learning_unit_store.save(latest)
-            # caller 持有的 unit 与 store 缓存指向同一对象，确保元数据立刻可见
-            if latest is not unit:
-                unit.alignment_state = latest.alignment_state
-                unit.alignment_reason = latest.alignment_reason
-                unit.assumption_note = latest.assumption_note
-                unit.clarification_count = latest.clarification_count
-                unit.suggestion_count = latest.suggestion_count
-                unit.nag_cooldown_remaining = latest.nag_cooldown_remaining
-                unit.last_alignment_at = latest.last_alignment_at
-
-        # M1：把策略结果翻译成产品事件。idle 静默；user_request 在本轮被消费
-        # 为 resolved，发 RESOLVED；suggested 发 SUGGESTED；其余 active 发 STARTED。
-        if is_user_request:
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_ALIGNMENT_RESOLVED,
-                extra={"trigger": "user_request_consumed"},
-            )
-        elif decision.mode == "suggested":
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_ALIGNMENT_SUGGESTED,
-                extra={
-                    "suggested_objective": decision.suggested_objective or "",
-                    "suggestion_count": latest.suggestion_count,
-                },
-            )
-        elif decision.mode == "active":
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_ALIGNMENT_STARTED,
-                extra={
-                    "trigger": decision.reason or "policy",
-                    "clarification_count": latest.clarification_count,
-                },
-            )
+        await apply_alignment_decision(
+            store=self.learning_unit_store,
+            emit_unit_event=self._emit_unit_event,
+            unit=unit,
+            decision=decision,
+        )
 
     async def _prepare_session_turn(
         self,
@@ -1262,12 +1177,24 @@ class LearningAgentSystem:
         if requested_mode == AgentMode.ASK:
             requested_mode = AgentMode.CHAT
 
-        if session.mode != requested_mode:
-            session = self.update_session_mode(session.id, requested_mode)
+        intent_override = await self._maybe_classify_companion_intent(
+            user_input, requested_mode
+        )
+        companion_plan = prepare_companion_turn(
+            session=session,
+            user_input=user_input,
+            requested_mode=requested_mode,
+            intent_override=intent_override,
+        )
+        self._apply_companion_turn_plan(session, companion_plan)
 
         profile = build_turn_profile(
             requested_mode,
             persona_key=self._resolve_session_persona_key(session, requested_mode),
+            system_prompt_addendum=companion_plan.prompt_addendum,
+            override_tools=[] if companion_plan.disable_tools else None,
+            user_message_metadata=companion_plan.message_metadata,
+            assistant_message_metadata=companion_plan.message_metadata,
         )
         compaction_plan = await self._build_compaction_plan(
             session,
@@ -1282,6 +1209,83 @@ class LearningAgentSystem:
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
         )
+
+    def _apply_companion_turn_plan(
+        self,
+        session: LearningSession,
+        plan: CompanionTurnPlan,
+    ) -> None:
+        changed: dict[str, Any] = {}
+        for key, value in plan.metadata_updates.items():
+            if value is None:
+                if key in session.mode_metadata:
+                    session.mode_metadata.pop(key, None)
+                    changed[key] = None
+            elif session.mode_metadata.get(key) != value:
+                session.mode_metadata[key] = value
+                changed[key] = value
+
+        if changed:
+            manager = getattr(self, "session_manager", None)
+            persist = getattr(manager, "persist_mode_metadata", None)
+            if callable(persist):
+                try:
+                    persist(session.id)
+                except Exception:
+                    logger.exception(
+                        "[System] Failed to persist companion metadata for %s",
+                        session.id,
+                    )
+
+        if plan.profile_changed or changed.get("chat_profile") is not None:
+            self._emit_companion_event(
+                session,
+                SessionEventType.COMPANION_PROFILE_CHANGED,
+                {
+                    "enabled": plan.enabled,
+                    "style": plan.style.value,
+                    "intent": plan.intent.value,
+                    "advice_level": plan.advice_level.value,
+                    "metadata_changed": changed,
+                },
+            )
+        if plan.signal_detected:
+            self._emit_companion_event(
+                session,
+                SessionEventType.COMPANION_SIGNAL_DETECTED,
+                {
+                    "enabled": plan.enabled,
+                    "style": plan.style.value,
+                    "intent": plan.intent.value,
+                    "advice_level": plan.advice_level.value,
+                    "profile_changed": plan.profile_changed,
+                    "source": plan.message_metadata.get(
+                        "companion_intent_source", "keyword"
+                    ),
+                },
+            )
+
+    async def _maybe_classify_companion_intent(
+        self,
+        user_input: str,
+        requested_mode: AgentMode,
+    ) -> CompanionIntent | None:
+        """关键字未命中时调一次 LLM 做语义级 intent 兜底。
+
+        只在 mode==CHAT、关键字结果是 NONE、且 input 长度 >= 6 字符时调用。
+        任意失败均返回 None，让 ``prepare_companion_turn`` 走关键字结果。
+        """
+        if requested_mode != AgentMode.CHAT:
+            return None
+        stripped = user_input.strip()
+        if len(stripped) < 6:
+            return None
+        if classify_companion_intent(stripped.lower()) != CompanionIntent.NONE:
+            return None
+        classifier = getattr(self, "companion_intent_classifier", None)
+        if classifier is None:
+            return None
+        return await classifier.classify(stripped)
 
     async def _build_compaction_plan(
         self,
@@ -1335,7 +1339,7 @@ class LearningAgentSystem:
         unit_id = session.learning_unit_id
         if not unit_id:
             return
-        if prepared_turn.effective_mode != AgentMode.CHAT:
+        if prepared_turn.effective_mode != AgentMode.STUDY:
             return
         unit = self.learning_unit_store.get(unit_id)
         if unit is None or unit.phase != "absorbing":
@@ -1364,7 +1368,7 @@ class LearningAgentSystem:
         守卫顺序（任一失败则跳过）：
         - 响应非空
         - 会话挂着 learning_unit
-        - 本轮 effective_mode 是 CHAT（teach/ask 不算"学习价值"）
+        - 本轮 effective_mode 是 STUDY（teach/ask 不算"学习价值"）
         - 卷处于 absorbing
         - 卷的 ``first_value_delivered_at`` 仍为 None（once-only）
         """
@@ -1373,7 +1377,7 @@ class LearningAgentSystem:
         unit_id = session.learning_unit_id
         if not unit_id:
             return
-        if prepared_turn.effective_mode != AgentMode.CHAT:
+        if prepared_turn.effective_mode != AgentMode.STUDY:
             return
         unit = self.learning_unit_store.get(unit_id)
         if unit is None:
@@ -1399,227 +1403,47 @@ class LearningAgentSystem:
             },
         )
 
+    def _maybe_advance_forge_stage(
+        self,
+        session: LearningSession,
+        prepared_turn: PreparedSessionTurn,
+        response_text: str,
+    ) -> None:
+        """委托给 forge_policy.maybe_advance_forge_stage，注入 store 与事件回调。
+
+        保留方法名是为了让 test_learning_unit_events 等测试可继续 monkeypatch / 直接调用。
+        """
+        maybe_advance_forge_stage(
+            store=self.learning_unit_store,
+            emit_unit_event=self._emit_unit_event,
+            session=session,
+            prepared_turn=prepared_turn,
+            response_text=response_text,
+        )
+
     async def _stream_teach_answer_flow(
         self,
         session: LearningSession,
         unit: LearningUnit,
         user_input: str,
     ) -> AsyncGenerator[ChatChunk, None]:
-        """outputting 阶段：user_input = 当前题答案，judge + 渲染下一题或反馈卡。
+        """委托给 TeachFlow.stream_teach_answer_flow。
 
-        与 ``stream_session_chat`` 默认 agent_loop 路径不同，此函数：
-        - 不走 provider.chat / agent_loop，节省一次主模型调用；
-        - 手动把 user/assistant 两条消息写进 session.entries（与 runtime 行为对齐）；
-        - 单次产出一条 ChatChunk（不流式），content 即"verdict + 下一步"。
-
-        所有写盘动作在持锁后完成；judge 失败会被 TeachJudge 内吞掉，外层
-        看到的就是 verdict=needs_review。
+        现场构造 TeachFlow（构造代价仅 4 个字段赋值），让测试通过
+        ``system.teach_judge=...`` / ``system.session_manager=...`` 等
+        monkeypatch 的最新依赖能够立即被读取，避免协作者持有过期引用。
         """
-        ts = unit.teach_session
-        if ts is None or not ts.questions:
-            # 异常：outputting 状态但没有题目。返回一段诊断 chunk，并直接收束。
-            self._finalize_consolidation(unit)
-            unit.transition_to("consolidated")
-            self.learning_unit_store.save(unit)
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
-                extra={"from": "outputting", "to": "consolidated", "reason": "no_questions"},
-            )
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
-                extra={
-                    "verification_status": unit.verification_status,
-                    "mastered_count": 0,
-                    "gaps_count": 0,
-                    "reason": "no_questions",
-                },
-            )
-            text = "本卷未能生成可评估题目，已自动收束。"
-            self._record_teach_turn(session, unit, user_input, text)
-            yield ChatChunk(
-                content=text,
-                metadata=self._teach_metadata(unit, verdict=None),
-            )
-            return
-
-        idx = ts.current_index
-        if idx >= len(ts.questions):
-            # 已经答完，但 phase 还没切（极少出现的状态）。直接收束。
-            self._finalize_consolidation(unit)
-            unit.transition_to("consolidated")
-            self.learning_unit_store.save(unit)
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
-                extra={"from": "outputting", "to": "consolidated", "reason": "already_answered"},
-            )
-            self._emit_unit_event(
-                unit,
-                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
-                extra={
-                    "verification_status": unit.verification_status,
-                    "mastered_count": (
-                        len(unit.feedback_card.mastered)
-                        if unit.feedback_card else 0
-                    ),
-                    "gaps_count": (
-                        len(unit.feedback_card.gaps)
-                        if unit.feedback_card else 0
-                    ),
-                },
-            )
-            text = self._render_feedback_card(unit)
-            self._record_teach_turn(session, unit, user_input, text)
-            yield ChatChunk(
-                content=text,
-                metadata=self._teach_metadata(unit, verdict=None),
-            )
-            return
-
-        question = ts.questions[idx]
-
-        if self.teach_judge is None:
-            verdict, judge_reason = "needs_review", "评判服务暂不可用。"
-        else:
-            verdict, judge_reason = await self.teach_judge.judge(
-                question=question,
-                user_answer=user_input,
-            )
-
-        async with self.learning_unit_store.lock(unit.id):
-            latest = self.learning_unit_store.get(unit.id) or unit
-            latest_ts = latest.teach_session
-            if latest_ts is None or latest_ts.current_index != idx:
-                # 并发修改：让最新状态赢，本次答题作废。
-                logger.warning(
-                    "[System] teach_session state shifted under concurrent "
-                    f"writers for unit {unit.id}; dropping this answer"
-                )
-                text = "状态已变更，请刷新后重试。"
-                yield ChatChunk(
-                    content=text,
-                    metadata=self._teach_metadata(latest, verdict=None),
-                )
-                return
-            q = latest_ts.questions[idx]
-            q.user_answer = user_input
-            q.verdict = verdict
-            q.judge_reason = judge_reason
-            latest_ts.current_index = idx + 1
-            done = latest_ts.current_index >= len(latest_ts.questions)
-            if done:
-                self._finalize_consolidation(latest)
-                latest.transition_to("consolidated")
-            else:
-                latest_ts.state = "prompted"
-            self.learning_unit_store.save(latest)
-
-        if done:
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_PHASE_CHANGED,
-                extra={"from": "outputting", "to": "consolidated"},
-            )
-            self._emit_unit_event(
-                latest,
-                SessionEventType.LEARNING_UNIT_CONSOLIDATED,
-                extra={
-                    "verification_status": latest.verification_status,
-                    "mastered_count": (
-                        len(latest.feedback_card.mastered)
-                        if latest.feedback_card else 0
-                    ),
-                    "gaps_count": (
-                        len(latest.feedback_card.gaps)
-                        if latest.feedback_card else 0
-                    ),
-                },
-            )
-
-        # 渲染响应文本
-        verdict_glyph = "✓" if verdict == "passed" else "✗"
-        head = f"{verdict_glyph} {judge_reason}".strip()
-        if done:
-            body = self._render_feedback_card(latest)
-            text = f"{head}\n\n{body}"
-        else:
-            next_q = latest_ts.questions[latest_ts.current_index]
-            text = (
-                f"{head}\n\n"
-                f"下一题（{latest_ts.current_index + 1}/{len(latest_ts.questions)}）：{next_q.stem}"
-            )
-
-        self._record_teach_turn(session, latest, user_input, text)
-        yield ChatChunk(
-            content=text,
-            metadata=self._teach_metadata(latest, verdict=verdict),
+        flow = TeachFlow(
+            learning_unit_store=self.learning_unit_store,
+            session_manager=self.session_manager,
+            teach_judge=self.teach_judge,
+            emit_unit_event=self._emit_unit_event,
         )
+        async for chunk in flow.stream_teach_answer_flow(
+            session, unit, user_input
+        ):
+            yield chunk
 
-    def _render_feedback_card(self, unit: LearningUnit) -> str:
-        """把 unit.feedback_card 渲染成一段纯文本，供 chat stream 直接返回。"""
-        card = unit.feedback_card
-        if card is None:
-            return "本卷已收束。"
-        lines = ["**本卷已完成评估。**"]
-        if card.mastered:
-            lines.append("✓ 掌握：" + "、".join(card.mastered))
-        if card.gaps:
-            lines.append("⚠️ 待补强：" + "、".join(card.gaps))
-        if card.next_topic_suggestion:
-            lines.append("→ " + card.next_topic_suggestion)
-        return "\n".join(lines)
-
-    def _teach_metadata(
-        self,
-        unit: LearningUnit,
-        *,
-        verdict: Optional[str],
-    ) -> dict[str, Any]:
-        meta: dict[str, Any] = {
-            "mode": AgentMode.TEACH.value,
-            "learning_unit_id": unit.id,
-            "learning_unit_phase": unit.phase,
-        }
-        if unit.teach_session is not None:
-            meta["teach_session_id"] = unit.teach_session.id
-            meta["teach_state"] = unit.teach_session.state
-            meta["question_index"] = unit.teach_session.current_index
-            meta["question_total"] = len(unit.teach_session.questions)
-        if verdict is not None:
-            meta["verdict"] = verdict
-        if unit.feedback_card is not None:
-            meta["feedback_card"] = unit.feedback_card.model_dump()
-        return meta
-
-    def _record_teach_turn(
-        self,
-        session: LearningSession,
-        unit: LearningUnit,
-        user_input: str,
-        assistant_text: str,
-    ) -> None:
-        """把 outputting 一轮的 user/assistant 消息写入 session.entries。"""
-        common_meta = {
-            "mode": AgentMode.TEACH.value,
-            "learning_unit_id": unit.id,
-            "learning_unit_phase": unit.phase,
-        }
-        if unit.teach_session is not None:
-            common_meta["teach_session_id"] = unit.teach_session.id
-        self.session_manager.append_message(
-            session.id,
-            MessageRole.USER,
-            user_input,
-            metadata=dict(common_meta),
-        )
-        self.session_manager.append_message(
-            session.id,
-            MessageRole.ASSISTANT,
-            assistant_text,
-            metadata=dict(common_meta),
-        )
 
     async def stream_session_chat(
         self,
@@ -1662,6 +1486,42 @@ class LearningAgentSystem:
                 prepared_session, prepared_turn = await self._prepare_session_turn(
                     session, user_input, mode
                 )
+
+                # active 对齐短路：不调 LLM，写一条占位 assistant 消息，
+                # 把 candidates / divergence_cost 透传给 SSE 让前端弹 modal
+                if prepared_turn.alignment_popup is not None:
+                    popup = prepared_turn.alignment_popup
+                    common_meta = dict(prepared_turn.profile.user_message_metadata)
+                    self.session_manager.append_message(
+                        prepared_session.id,
+                        MessageRole.USER,
+                        prepared_turn.runtime_input,
+                        metadata=common_meta,
+                    )
+                    assistant_meta = dict(
+                        prepared_turn.profile.assistant_message_metadata
+                    )
+                    self.session_manager.append_message(
+                        prepared_session.id,
+                        MessageRole.ASSISTANT,
+                        popup.placeholder_text,
+                        metadata=assistant_meta,
+                    )
+                    chunk_meta = dict(prepared_turn.stream_metadata)
+                    chunk_meta["alignment_popup"] = True
+                    chunk_meta["candidates"] = popup.candidates
+                    chunk_meta["divergence_cost"] = popup.divergence_cost
+                    chunk_meta["placeholder_text"] = popup.placeholder_text
+                    if popup.assumption_note:
+                        chunk_meta["assumption_note"] = popup.assumption_note
+                    if popup.reason:
+                        chunk_meta["alignment_reason"] = popup.reason
+                    yield ChatChunk(
+                        content=popup.placeholder_text,
+                        metadata=chunk_meta,
+                    )
+                    return
+
                 response_parts: list[str] = []
                 completed = False
 
@@ -1684,6 +1544,9 @@ class LearningAgentSystem:
                     try:
                         if completed:
                             self._maybe_emit_first_value(
+                                prepared_session, prepared_turn, "".join(response_parts)
+                            )
+                            self._maybe_advance_forge_stage(
                                 prepared_session, prepared_turn, "".join(response_parts)
                             )
                             self._maybe_fire_concept_extraction(
@@ -1806,44 +1669,14 @@ class LearningAgentSystem:
         reason: str,
         detail: str,
     ) -> tuple[str, str]:
-        """生成最终兜底回答。不允许把内部错误暴露给用户。
-
-        优先：让 provider 基于 user_input 直接给一个不依赖工具的中性回答。
-        次级：返回一段中性静态文本，仍保证 content 非空。
-        """
-        if self.provider is not None:
-            try:
-                prompt = (
-                    "You are answering a user in a personal learning assistant. "
-                    "Earlier internal tools or data lookups did not yield a usable answer, "
-                    "but the user must receive a helpful, self-contained reply. "
-                    "Do NOT mention any internal tools, errors, retries, or system state. "
-                    "Do NOT apologize for technical issues. "
-                    "If you genuinely need more information, ask one concise clarifying question. "
-                    "Otherwise, give a useful answer based on general knowledge. "
-                    "Match the user's language (Chinese or English) automatically.\n\n"
-                    f"User message:\n{user_input}"
-                )
-                chunk = await self.provider.chat(
-                    ChatParams(
-                        model=self.provider.default_model,
-                        messages=[
-                            ChatMessage(role=MessageRole.USER, content=prompt),
-                        ],
-                        temperature=0.4,
-                        stream=False,
-                        max_tokens=800,
-                    )
-                )
-                text = (chunk.content or "").strip()
-                if text:
-                    return text, "rescue_llm"
-            except Exception:
-                logger.exception(
-                    "[System] rescue LLM call failed for session %s (reason=%s)",
-                    session_id, reason,
-                )
-        return _SAFE_FALLBACK_ANSWER, "static_fallback"
+        """生成最终兜底回答。委托给 answer_quality.build_rescue_answer，注入 provider。"""
+        return await build_rescue_answer(
+            self.provider,
+            session_id=session_id,
+            user_input=user_input,
+            reason=reason,
+            detail=detail,
+        )
 
     async def collect_session_chat(
         self,
@@ -1872,170 +1705,6 @@ class LearningAgentSystem:
         )
         return session.id
 
-    async def chat(self, user_input: str, mode: AgentMode = AgentMode.CHAT) -> None:
-        """
-        执行一轮对话，流式输出到 stdout。
-        """
-        if not self._current_session:
-            await self.start_session()
-
-        session = self._current_session
-        if mode == AgentMode.ASK:
-            print(f"\n[You (Ask)] {user_input}\n")
-        else:
-            print(f"\n[You] {user_input}\n")
-        print("[Assistant] ", end="", flush=True)
-
-        try:
-            async for chunk in self.stream_session_chat(session.id, user_input, mode=mode):
-                print(chunk.content, end="", flush=True)
-            print()  # 换行
-        except Exception as e:
-            logger.exception(f"[System] Chat error: {e}")
-            print(f"\n[Error] {e}")
-
-    async def show_memory(self) -> None:
-        """展示当前记忆状态。"""
-        print("\n=== Memory Status ===")
-        print(f"L1 Working candidates: {len(self.memory_manager.get_l1_candidates())}")
-        print(f"L2 Long-term nodes: {len(self.memory_manager.get_l2_nodes())}")
-        print(f"L3 Archive nodes: {len(self.memory_manager.get_l3_nodes())}")
-        due = self.memory_manager.get_due_reviews()
-        print(f"Due reviews: {len(due)}")
-        for node in due[:5]:
-            print(f"  - [{node.mastery_level.value}] {node.content[:60]}...")
-        print("====================\n")
-
-    async def confirm_knowledge(self, node_id: str) -> None:
-        """手动确认 L1 候选知识晋升到 L2。"""
-        promoted = await self.confirm_knowledge_candidate(node_id, source="user")
-        if promoted:
-            print(f"Knowledge node {node_id} confirmed and promoted to L2.")
-        else:
-            print(f"Candidate {node_id} not found in working memory.")
-
-    async def show_metrics(self) -> None:
-        """展示可观测性指标。"""
-        summary = self.observability.get_metrics_summary()
-        print("\n=== Metrics Summary ===")
-        print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
-        print("=======================\n")
-
-
-async def interactive_cli(argv: Optional[list[str]] = None) -> None:
-    """Interface 层 CLI 入口。"""
-    parser = argparse.ArgumentParser(description="Learning-Agent CLI")
-    parser.add_argument(
-        "--config", "-c",
-        type=str,
-        default=None,
-        help="Path to config file (YAML/JSON/TOML). "
-             "Defaults to config.yaml / config.json in current directory.",
-    )
-    parser.add_argument(
-        "--show-config",
-        action="store_true",
-        help="Print loaded configuration and exit.",
-    )
-    parser.add_argument(
-        "--web",
-        action="store_true",
-        help="Start the web API server instead of interactive CLI.",
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="Host to bind the web server (default: 127.0.0.1).",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to bind the web server (default: 8000).",
-    )
-    args = parser.parse_args(argv)
-
-    config = Config(config_path=args.config)
-
-    if args.show_config:
-        print(json.dumps(config.to_dict(), indent=2, ensure_ascii=False))
-        sys.exit(0)
-
-    system = LearningAgentSystem(config)
-
-    try:
-        await system.initialize()
-    except RuntimeError as e:
-        print(f"Initialization failed: {e}")
-        print("Please set OPENAI_API_KEY environment variable.")
-        sys.exit(1)
-
-    print("\n🧠 Learning-Agent v0.1.0")
-    print("Type /help for available commands.\n")
-
-    # 自动创建默认目标与会话
-    obj = await system.create_objective("General Learning", "Default learning objective")
-    session_id = await system.start_session(obj.id)
-    print(f"Created default objective: {obj.title}")
-    print(f"Started session: {session_id}\n")
-
-    while True:
-        try:
-            user_input = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
-            break
-
-        if not user_input:
-            continue
-
-        if user_input.startswith("/"):
-            parts = user_input.split()
-            cmd = parts[0].lower()
-
-            if cmd == "/quit" or cmd == "/exit":
-                break
-            elif cmd == "/help":
-                print(
-                    """
-Commands:
-  /quit, /exit          Exit the application
-  /memory               Show memory status
-  /metrics              Show observability metrics
-  /confirm <node_id>    Confirm a knowledge candidate to L2
-  /save                 Save state manually
-  /ask <message>        Send message in Ask mode (alignment first)
-  /help                 Show this help message
-"""
-                )
-            elif cmd == "/memory":
-                await system.show_memory()
-            elif cmd == "/metrics":
-                await system.show_metrics()
-            elif cmd == "/confirm":
-                if len(parts) < 2:
-                    print("Usage: /confirm <node_id>")
-                else:
-                    await system.confirm_knowledge(parts[1])
-            elif cmd == "/save":
-                await system.save_state()
-                print("State saved.")
-            elif cmd == "/ask":
-                ask_input = user_input[len("/ask "):].strip()
-                if not ask_input:
-                    print("Usage: /ask <your question>")
-                else:
-                    await system.chat(ask_input, mode=AgentMode.ASK)
-            else:
-                print(f"Unknown command: {cmd}")
-            continue
-
-        # 普通对话
-        await system.chat(user_input)
-
-    await system.shutdown()
-
 
 if __name__ == "__main__":
     # 提前解析参数，web 模式需要在 asyncio.run 之外启动，避免嵌套事件循环
@@ -2059,4 +1728,5 @@ if __name__ == "__main__":
             reload=False,
         )
     else:
+        from learning_agent.learning_agent.cli import interactive_cli
         asyncio.run(interactive_cli(sys.argv[1:]))

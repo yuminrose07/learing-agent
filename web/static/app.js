@@ -19,6 +19,11 @@ let currentView = 'home';
 let currentPersonaKey = null;
 let currentPersonaName = '';
 let currentLearningPhase = null;
+let currentCompanion = {
+    enabled: false,
+    style: 'off',
+    adviceLevel: 'low',
+};
 
 // ─── DOM 元素 ───
 const els = {
@@ -34,12 +39,14 @@ const els = {
     btnMenu: document.getElementById('btn-menu'),
     btnMemory: document.getElementById('btn-memory'),
     btnSave: document.getElementById('btn-save'),
-    btnModeChat: document.getElementById('btn-mode-chat'),
-    btnModeLearning: document.getElementById('btn-mode-learning'),
     topbar: document.querySelector('.topbar'),
     topbarTitle: document.getElementById('topbar-title'),
     topbarSubtitle: document.getElementById('topbar-subtitle'),
-    topbarThinking: document.getElementById('topbar-thinking'),
+    companionPicker: document.getElementById('companion-picker'),
+    companionTrigger: document.getElementById('companion-trigger'),
+    companionTriggerValue: document.getElementById('companion-trigger-value'),
+    companionMenu: document.getElementById('companion-menu'),
+    thinkingPicker: document.getElementById('thinking-picker'),
     thinkingTrigger: document.getElementById('thinking-trigger'),
     thinkingTriggerValue: document.getElementById('thinking-trigger-value'),
     thinkingMenu: document.getElementById('thinking-menu'),
@@ -54,6 +61,15 @@ const els = {
     learningStopModalObjective: document.getElementById('learning-stop-modal-objective'),
     btnStayLearningStop: document.getElementById('btn-stay-learning-stop'),
     btnNewTopicAfterStop: document.getElementById('btn-new-topic-after-stop'),
+    learningResumeModal: document.getElementById('learning-resume-modal'),
+    learningResumeModalObjective: document.getElementById('learning-resume-modal-objective'),
+    btnContinueActive: document.getElementById('btn-continue-active'),
+    btnStopAndNew: document.getElementById('btn-stop-and-new'),
+    learningAlignmentModal: document.getElementById('learning-alignment-modal'),
+    learningAlignmentModalTitle: document.getElementById('learning-alignment-modal-title'),
+    learningAlignmentModalHint: document.getElementById('learning-alignment-modal-hint'),
+    learningAlignmentCandidatesList: document.getElementById('learning-alignment-candidates-list'),
+    welcomeActiveUnits: document.getElementById('welcome-active-units'),
     btnCancelDelete: document.getElementById('btn-cancel-delete'),
     btnConfirmDelete: document.getElementById('btn-confirm-delete'),
 };
@@ -73,6 +89,16 @@ const PHILOSOPHER_ORDER = ['socrates', 'feynman', 'montaigne', 'zhu_xi', 'descar
 
 // Populated from GET /personas at init. Falls back to PERSONA_META above.
 let personaCatalog = null;
+
+const COMPANION_META = {
+    off: { name: '关闭', mark: '·', short: '保持普通闲谈，不附加陪伴语气。' },
+    warm_girlfriend: { name: '温柔', mark: '☾', short: '先接住疲惫和压力，少建议。' },
+    playful_girlfriend: { name: '活泼', mark: '☾', short: '轻快一点，帮你转移注意力。' },
+    quiet_companion: { name: '安静', mark: '☾', short: '话少、稳定，适合只想有人陪着。' },
+};
+
+// Populated from GET /companion-styles at init. Falls back to COMPANION_META.
+let companionCatalog = null;
 
 const FRONTEND_MODES = new Set(['chat', 'learning']);
 
@@ -233,9 +259,39 @@ function getPersonaDisplayName(personaKey) {
     return getPersonaMeta(personaKey).name || '默认';
 }
 
-function resolvePersonaKeyForMode(_mode, session = null) {
-    // Personas are universal across modes — pick whatever the session has stored,
-    // falling back to the in-memory selection, then NEUTRAL.
+function getCompanionMeta(styleKey) {
+    if (!styleKey) return COMPANION_META.off;
+    return COMPANION_META[styleKey] || COMPANION_META.off;
+}
+
+function getCompanionDisplayName(styleKey, enabled = true) {
+    if (!enabled || !styleKey || styleKey === 'off') return COMPANION_META.off.name;
+    return getCompanionMeta(styleKey).name || styleKey;
+}
+
+function normalizeCompanionSettings(raw = {}) {
+    const style = raw.style || raw.companion_style || 'off';
+    const enabled = Boolean(raw.enabled) && style !== 'off';
+    return {
+        enabled,
+        style: enabled ? style : 'off',
+        adviceLevel: raw.advice_level || raw.adviceLevel || raw.companion_advice_level || 'low',
+    };
+}
+
+function companionSettingsFromSession(session) {
+    const meta = session?.mode_metadata || {};
+    const enabled = meta.chat_profile === 'companion' && Boolean(meta.companion_style);
+    return normalizeCompanionSettings({
+        enabled,
+        style: enabled ? meta.companion_style : 'off',
+        advice_level: meta.companion_advice_level || 'low',
+    });
+}
+
+function resolvePersonaKeyForMode(mode, session = null) {
+    // 思路 (persona overlay) 现在只服务研习；闲聊已与研学分离，恒为 neutral。
+    if (normalizeFrontendMode(mode) === 'chat') return 'neutral';
     const stored = session ? session.mode_metadata?.chat_persona_key : null;
     return stored || currentPersonaKey || 'neutral';
 }
@@ -355,6 +411,9 @@ function upsertAssistantUsage(content, rawUsage) {
 function getHomeSubtitle(mode) {
     if (normalizeFrontendMode(mode) === 'learning') {
         return '研习：围绕一个主题开研习卷，先收束目标，再推进讲讲看与反馈。';
+    }
+    if (currentCompanion.enabled) {
+        return `闲谈：${getCompanionDisplayName(currentCompanion.style)}陪伴已开启，适合休息和减压。`;
     }
     return '闲谈：直接输入即可开始轻量对话。';
 }
@@ -491,13 +550,80 @@ function showWelcome() {
     currentPersonaKey = null;
     currentPersonaName = '';
     syncThinkingPickerLabel('neutral');
+    syncCompanionPickerLabel(currentCompanion);
     document.dispatchEvent(new CustomEvent('learning-unit:reset'));
     els.messageInput.disabled = false;
     els.btnSend.disabled = false;
     updateInputPlaceholderFromSession(null);
     updateModeToolbar();
     updateHomeModeCards();
+    refreshWelcomeActiveUnits().catch(() => {});
     els.messageInput.focus();
+}
+
+// ─── 欢迎页"未完成研习卷"横幅 ───
+// 数据来自 GET /learning-units（已有全量返回，前端过滤 phase ∈ {absorbing, outputting}）。
+// 横幅出现条件 = 有进行中卷；列表为空时整块隐藏不占位。
+async function fetchActiveLearningUnits() {
+    const data = await api('GET', '/learning-units');
+    const units = Array.isArray(data) ? data : (Array.isArray(data?.units) ? data.units : []);
+    return units
+        .filter(u => u && (u.phase === 'absorbing' || u.phase === 'outputting'))
+        .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+}
+
+function renderWelcomeActiveUnits(units) {
+    const host = els.welcomeActiveUnits;
+    if (!host) return;
+    if (!units || units.length === 0) {
+        host.classList.add('hidden');
+        document.body.classList.remove('has-active-learning');
+        host.innerHTML = '';
+        return;
+    }
+    const phaseLabel = (p) => (p === 'outputting' ? '复述检验' : '研习中');
+    const primaryUnits = units.slice(0, 1);
+    const html = primaryUnits.map((u) => {
+        const sid = u.session_id || '';
+        const uid = u.id || '';
+        const objective = (u.objective && u.objective.text) || u.working_objective || '（未确定主题）';
+        const phase = u.phase || 'absorbing';
+        return `
+            <div class="welcome-active-unit-card" data-unit-id="${escapeHtml(uid)}" data-session-id="${escapeHtml(sid)}">
+                <div class="welcome-active-unit-head">
+                    <span class="welcome-active-unit-kicker">待续研习</span>
+                    <span class="lu-phase is-current">${escapeHtml(phaseLabel(phase))}</span>
+                </div>
+                <p class="welcome-active-unit-title">${escapeHtml(objective)}</p>
+                <div class="welcome-active-unit-actions">
+                    <button class="lu-btn lu-btn-secondary" type="button" data-action="stop"
+                            data-unit-id="${escapeHtml(uid)}">先停掉这卷</button>
+                    <button class="lu-btn lu-btn-primary" type="button" data-action="continue"
+                            data-unit-id="${escapeHtml(uid)}" data-session-id="${escapeHtml(sid)}">继续这一卷</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+    host.innerHTML = html;
+    host.classList.remove('hidden');
+    document.body.classList.add('has-active-learning');
+}
+
+async function refreshWelcomeActiveUnits() {
+    if (!els.welcomeActiveUnits) return;
+    try {
+        const units = await fetchActiveLearningUnits();
+        renderWelcomeActiveUnits(units);
+    } catch (err) {
+        // 接口失败不影响首页主体——静默隐藏，不打扰用户。
+        els.welcomeActiveUnits.classList.add('hidden');
+        els.welcomeActiveUnits.innerHTML = '';
+        console.warn('拉取未完成研习卷失败:', err);
+    }
+}
+
+async function stopLearningUnitById(unitId) {
+    return api('POST', `/learning-units/${encodeURIComponent(unitId)}/stop`, { reason: 'user_stopped' });
 }
 
 function closeLearningStopModal() {
@@ -516,10 +642,101 @@ function openLearningStopModal(detail = {}) {
     els.learningStopModal.setAttribute('aria-hidden', 'false');
 }
 
+// 复用研习卷确认弹窗 —— POST /learning-units 返回 409 时由 sendMessage 调起，让用户
+// 显式选择「继续这一卷」还是「先停掉它，按新主题继续」。
+// state 用闭包变量保存当前面对的 activeUnit + 原始 seedText（用户刚刚打的字），
+// 两个按钮和事件绑定区共享这份 state。
+let pendingResumeContext = null;
+
+function openLearningResumeModal({ activeUnit, seedText }) {
+    if (!els.learningResumeModal) return;
+    pendingResumeContext = { activeUnit, seedText };
+    const objective = (activeUnit?.objective?.text || activeUnit?.working_objective || '').trim() || '（未确定主题）';
+    if (els.learningResumeModalObjective) {
+        els.learningResumeModalObjective.textContent = objective;
+    }
+    els.learningResumeModal.classList.remove('hidden');
+    els.learningResumeModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeLearningResumeModal() {
+    if (!els.learningResumeModal) return;
+    els.learningResumeModal.classList.add('hidden');
+    els.learningResumeModal.setAttribute('aria-hidden', 'true');
+    pendingResumeContext = null;
+}
+
+// 对齐 modal —— SSE chunk 上挂 alignment_popup=true 时由 sendMessage 路径调起。
+// 用户点击候选卡片即视为「确认这个方向」，把 candidate.objective 作为下一条
+// user message 走标准 chat 流回传。state 用闭包变量保存最近一次 candidates。
+let pendingAlignmentCandidates = [];
+
+function openLearningAlignmentModal({ candidates, placeholderText, assumptionNote }) {
+    if (!els.learningAlignmentModal) return;
+    const list = els.learningAlignmentCandidatesList;
+    if (!list) return;
+    pendingAlignmentCandidates = Array.isArray(candidates) ? candidates.slice() : [];
+    list.innerHTML = '';
+    if (pendingAlignmentCandidates.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'learning-alignment-candidate-empty';
+        empty.textContent = '没列出具体候选——直接把你想学的方向打在输入框里告诉我。';
+        list.appendChild(empty);
+    } else {
+        pendingAlignmentCandidates.forEach((cand, idx) => {
+            const li = document.createElement('li');
+            li.className = 'learning-alignment-candidate';
+            li.dataset.index = String(idx);
+            li.tabIndex = 0;
+            li.setAttribute('role', 'button');
+            const title = document.createElement('div');
+            title.className = 'learning-alignment-candidate-title';
+            title.textContent = cand.objective || '（未命名方向）';
+            const sub = document.createElement('div');
+            sub.className = 'learning-alignment-candidate-step';
+            sub.textContent = cand.first_step || '';
+            li.appendChild(title);
+            li.appendChild(sub);
+            li.addEventListener('click', () => handleAlignmentCandidateClick(idx));
+            li.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    handleAlignmentCandidateClick(idx);
+                }
+            });
+            list.appendChild(li);
+        });
+    }
+    if (els.learningAlignmentModalHint && (placeholderText || assumptionNote)) {
+        els.learningAlignmentModalHint.textContent = placeholderText || assumptionNote;
+    }
+    els.learningAlignmentModal.classList.remove('hidden');
+    els.learningAlignmentModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeLearningAlignmentModal() {
+    if (!els.learningAlignmentModal) return;
+    els.learningAlignmentModal.classList.add('hidden');
+    els.learningAlignmentModal.setAttribute('aria-hidden', 'true');
+    pendingAlignmentCandidates = [];
+}
+
+function handleAlignmentCandidateClick(index) {
+    const cand = pendingAlignmentCandidates[index];
+    if (!cand) return;
+    const objective = (cand.objective || '').trim();
+    closeLearningAlignmentModal();
+    if (!objective) return;
+    sendMessage(objective);
+}
+
 function hideWelcome() {
     currentView = 'chat';
     updateViewTheme('chat');
     els.welcomeScreen.classList.add('hidden');
+    // 进入会话后立即隐藏陪伴 / 思路 picker；会话内不允许再切风格 / 思路。
+    syncCompanionPickerVisibility();
+    syncThinkingPickerVisibility();
 }
 
 function updateTopbarPersona(personaKey, _mode = currentMode) {
@@ -535,16 +752,166 @@ function syncTopbarFromSession(session, title) {
     els.topbarTitle.textContent = title || session?.title || currentSessionTitle || '學齋';
     const semanticMode = session ? modeFromSession(session) : currentMode;
     const personaKey = resolvePersonaKeyForMode(semanticMode, session);
+    if (semanticMode === 'chat') {
+        syncCompanionPickerLabel(companionSettingsFromSession(session));
+    }
     updateTopbarPersona(personaKey, semanticMode);
     els.topbarSubtitle.textContent = semanticMode === 'learning'
         ? '研习中 · 正在加载研习卷'
-        : (currentSessionTitle || title || '');
+        : (currentCompanion.enabled
+            ? `${getCompanionDisplayName(currentCompanion.style)}陪伴 · ${currentSessionTitle || title || '闲谈'}`
+            : (currentSessionTitle || title || ''));
 }
 
 function updateHomeModeCards() {
     document.querySelectorAll('.home-mode-card').forEach(card => {
         const isActive = card.dataset.mode === currentMode && !card.disabled;
         card.classList.toggle('active', isActive);
+    });
+}
+
+// ─── 陪伴 (companion / 减压) picker ───
+
+function companionCatalogEntries() {
+    if (companionCatalog && Array.isArray(companionCatalog.styles)) {
+        return companionCatalog.styles;
+    }
+    return Object.entries(COMPANION_META).map(([key, meta]) => ({
+        key,
+        display_name: meta.name,
+    }));
+}
+
+function syncCompanionPickerLabel(settings = currentCompanion) {
+    if (!els.companionTriggerValue) return;
+    const normalized = normalizeCompanionSettings(settings);
+    currentCompanion = normalized;
+    els.companionTriggerValue.textContent = getCompanionDisplayName(
+        normalized.style,
+        normalized.enabled
+    );
+    if (els.companionPicker) {
+        els.companionPicker.dataset.companionStyle = normalized.style;
+        els.companionPicker.classList.toggle('has-companion', normalized.enabled);
+    }
+    if (els.companionMenu) {
+        els.companionMenu.querySelectorAll('.companion-option').forEach(opt => {
+            opt.classList.toggle('active', opt.dataset.companionStyle === normalized.style);
+        });
+    }
+    if (currentView === 'home' && currentMode === 'chat') {
+        els.topbarSubtitle.textContent = getHomeSubtitle(currentMode);
+    } else if (currentView === 'chat' && currentMode === 'chat') {
+        const title = currentSessionTitle || els.topbarTitle.textContent || '闲谈';
+        els.topbarSubtitle.textContent = normalized.enabled
+            ? `${getCompanionDisplayName(normalized.style)}陪伴 · ${title}`
+            : title;
+    }
+}
+
+function renderCompanionMenu() {
+    if (!els.companionMenu) return;
+    const entries = companionCatalogEntries();
+    els.companionMenu.innerHTML = entries.map(entry => {
+        const key = entry.key || 'off';
+        const meta = getCompanionMeta(key);
+        const name = entry.display_name || meta.name;
+        return `
+            <button type="button" class="companion-option" data-companion-style="${escapeHtml(key)}" role="option">
+                <span class="companion-option-mark">${escapeHtml(meta.mark || '·')}</span>
+                <span class="companion-option-copy">
+                    <span class="companion-option-name">${escapeHtml(name)}</span>
+                    <span class="companion-option-short">${escapeHtml(meta.short || '')}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+    els.companionMenu.querySelectorAll('.companion-option').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const style = btn.dataset.companionStyle || 'off';
+            applyCompanionSelection(style);
+            closeCompanionMenu();
+        });
+    });
+    syncCompanionPickerLabel(currentCompanion);
+}
+
+function openCompanionMenu() {
+    if (!els.companionMenu) return;
+    els.companionMenu.classList.remove('hidden');
+    els.companionTrigger.setAttribute('aria-expanded', 'true');
+    els.companionPicker.classList.add('is-open');
+}
+
+function closeCompanionMenu() {
+    if (!els.companionMenu) return;
+    els.companionMenu.classList.add('hidden');
+    els.companionTrigger.setAttribute('aria-expanded', 'false');
+    els.companionPicker.classList.remove('is-open');
+}
+
+async function applyCompanionSelection(styleKey) {
+    const style = styleKey || 'off';
+    const next = normalizeCompanionSettings({
+        enabled: style !== 'off',
+        style,
+        advice_level: currentCompanion.adviceLevel || 'low',
+    });
+    syncCompanionPickerLabel(next);
+
+    if (!currentSessionId || currentMode !== 'chat') return;
+    try {
+        const saved = await api('PUT', `/sessions/${currentSessionId}/companion`, {
+            enabled: next.enabled,
+            style: next.style,
+            advice_level: next.adviceLevel,
+        });
+        syncCompanionPickerLabel(normalizeCompanionSettings(saved));
+    } catch (err) {
+        console.warn('更新陪伴失败:', err);
+        showToast('切换陪伴失败：' + err.message);
+    }
+}
+
+async function bindCurrentCompanionToSession(settings = currentCompanion) {
+    if (!currentSessionId || currentMode !== 'chat') return;
+    const normalized = normalizeCompanionSettings(settings);
+    try {
+        await api('PUT', `/sessions/${currentSessionId}/companion`, {
+            enabled: normalized.enabled,
+            style: normalized.style,
+            advice_level: normalized.adviceLevel,
+        });
+    } catch (err) {
+        console.warn('绑定陪伴到新会话失败:', err);
+    }
+}
+
+async function loadCompanionCatalog() {
+    try {
+        companionCatalog = await api('GET', '/companion-styles');
+    } catch (err) {
+        console.warn('载入陪伴列表失败，使用本地默认列表:', err);
+        companionCatalog = null;
+    }
+    renderCompanionMenu();
+}
+
+function setupCompanionPicker() {
+    if (!els.companionTrigger) return;
+    els.companionTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (els.companionMenu.classList.contains('hidden')) {
+            openCompanionMenu();
+        } else {
+            closeCompanionMenu();
+        }
+    });
+    document.addEventListener('click', (e) => {
+        if (!els.companionPicker.contains(e.target)) closeCompanionMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeCompanionMenu();
     });
 }
 
@@ -565,9 +932,9 @@ function syncThinkingPickerLabel(personaKey) {
     const key = personaKey || 'neutral';
     const meta = getPersonaMeta(key);
     els.thinkingTriggerValue.textContent = meta.name;
-    if (els.topbarThinking) {
-        els.topbarThinking.dataset.personaKey = key;
-        els.topbarThinking.classList.toggle('has-overlay', key !== 'neutral');
+    if (els.thinkingPicker) {
+        els.thinkingPicker.dataset.personaKey = key;
+        els.thinkingPicker.classList.toggle('has-overlay', key !== 'neutral');
     }
     if (els.thinkingMenu) {
         els.thinkingMenu.querySelectorAll('.thinking-option').forEach(opt => {
@@ -609,30 +976,23 @@ function openThinkingMenu() {
     if (!els.thinkingMenu) return;
     els.thinkingMenu.classList.remove('hidden');
     els.thinkingTrigger.setAttribute('aria-expanded', 'true');
-    els.topbarThinking.classList.add('is-open');
+    els.thinkingPicker.classList.add('is-open');
 }
 
 function closeThinkingMenu() {
     if (!els.thinkingMenu) return;
     els.thinkingMenu.classList.add('hidden');
     els.thinkingTrigger.setAttribute('aria-expanded', 'false');
-    els.topbarThinking.classList.remove('is-open');
+    els.thinkingPicker.classList.remove('is-open');
 }
 
 async function applyPersonaSelection(personaKey) {
+    // picker 只在 home + learning 可见，所以 currentSessionId 必为 null。
+    // 这里只做本地更新；真正的"绑定到会话"由 sendMessage 在创建研习卷时 PUT 一次。
     const key = personaKey || 'neutral';
-    // Optimistic local update so the picker feels instant.
     currentPersonaKey = key === 'neutral' ? null : key;
     currentPersonaName = getPersonaDisplayName(key);
     syncThinkingPickerLabel(key);
-
-    if (!currentSessionId) return; // welcome screen — bind when session is created
-    try {
-        await api('PUT', `/sessions/${currentSessionId}/persona`, { persona_key: key });
-    } catch (err) {
-        console.warn('更新思路失败:', err);
-        showToast('切换思路失败：' + err.message);
-    }
 }
 
 async function loadPersonaCatalog() {
@@ -656,7 +1016,7 @@ function setupThinkingPicker() {
         }
     });
     document.addEventListener('click', (e) => {
-        if (!els.topbarThinking.contains(e.target)) closeThinkingMenu();
+        if (!els.thinkingPicker.contains(e.target)) closeThinkingMenu();
     });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeThinkingMenu();
@@ -849,6 +1209,9 @@ function renderHistoryMessage(role, text, metadata = {}) {
         alignment: Boolean(metadata.alignment),
         personaKey: metadata.persona_key || '',
         personaName: metadata.persona_name || '',
+        companionStyle: metadata.companion_style || '',
+        companionStyleName: metadata.companion_style_name || '',
+        companionEnabled: Boolean(metadata.companion_enabled),
         usage: metadata.usage || metadata.turn_usage || null,
     });
 }
@@ -873,7 +1236,12 @@ function addMessage(role, text, options = {}) {
         const personaKey = options.personaKey || 'neutral';
         avatar.classList.add('persona-mark');
         avatar.dataset.personaKey = personaKey;
-        avatar.textContent = getPersonaMark(personaKey);
+        if (options.companionEnabled) {
+            avatar.classList.add('companion-mark');
+            avatar.textContent = getCompanionMeta(options.companionStyle).mark || '☾';
+        } else {
+            avatar.textContent = getPersonaMark(personaKey);
+        }
     } else if (role === 'user') {
         avatar.classList.add('user-mark');
         avatar.textContent = '我';
@@ -893,6 +1261,11 @@ function addMessage(role, text, options = {}) {
         if (options.personaName) {
             content.dataset.personaName = options.personaName;
             upsertAssistantPersonaBadge(content, options.personaName);
+        }
+        if (options.companionEnabled) {
+            content.dataset.companionStyle = options.companionStyle || '';
+            content.dataset.companionStyleName = options.companionStyleName || getCompanionDisplayName(options.companionStyle);
+            upsertAssistantCompanionBadge(content, content.dataset.companionStyleName);
         }
         upsertAssistantUsage(content, options.usage || null);
     } else {
@@ -920,6 +1293,22 @@ function upsertAssistantPersonaBadge(content, personaName) {
         }
     }
     badge.textContent = personaName;
+}
+
+function upsertAssistantCompanionBadge(content, styleName) {
+    if (!styleName) return;
+    let badge = content.querySelector('.companion-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'companion-badge';
+        const body = content.querySelector('.message-body');
+        if (body) {
+            content.insertBefore(badge, body);
+        } else {
+            content.insertBefore(badge, content.firstChild);
+        }
+    }
+    badge.textContent = `☾ ${styleName}陪伴`;
 }
 
 function setLastAssistantPersona(personaKey, personaName) {
@@ -954,6 +1343,27 @@ function setLastAssistantPersona(personaKey, personaName) {
     }
 }
 
+function setLastAssistantCompanion(styleKey, styleName) {
+    const contents = els.messages.querySelectorAll('.message.assistant .message-content');
+    if (contents.length === 0) return;
+    const last = contents[contents.length - 1];
+    const resolvedStyle = styleKey || last.dataset.companionStyle || 'warm_girlfriend';
+    const resolvedName = styleName || getCompanionDisplayName(resolvedStyle);
+    last.dataset.companionStyle = resolvedStyle;
+    last.dataset.companionStyleName = resolvedName;
+    upsertAssistantCompanionBadge(last, resolvedName);
+
+    const messages = els.messages.querySelectorAll('.message.assistant');
+    if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const avatar = lastMessage.querySelector('.message-avatar');
+        if (avatar) {
+            avatar.classList.add('companion-mark');
+            avatar.textContent = getCompanionMeta(resolvedStyle).mark || '☾';
+        }
+    }
+}
+
 function appendToLastMessage(text) {
     const contents = els.messages.querySelectorAll('.message.assistant .message-content');
     if (contents.length === 0) return;
@@ -964,6 +1374,7 @@ function appendToLastMessage(text) {
     const body = ensureAssistantMessageBody(last);
     body.innerHTML = renderChatMarkdown(raw) + '<span class="typing-cursor"></span>';
     upsertAssistantPersonaBadge(last, last.dataset.personaName || '');
+    upsertAssistantCompanionBadge(last, last.dataset.companionStyleName || '');
     scrollToBottom();
 }
 
@@ -1011,7 +1422,8 @@ async function sendMessage(text) {
     if (isStreaming || !text.trim()) return;
 
     const requestedMode = normalizeFrontendMode(currentMode);
-    const requestedPersonaKey = currentPersonaKey;
+    // 闲聊不再带思路覆层；只有研习才把已选思路绑定到新会话。
+    const requestedPersonaKey = requestedMode === 'chat' ? null : currentPersonaKey;
 
     if (!currentSessionId) {
         // adaptive alignment §6.1: "研习" 起手不走普通 POST /sessions —— 而是
@@ -1026,17 +1438,25 @@ async function sendMessage(text) {
             if (!created || !created.session_id) {
                 return;
             }
-            await selectSession(created.session_id, created.objective?.text || '研习');
             if (created.reused_active_unit) {
+                // 409 路径不再静默 hydrate + toast；交给用户在 modal 里明确选。
+                // 原文本回写到输入框，用户决定后可以再发送或修改。
                 els.messageInput.value = text.trim();
                 autoResizeTextarea();
-                showToast('已有未停止的研习卷；先学到这里后再发送新主题');
+                openLearningResumeModal({
+                    activeUnit: created,
+                    seedText: text.trim(),
+                });
                 return;
             }
+            await selectSession(created.session_id, created.objective?.text || '研习');
         } else {
+            const companionToBind = { ...currentCompanion };
             const session = await createSession();
             if (!session) return;
             await selectSession(session.id, session.title || 'New chat');
+            await bindCurrentCompanionToSession(companionToBind);
+            syncCompanionPickerLabel(companionToBind);
         }
         if (requestedPersonaKey) {
             try {
@@ -1117,6 +1537,14 @@ async function sendMessage(text) {
                         if (data.persona_key || data.persona_name) {
                             setLastAssistantPersona(data.persona_key, data.persona_name);
                         }
+                        if (data.companion_enabled) {
+                            setLastAssistantCompanion(data.companion_style, data.companion_style_name);
+                            syncCompanionPickerLabel({
+                                enabled: true,
+                                style: data.companion_style,
+                                advice_level: data.companion_advice_level,
+                            });
+                        }
                         if (data.alignment) {
                             const messages = els.messages.querySelectorAll('.message.assistant');
                             const lastMessage = messages[messages.length - 1];
@@ -1181,9 +1609,9 @@ function updateInputPlaceholderFromSession(session) {
     updateHomeModeCards();
     if (!session) {
         if (currentMode === 'learning') {
-            els.messageInput.placeholder = '输入想研习的主题、概念或材料...';
+            els.messageInput.placeholder = '落一问于此，徐徐开卷。';
         } else {
-            els.messageInput.placeholder = '随便聊点什么，直接开始吧...';
+            els.messageInput.placeholder = '落一句于此，随意闲谈';
         }
         return;
     }
@@ -1229,15 +1657,30 @@ async function switchMode(mode) {
     showWelcome();
 }
 
+function syncThinkingPickerVisibility() {
+    // 思路 (persona overlay) 仅服务研习的"首界面"；一卷研习开卷后即锁定（picker 整块消失）。
+    // 想换思路只能新开研习卷，避免开卷中途切换让前后语气割裂。
+    if (!els.thinkingPicker) return;
+    const showOnHome = currentMode === 'learning' && currentView === 'home';
+    els.thinkingPicker.classList.toggle('hidden', !showOnHome);
+    if (!showOnHome) closeThinkingMenu();
+}
+
+function syncCompanionPickerVisibility() {
+    // 陪伴 picker 仅在闲聊模式的"首界面"展示；一旦进入会话即锁定（picker 整块消失）。
+    // 想换风格只能新建对话，避免会话中途切换造成 profile 漂移。
+    if (!els.companionPicker) return;
+    const showOnHome = currentMode === 'chat' && currentView === 'home';
+    els.companionPicker.classList.toggle('hidden', !showOnHome);
+    if (!showOnHome) closeCompanionMenu();
+}
+
 function updateModeToolbar() {
-    [els.btnModeChat, els.btnModeLearning].forEach(btn => {
-        if (btn) btn.classList.remove('active');
-    });
-    const activeBtn = {
-        chat: els.btnModeChat,
-        learning: els.btnModeLearning,
-    }[currentMode];
-    if (activeBtn) activeBtn.classList.add('active');
+    syncCompanionPickerVisibility();
+    syncThinkingPickerVisibility();
+    // 把当前模式反映到 body，驱动 mode 维度的视觉（闲聊青瓷 / 研习朱砂）。
+    document.body.classList.toggle('mode-chat', currentMode === 'chat');
+    document.body.classList.toggle('mode-learning', currentMode === 'learning');
 }
 
 // ─── 侧边栏交互 ───
@@ -1279,12 +1722,6 @@ els.messageInput.addEventListener('keydown', (e) => {
 
 els.messageInput.addEventListener('input', autoResizeTextarea);
 
-if (els.btnModeChat) {
-    els.btnModeChat.addEventListener('click', () => switchMode('chat'));
-}
-if (els.btnModeLearning) {
-    els.btnModeLearning.addEventListener('click', () => switchMode('learning'));
-}
 document.querySelectorAll('.home-mode-card').forEach(card => {
     if (card.disabled) return;
     card.addEventListener('click', () => switchMode(card.dataset.mode));
@@ -1317,6 +1754,15 @@ document.addEventListener('learning-unit:stopped', (ev) => {
     openLearningStopModal(detail);
 });
 
+document.addEventListener('learning-unit:alignment-popup', (ev) => {
+    const detail = ev.detail || {};
+    openLearningAlignmentModal({
+        candidates: detail.candidates,
+        placeholderText: detail.placeholderText,
+        assumptionNote: detail.assumptionNote,
+    });
+});
+
 // 建议卡片
 document.querySelectorAll('.suggestion-card').forEach(card => {
     card.addEventListener('click', async () => {
@@ -1332,18 +1778,30 @@ document.querySelectorAll('.suggestion-card').forEach(card => {
 // (visibility-change avatar refresh removed along with external avatar fetch.)
 
 // 弹窗关闭
-[els.memoryModal, els.deleteModal, els.learningStopModal].forEach(modal => {
+[els.memoryModal, els.deleteModal, els.learningStopModal, els.learningResumeModal, els.learningAlignmentModal].forEach(modal => {
     if (!modal) return;
     modal.querySelector('.modal-overlay').addEventListener('click', () => {
         modal.classList.add('hidden');
         if (modal === els.learningStopModal) {
             modal.setAttribute('aria-hidden', 'true');
         }
+        if (modal === els.learningResumeModal) {
+            closeLearningResumeModal();
+        }
+        if (modal === els.learningAlignmentModal) {
+            closeLearningAlignmentModal();
+        }
     });
     modal.querySelector('.btn-close').addEventListener('click', () => {
         modal.classList.add('hidden');
         if (modal === els.learningStopModal) {
             modal.setAttribute('aria-hidden', 'true');
+        }
+        if (modal === els.learningResumeModal) {
+            closeLearningResumeModal();
+        }
+        if (modal === els.learningAlignmentModal) {
+            closeLearningAlignmentModal();
         }
     });
 });
@@ -1368,6 +1826,99 @@ if (els.btnNewTopicAfterStop) {
     });
 }
 
+// 研习卷复用确认弹窗 —— 由 sendMessage 在 reused_active_unit 时打开。
+if (els.btnContinueActive) {
+    els.btnContinueActive.addEventListener('click', async () => {
+        const ctx = pendingResumeContext;
+        if (!ctx || !ctx.activeUnit || !ctx.activeUnit.session_id) {
+            closeLearningResumeModal();
+            return;
+        }
+        const unit = ctx.activeUnit;
+        const seedText = ctx.seedText || '';
+        closeLearningResumeModal();
+        try {
+            await selectSession(unit.session_id, unit.objective?.text || '研习');
+            els.messageInput.value = seedText;
+            autoResizeTextarea();
+            els.messageInput.focus();
+        } catch (err) {
+            console.warn('继续未完成研习卷失败:', err);
+            alert('打开研习卷失败: ' + err.message);
+        }
+    });
+}
+
+if (els.btnStopAndNew) {
+    els.btnStopAndNew.addEventListener('click', async () => {
+        const ctx = pendingResumeContext;
+        if (!ctx || !ctx.activeUnit || !ctx.activeUnit.id) {
+            closeLearningResumeModal();
+            return;
+        }
+        const oldUnitId = ctx.activeUnit.id;
+        const seedText = ctx.seedText || '';
+        els.btnStopAndNew.disabled = true;
+        els.btnContinueActive && (els.btnContinueActive.disabled = true);
+        try {
+            await stopLearningUnitById(oldUnitId);
+            closeLearningResumeModal();
+            // 老卷停掉后，再走一次创建路径，这次后端不会再 409。
+            if (typeof window.__createLearningUnit !== 'function') {
+                showToast('研习模块尚未加载完成，请稍后再试');
+                return;
+            }
+            const created = await window.__createLearningUnit(seedText);
+            if (created && created.session_id && !created.reused_active_unit) {
+                await selectSession(created.session_id, created.objective?.text || '研习');
+                els.messageInput.value = seedText;
+                autoResizeTextarea();
+                els.messageInput.focus();
+            }
+        } catch (err) {
+            console.warn('停掉旧卷开新主题失败:', err);
+            alert('操作失败: ' + err.message);
+        } finally {
+            els.btnStopAndNew.disabled = false;
+            els.btnContinueActive && (els.btnContinueActive.disabled = false);
+        }
+    });
+}
+
+// 欢迎页"未完成研习卷"横幅 —— 事件代理，区分 continue / stop 两个动作。
+if (els.welcomeActiveUnits) {
+    els.welcomeActiveUnits.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const action = btn.getAttribute('data-action');
+        const unitId = btn.getAttribute('data-unit-id');
+        const sessionId = btn.getAttribute('data-session-id');
+        if (action === 'continue') {
+            if (!sessionId) return;
+            try {
+                await switchMode('learning');
+                await selectSession(sessionId, '研习');
+            } catch (err) {
+                console.warn('从欢迎页进入未完成研习卷失败:', err);
+                alert('打开研习卷失败: ' + err.message);
+            }
+            return;
+        }
+        if (action === 'stop') {
+            if (!unitId) return;
+            btn.disabled = true;
+            try {
+                await stopLearningUnitById(unitId);
+                await refreshWelcomeActiveUnits();
+            } catch (err) {
+                console.warn('停掉研习卷失败:', err);
+                alert('停掉研习卷失败: ' + err.message);
+                btn.disabled = false;
+            }
+        }
+    });
+}
+
 els.btnConfirmDelete.addEventListener('click', () => {
     if (deleteTargetId) {
         deleteSession(deleteTargetId);
@@ -1389,7 +1940,9 @@ els.chatArea.addEventListener('scroll', () => {
 
 async function init() {
     updateViewTheme(currentView);
+    setupCompanionPicker();
     setupThinkingPicker();
+    await loadCompanionCatalog();
     await loadPersonaCatalog();
     updateModeToolbar();
     els.topbarSubtitle.textContent = '正在载入会话…';

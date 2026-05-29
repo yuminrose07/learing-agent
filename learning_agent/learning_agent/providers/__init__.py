@@ -1,5 +1,6 @@
 from .web_fetch_provider import (
     FetchProviderError,
+    RawFetchedSection,
     FetchTimeoutError,
     FetchUnavailableError,
     RawFetchedPage,
@@ -16,6 +17,7 @@ from .web_search_provider import (
 
 __all__ = [
     "FetchProviderError",
+    "RawFetchedSection",
     "FetchTimeoutError",
     "FetchUnavailableError",
     "RawFetchedPage",
