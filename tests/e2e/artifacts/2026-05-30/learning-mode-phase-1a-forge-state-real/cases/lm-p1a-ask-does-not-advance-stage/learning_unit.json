@@ -1,0 +1,31 @@
+{
+  "alignment_reason": "missing_learnable_target",
+  "alignment_state": "active",
+  "assumption_note": "输入太短，无法判断你想学的具体对象。",
+  "clarification_count": 1,
+  "concept_list": [],
+  "created_at": "2026-05-30T18:05:05.310472Z",
+  "feedback_card": null,
+  "first_value_delivered_at": null,
+  "forge_stage": "entry",
+  "id": "lu-1b1d3ef4",
+  "last_alignment_at": "2026-05-30T18:05:05.312229Z",
+  "nag_cooldown_remaining": 0,
+  "objective": {
+    "confirmed": false,
+    "source": "user_written",
+    "source_ref": null,
+    "text": "教"
+  },
+  "objective_status": "working",
+  "phase": "absorbing",
+  "session_id": "sess-065bc386",
+  "stop_reason": null,
+  "stopped_at": null,
+  "suggestion_count": 0,
+  "tangent_notes": [],
+  "teach_session": null,
+  "temperature_state": "steady",
+  "updated_at": "2026-05-30T18:05:05.310473Z",
+  "verification_status": null
+}

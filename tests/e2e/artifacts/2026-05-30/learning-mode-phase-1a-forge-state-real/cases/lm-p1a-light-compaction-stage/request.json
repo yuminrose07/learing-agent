@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1a-light-compaction-stage",
+  "chat": {
+    "body": {
+      "message": "我只想先轻轻试一下 compaction。",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "我只想先轻轻试一下 compaction。",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "轻量试学 compaction 时保持低压力 entry/orient"
+}

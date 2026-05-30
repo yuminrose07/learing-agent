@@ -1,0 +1,58 @@
+{
+  "created_at": "2026-05-30T18:05:05.309395Z",
+  "current_leaf_id": "entry-0ed43c2c",
+  "extracted_knowledge_ids": [],
+  "id": "sess-065bc386",
+  "last_accessed_at": "2026-05-30T18:05:06.552952Z",
+  "learning_unit_id": "lu-1b1d3ef4",
+  "messages": [
+    {
+      "content": "教",
+      "id": "entry-7e7eda76",
+      "metadata": {
+        "alignment": true,
+        "mode": "ask",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "您想学习某个特定的主题或技能。请告诉我您具体想学什么，以及您目前的水平如何，这样我可以更好地为您提供帮助。",
+      "id": "entry-0ed43c2c",
+      "metadata": {
+        "alignment": true,
+        "mode": "ask",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 30,
+          "actual_prompt_tokens": 553,
+          "actual_total_tokens": 583,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 12000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 240,
+          "is_estimated": false,
+          "utilization_ratio": 0.0019
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "教"
+}

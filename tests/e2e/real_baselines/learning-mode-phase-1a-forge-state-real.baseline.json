@@ -1,9 +1,21 @@
 {
   "suite_id": "learning-mode-phase-1a-forge-state-real",
-  "baseline_version": "2026-05-27-v1",
+  "baseline_version": "2026-05-30-v1",
   "dataset": "tests/e2e/real_datasets/learning-mode-phase-1a-forge-state-real.json",
-  "status": "not_yet_executed",
-  "note": "该 baseline 先行定义验收指标。用户首次真实环境执行后，应回填 pass/fail、证据路径、已知 implementation_gap 和质量棘轮。",
+  "status": "pass",
+  "note": "2026-05-30T18:04:37Z 使用真实 dev server 与 qwen-max 实跑回填；4/4 case 通过，hard_targets 全部达标，无 implementation_gap。",
+  "latest_real_run": {
+    "run_id": "2026-05-30T180437Z_learning-mode-phase-1a-forge-state-real",
+    "run_dir": "tests/e2e/artifacts/2026-05-30/learning-mode-phase-1a-forge-state-real",
+    "executed_at": "2026-05-30T18:04:37Z",
+    "base_url": "http://127.0.0.1:8000",
+    "data_dir": "/Users/roseannk/my-agent/.claude/worktrees/learning-phase-1a-hardening/.learning_agent_data_phase1a_baseline",
+    "provider_model": "qwen-max",
+    "total_cases": 4,
+    "passed": 4,
+    "failed": 0,
+    "pass_rate": 1.0
+  },
   "must_pass_cases": [
     "lm-p1a-fuzzy-index-stage",
     "lm-p1a-ask-does-not-advance-stage"
@@ -28,9 +40,12 @@
     "ask_alignment_stage_advance_count": 0
   },
   "quality_targets": {
+    "first_value_case_pass_count": 3,
     "first_value_case_pass_min": 3,
     "first_value_case_total": 4,
-    "forge_stage_changed_event_min_count": 1
+    "forge_stage_changed_event_count": 3,
+    "forge_stage_changed_event_min_count": 1,
+    "alignment_suggested_or_rate_limited_count": 0
   },
   "failure_budgets": {
     "empty_response": 0,
@@ -50,5 +65,49 @@
     "cases/<case_id>/session.json",
     "cases/<case_id>/learning_unit.json",
     "cases/<case_id>/events.jsonl"
-  ]
+  ],
+  "case_results": [
+    {
+      "case_id": "lm-p1a-fuzzy-index-stage",
+      "status": "pass",
+      "session_id": "sess-f0b25583",
+      "learning_unit_id": "lu-203b088a",
+      "final_forge_stage": "collision",
+      "final_temperature_state": "steady",
+      "effective_mode": "study",
+      "forge_stage_changed_event_count": 1
+    },
+    {
+      "case_id": "lm-p1a-light-compaction-stage",
+      "status": "pass",
+      "session_id": "sess-2caa9583",
+      "learning_unit_id": "lu-8716709a",
+      "final_forge_stage": "collision",
+      "final_temperature_state": "steady",
+      "effective_mode": "study",
+      "forge_stage_changed_event_count": 1
+    },
+    {
+      "case_id": "lm-p1a-ask-does-not-advance-stage",
+      "status": "pass",
+      "session_id": "sess-065bc386",
+      "learning_unit_id": "lu-1b1d3ef4",
+      "final_forge_stage": "entry",
+      "final_temperature_state": "steady",
+      "effective_mode": "ask",
+      "ask_alignment_stage_advanced": false,
+      "forge_stage_changed_event_count": 0
+    },
+    {
+      "case_id": "lm-p1a-stage-event-after-first-value",
+      "status": "pass",
+      "session_id": "sess-c503dcb5",
+      "learning_unit_id": "lu-4c58f1ad",
+      "final_forge_stage": "collision",
+      "final_temperature_state": "steady",
+      "effective_mode": "study",
+      "forge_stage_changed_event_count": 1
+    }
+  ],
+  "implementation_gap": []
 }

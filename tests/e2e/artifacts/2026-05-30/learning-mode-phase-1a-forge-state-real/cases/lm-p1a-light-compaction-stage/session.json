@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-05-30T18:04:45.538840Z",
+  "current_leaf_id": "entry-53378c80",
+  "extracted_knowledge_ids": [],
+  "id": "sess-2caa9583",
+  "last_accessed_at": "2026-05-30T18:05:05.286077Z",
+  "learning_unit_id": "lu-8716709a",
+  "messages": [
+    {
+      "content": "我只想先轻轻试一下 compaction。",
+      "id": "entry-0165f7cc",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "我先按这个目标带你学：初步了解 compaction 的概念。\n\n### 学习地图\n- 什么是 compaction 及其在数据库中的作用\n- Compaction 的类型及其工作原理\n- Compaction 对性能的影响及优化策略\n- 实际例子：以 RocksDB 为例讲解 compaction\n\n### 第一段实质讲解\n\n**什么是 compaction 及其在数据库中的作用**\n\nCompaction 是一种数据存储和管理技术，主要用于提高数据库的读写效率。在很多现代的键值存储系统（如 LevelDB, RocksDB）中，当数据被频繁地插入、更新或删除时，会产生大量的小文件或者碎片化的数据。这些小文件和碎片化数据会占用过多的磁盘空间，并且影响查询性能。为了解决这个问题，引入了 compaction 机制。\n\nCompaction 的主要功能是将这些小文件合并成较大的文件，同时移除过期或重复的数据，从而减少存储空间的使用并提高数据访问速度。通过定期执行 compaction 操作，可以确保数据文件保持在一个合理的大小范围内，同时也保证了数据库操作的高效性。\n\n例如，在一个基于 LSM (Log-Structured Merge) 树结构的存储引擎里，compaction 过程通常涉及多个步骤：\n1. **识别需要合并的文件**：根据一定的策略选择出哪些文件需要进行合并。\n2. **读取与合并**：从选定的文件中读取数据块，并按照键排序合并它们。\n3. **写入新文件**：将经过排序和去重后的数据写回到新的文件中。\n4. **删除旧文件**：一旦确认新文件已经成功写入并且可用，就可以安全地删除原有的小文件。\n\n这种机制有助于维持良好的存储状态，使得长期运行的服务能够持续提供高性能的数据存取服务。接下来，我们将深入探讨不同类型的 compaction 策略以及它们是如何具体工作的。",
+      "id": "entry-53378c80",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 402,
+          "actual_prompt_tokens": 1953,
+          "actual_total_tokens": 2355,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 24000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 304,
+          "is_estimated": false,
+          "utilization_ratio": 0.0024
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "我只想先轻轻试一下 compaction。"
+}

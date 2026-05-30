@@ -102,6 +102,12 @@ docs/
 | 2026-05-27 | `2026-05-27-learning-chat-study-profile-separation.md` | 研学 absorbing 与闲聊 Chat profile 分离 |
 | 2026-05-27 | `2026-05-27-learning-mode-final-product-prd.md` | 研学模式最终产品 PRD 变更记录 |
 | 2026-05-27 | `2026-05-27-real-e2e-testing-spec.md` | 真实数据集 E2E 测试规范 |
+| 2026-05-30 | `2026-05-30-learning-mode-phase-1b-kickoff.md` | 研学 Phase 1B kickoff 与顺序 gate |
+| 2026-05-30 | `2026-05-30-phase-1a-hardening-absorbing-routes-to-study.md` | Phase 1A hardening：absorbing 路由到 STUDY |
+| 2026-05-30 | `2026-05-30-phase-1a-hardening-rate-limited-event.md` | Phase 1A hardening：alignment rate-limited 事件 |
+| 2026-05-30 | `2026-05-30-phase-1a-hardening-alignment-event-gap-rca.md` | Phase 1A hardening：对齐侧面事件 RCA |
+| 2026-05-30 | `2026-05-30-phase-1a-hardening-real-runner-dataset.md` | Phase 1A hardening：真实 runner 与数据集补齐 |
+| 2026-05-30 | `2026-05-30-phase-1a-hardening-baseline-rerun.md` | Phase 1A hardening：baseline 实跑回填 |
 
 ---
 
@@ -137,6 +143,8 @@ docs/
 | `design-impl-chat-ask-modes.md` | Chat / Ask 双模式落地 + Study 预留接口 | 已落地：Chat/Ask 基础实现参考；`Study` 顶层口径已被学习卷取代 |
 | `design-modes-refactor-chat-vs-learning-unit.md` | Chat 与学习卷重构，Learning Unit / TEACH / 持久化契约 | 部分沿用：学习卷结构仍有效，强制 `aligning -> ASK` 已被取代 |
 | `design-learning-unit-adaptive-alignment.md` | 学习卷自适应对齐 | 当前主线 / 已落地 |
+| `design-learning-mode-phase-1b-1e-skeleton.md` | 研学 Phase 1B-1E 骨架边界 | 待评审 |
+| `design-learning-mode-phase-1b-orientation-context.md` | Phase 1B OrientationContext 详设 | 待评审 / 后续实施依据 |
 | `design-learning-unit-stop-and-status.md` | 学习卷停止能力与前端常驻研习状态 | 已落地 |
 | `design-web-search-learning-agent-implementation.md` | Learning-Agent Web Search 外部知识检索能力 | 当前主线 / 已落地迭代中 |
 
@@ -147,6 +155,8 @@ docs/
 | 文档 | 类型 | 状态 |
 |------|------|------|
 | `learning-mode-final-product-prd-2026-05-27.md` | 正式 PRD | 产品主线 |
+| `learning-mode-phase-1a-hardening-2026-05-30.md` | Phase 1A 硬化清单 | 当前实施 / 已回填 baseline |
+| `learning-mode-phase-1b-plan-checklist-2026-05-30.md` | Phase 1B 开工 checklist | 待 Phase 1A / 1B design gate 关闭后执行 |
 | `report-learning-mode-product-diagnosis-2026-05-25.md` | 产品诊断 | 背景参考 |
 | `learning-mode-mvp-definition-2026-05-25.md` | MVP 范围稿 | 历史 MVP 参考；最终口径以 2026-05-27 PRD 为准 |
 | `learning-mode-mvp-task-breakdown-2026-05-25.md` | 任务拆解 | 历史任务拆解；实现细节需按当前代码与 adaptive alignment 校验 |
@@ -174,9 +184,13 @@ docs/
 3. `docs/changes/2026-05-27-chat-study-separation-interface-contract.md`
 4. `docs/changes/2026-05-27-learning-chat-study-profile-separation.md`
 5. `docs/design/design-learning-unit-adaptive-alignment.md`
-6. `docs/design/design-modes-refactor-chat-vs-learning-unit.md`
-7. `docs/output/learning-mode-mvp-definition-2026-05-25.md`
-8. `docs/design/design-chat-ask-study-modes.md`
+6. `docs/output/learning-mode-phase-1a-hardening-2026-05-30.md`
+7. `docs/design/design-learning-mode-phase-1b-1e-skeleton.md`
+8. `docs/design/design-learning-mode-phase-1b-orientation-context.md`
+9. `docs/output/learning-mode-phase-1b-plan-checklist-2026-05-30.md`
+10. `docs/design/design-modes-refactor-chat-vs-learning-unit.md`
+11. `docs/output/learning-mode-mvp-definition-2026-05-25.md`
+12. `docs/design/design-chat-ask-study-modes.md`
 
 当前结论：
 

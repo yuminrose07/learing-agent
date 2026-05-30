@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-05-30T18:04:38.011802Z",
+  "current_leaf_id": "entry-be0691b8",
+  "extracted_knowledge_ids": [],
+  "id": "sess-f0b25583",
+  "last_accessed_at": "2026-05-30T18:04:45.514453Z",
+  "learning_unit_id": "lu-203b088a",
+  "messages": [
+    {
+      "content": "索引这东西我总是迷糊。",
+      "id": "entry-8f39c8f7",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "我先按这个目标带你学：理解索引的基本概念和工作原理。\n\n### 学习地图\n- 索引的基本定义\n- 为什么需要索引\n- 索引的类型与应用场景\n- 索引的工作原理\n- 如何创建和使用索引（以数据库为例）\n\n### 第一段实质讲解\n\n#### 索引的基本定义\n在计算机科学中，特别是在数据存储和检索领域，**索引**是一种特殊的数据结构，它被设计用来提高数据检索的速度。简单来说，索引就像是书本后面的目录——它帮助你快速找到书中特定的信息而不必逐页翻阅整本书。对于数据库而言，一个索引可以让查询操作更快地定位到所需的记录上，而不需要扫描整个表。\n\n#### 为什么需要索引\n当我们处理大量数据时，查找特定信息可能变得非常耗时。例如，在一个包含数百万条记录的数据库表中直接搜索某个特定值可能会导致性能问题。通过创建适当的索引，可以显著加快这类操作的速度。然而，索引也并非没有代价：它们会占用额外的存储空间，并且在插入、更新或删除数据时需要维护索引结构，这可能会稍微降低这些操作的效率。\n\n接下来我们将探讨不同类型的索引以及它们是如何工作的，这样可以帮助你更好地理解何时以及如何使用索引来优化你的应用程序或系统性能。",
+      "id": "entry-be0691b8",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 293,
+          "actual_prompt_tokens": 1953,
+          "actual_total_tokens": 2246,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 24000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 299,
+          "is_estimated": false,
+          "utilization_ratio": 0.0023
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "索引这东西我总是迷糊。"
+}
