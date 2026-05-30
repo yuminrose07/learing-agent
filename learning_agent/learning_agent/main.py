@@ -1037,8 +1037,8 @@ class LearningAgentSystem:
 
         - consolidated → 拒绝继续对话（只读）
         - outputting → TEACH (single_pass)
-        - absorbing → 默认 CHAT；若策略判 active 且未澄清过则覆写为 ASK；
-          策略判 suggested 时保留 CHAT 但通过 ``alignment_state`` 让 UI 出建议条。
+        - absorbing → 默认 STUDY；若策略判 active 且未澄清过则覆写为 ASK；
+          策略判 suggested 时保留 STUDY 但通过 ``alignment_state`` 让 UI 出建议条。
 
         adaptive alignment §9.1 / §9.3：限流由 3 道护栏分摊：
         - #1 启动期阻塞澄清不超过 1 次（``clarification_count``，本函数内 override）
@@ -1088,7 +1088,7 @@ class LearningAgentSystem:
                     )
             await self._apply_alignment_decision(unit, decision)
             effective_mode = (
-                AgentMode.ASK if decision.mode == "active" else AgentMode.CHAT
+                AgentMode.ASK if decision.mode == "active" else AgentMode.STUDY
             )
         else:
             decision = None
@@ -1133,7 +1133,7 @@ class LearningAgentSystem:
             session,
             user_input,
             profile,
-            allow_full_compact=(effective_mode == AgentMode.CHAT),
+            allow_full_compact=(effective_mode == AgentMode.STUDY),
         )
         return session, PreparedSessionTurn(
             effective_mode=effective_mode,
@@ -1152,10 +1152,10 @@ class LearningAgentSystem:
     ) -> Optional[str]:
         """absorbing 首轮的 system prompt 增量（adaptive alignment §6.1 / §6.2）。
 
-        触发条件：absorbing + CHAT + 本卷此前没有过 assistant 回答。
+        触发条件：absorbing + STUDY + 本卷此前没有过 assistant 回答。
         B 档（suggested）追加"收窄建议"段；A 档不附加。C 档走 ASK 不进这里。
         """
-        if effective_mode != AgentMode.CHAT or unit.phase != "absorbing":
+        if effective_mode != AgentMode.STUDY or unit.phase != "absorbing":
             return None
         if any(e.role == MessageRole.ASSISTANT for e in session.entries):
             return None
@@ -1341,7 +1341,7 @@ class LearningAgentSystem:
         unit_id = session.learning_unit_id
         if not unit_id:
             return
-        if prepared_turn.effective_mode != AgentMode.CHAT:
+        if prepared_turn.effective_mode != AgentMode.STUDY:
             return
         unit = self.learning_unit_store.get(unit_id)
         if unit is None or unit.phase != "absorbing":
@@ -1370,7 +1370,7 @@ class LearningAgentSystem:
         守卫顺序（任一失败则跳过）：
         - 响应非空
         - 会话挂着 learning_unit
-        - 本轮 effective_mode 是 CHAT（teach/ask 不算"学习价值"）
+        - 本轮 effective_mode 是 STUDY（teach/ask 不算"学习价值"）
         - 卷处于 absorbing
         - 卷的 ``first_value_delivered_at`` 仍为 None（once-only）
         """
@@ -1379,7 +1379,7 @@ class LearningAgentSystem:
         unit_id = session.learning_unit_id
         if not unit_id:
             return
-        if prepared_turn.effective_mode != AgentMode.CHAT:
+        if prepared_turn.effective_mode != AgentMode.STUDY:
             return
         unit = self.learning_unit_store.get(unit_id)
         if unit is None:
