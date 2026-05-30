@@ -44,9 +44,9 @@
 
 2. 独立 checklist：`docs/output/learning-mode-phase-1X-plan-checklist-*.md`，列出原子化、可独立提交的实施步骤与每步的验收方式。
 
-3. real dataset 占位（具体文件名见 §13）：`tests/e2e/real_datasets/learning-mode-phase-1X-*-real.json`。
+3. real dataset 文件（具体文件名见 §13）：开工前可只登记占位路径；子阶段关闭前必须由实现 PR 落实为可执行数据集。
 
-4. real baseline 占位（具体文件名见 §13）：`tests/e2e/real_baselines/learning-mode-phase-1X-*-real.baseline.json`，**必须实跑生成**，不允许像 1A 那样留 `not_yet_executed` 状态（见同批 1A 文档）。
+4. real baseline 文件（具体文件名见 §13）：开工前只要求锁定路径与验收口径；子阶段关闭前**必须实跑生成**，不允许像 1A 那样留 `not_yet_executed` 状态（见同批 1A 文档）。baseline 不是 1B 开工前置物，避免形成“未实现却要求实跑”的死锁。
 
 5. 单测覆盖：新增字段/事件至少有一条 pytest 用例。
 
@@ -85,7 +85,7 @@ PRD `docs/output/learning-mode-final-product-prd-2026-05-27.md` §3 把研学产
 - 自适应对齐三道限流参数：`learning_agent/learning_agent/alignment_policy.py:66-92`；副作用编排 `apply_alignment_decision`：`learning_agent/learning_agent/alignment_policy.py:151-234`。
 - forge_policy 委托器与 entry→collision 推进：`learning_agent/learning_agent/forge_policy.py:42-118`；main.py 包装 `learning_agent/learning_agent/main.py:1405-1421`；推进调用点 `main.py:1548-1550`。
 - `STUDY_PROFILE` / `TEACH_PROFILE` / `ASK_PROFILE` / `CHAT_PROFILE`：`learning_agent/learning_agent/mode_service.py:99-149`。
-- 事件枚举（含 `LEARNING_UNIT_FORGE_STAGE_CHANGED`）：`learning_agent/learning_agent/session_events.py:37-50`。
+- 事件枚举（含 `LEARNING_UNIT_FORGE_STAGE_CHANGED`、doc1 新增的 `LEARNING_UNIT_ALIGNMENT_RATE_LIMITED`）：`learning_agent/learning_agent/session_events.py:37-51`。
 - 学习卷准备入口 `_prepare_learning_unit_turn`：`learning_agent/learning_agent/main.py:983-1133`；absorbing 开场 addendum 构造 `_build_absorbing_opening_addendum`：约在 `main.py:1135` 之后；流式入口 `stream_session_chat`：`main.py:1447-1645`；alignment_popup 短路：`main.py:1491-1522`。
 - TEACH 反馈卡聚合渲染：`learning_agent/learning_agent/teach_flow.py:42-105`（反向问答主体在 `stream_teach_answer_flow` 所在段，1B-1E 不动）。
 
@@ -134,13 +134,13 @@ PRD `docs/output/learning-mode-final-product-prd-2026-05-27.md` §3 把研学产
 - 占位（双事件，禁止用 source 字段隐式分叉）：
   - `LEARNING_UNIT_ORIENTATION_GENERATED`（LLM 成功路径，仅在生成成功时 emit）。
   - `LEARNING_UNIT_ORIENTATION_FALLBACK_USED`（静态降级路径，仅在 LLM 失败时 emit）。
-- 注册位置：`learning_agent/learning_agent/session_events.py` 在 `LEARNING_UNIT_FORGE_STAGE_CHANGED` 之后追加。
+- 注册位置：`learning_agent/learning_agent/session_events.py` 在 doc1 落地的 `LEARNING_UNIT_ALIGNMENT_RATE_LIMITED` 之后追加（符号锚点，不绑定行号；若 doc1 未合入则 1B Step 1 不动）。
 - payload 共有字段：`learning_unit_id` / `forge_stage` / `temperature_state` / `source`（枚举 `llm|fallback`）/ `orientation_digest`。
 - 不新增：博物馆 / 镜子相关任何事件。
 
 ### 4.4 与 1A forge_stage 推进的接力
 - 1B 只增强 `entry` 态的产物质量，**不修改** `entry → collision` 的推进时机；该推进仍由 `forge_policy.maybe_advance_forge_stage` 在首轮 finalize 后触发（`main.py:1548-1550`、`forge_policy.py:69-117`）。
-- 入局情境**走独立 provider 调用**产生 `OrientationContext` 结构体，**不进入** `TurnExecutionProfile` 的主对话 history、**不与** `STUDY_PROFILE` 的 `system_prompt` / addendum 通道共用。
+- 入局情境**走独立 provider 调用**产生 `OrientationContext` 结构体，**不进入** `TurnExecutionProfile` 的 `system_prompt` / `system_prompt_addendum` / 主对话 history，**不与** `STUDY_PROFILE` 的 `system_prompt` / addendum 通道共用。
 - 1B **不新增 forge_stage 推进入口**，但允许在 `forge_policy.maybe_advance_forge_stage` 现有判断之前追加 `orientation_context is not None` 前置 gate（含 LLM 失败时的静态降级路径已尝试过）。
 - Runtime 与 provider adapter **严禁**追加任何 1B 相关 prompt（四层职责约束，详见 §8 第 7 条）。
 
@@ -185,7 +185,7 @@ PRD `docs/output/learning-mode-final-product-prd-2026-05-27.md` §3 把研学产
 - 是否参与 replay 由 1C design 拍板。
 
 ### 5.4 与 forge_stage 推进的接力
-- 1C 是 `collision → forge` 的实施者，必须沿用 1A 的 `forge_policy.maybe_advance_forge_stage` 委托模式（`forge_policy.py:69-117`、`main.py:1405-1421`），在 main.py 现有推进点统一调用，**不**在 prompt 流里硬塞推进。
+- 1C 是 `collision → forge` 的实施者，必须沿用 1A 的 `forge_policy.maybe_advance_forge_stage` 委托模式（`forge_policy.py:69-117`、`main.py:1405-1421`），由 main.py 现有统一推进点调用，**不**在 prompt 流里硬塞推进；允许在该唯一入口内部重构为阶段分发器，但外部不得新增第二个 forge 推进入口。
 - 必须保持「`outputting` 不处理 forge」与「ASK 对齐轮不推进 forge」两条 1A invariants。
 
 ### 5.5 关闭条件
@@ -292,15 +292,15 @@ PRD `docs/output/learning-mode-final-product-prd-2026-05-27.md` §3 把研学产
 3. ASK 对齐轮不推进 forge：1A invariants，沿用 `main.py:1491-1522` 的 alignment_popup 短路；C 档期间任何子阶段都不得修改 forge_stage。
 4. 学习卷主链 `absorbing ⇄ outputting → consolidated` 不变：四个子阶段都不允许新增或松动 `_ALLOWED_TRANSITIONS`（`learning_unit.py:179-187`）。
 5. 四模式 profile 分离不变：STUDY_PROFILE/TEACH_PROFILE 专属研学；CHAT_PROFILE/ASK_PROFILE 不允许携带 forge 字段或新事件。
-6. SSE 字段不轻易扩容：现有 22 个 `learning_unit_*` 字段足够展示骨架态；新增字段必须在子阶段 design 中显式说明前端必要性，否则不加。
-7. 四层职责守护：1B-1E 所有进入模型的 prompt/上下文必须在 Product 层（`_prepare_learning_unit_turn` 装配 `TurnExecutionProfile` 时）整体写入；**Runtime 层（含 `stream_session_chat`、`agent_loop.run`）与 provider adapter 严禁追加任何 1B-1E 相关 prompt**。
+6. SSE 字段不轻易扩容：现有 `learning_unit_*` 字段优先复用；新增字段必须在子阶段 design 中显式说明前端必要性，否则不加。1B 若按 doc3/doc4 展示 orientation，只允许暴露轻量 presence / hook 元数据，不把完整 `OrientationContext` 结构体塞进 SSE。
+7. 四层职责守护：1B-1E 若需要把上下文交给主回合模型，只能在 Product 层装配 `TurnExecutionProfile`；**Runtime 层（含 `stream_session_chat`、`agent_loop.run`）与 provider adapter 严禁追加任何 1B-1E 相关主回合 prompt**。1B orientation 是例外中的受控独立通道：它由 Product 层发起独立 provider 调用，产物只落 `unit.orientation_context`，禁止进入 `TurnExecutionProfile.system_prompt` / `system_prompt_addendum` / 主对话 history。
 
 ---
 
 ## 9. 事件是否参与 replay 的统一原则
 
 - 所有新增事件**默认 append-only 写入 JSONL**（invariants §11）。
-- 是否被 `session_projection.py` 消费、是否参与 SSE 重放，由各子阶段 design 在评审时拍板，**不在骨架文档定**。
+- 是否被 `session_projection.py` 消费、是否参与 SSE 重放，由各子阶段 design 在评审时拍板，**不在骨架文档定**。doc3 已对 1B 拍板：`ORIENTATION_GENERATED` / `ORIENTATION_FALLBACK_USED` 为 AGENT 可观测事件，不参与 replay。
 - 若某事件仅作可观测用途（不进入产品状态），子阶段 design 必须显式说明「projection 不消费」，且在 real baseline 里把该事件标为「仅出现，不影响 state 派生」。
 
 ---
@@ -351,7 +351,7 @@ PRD `docs/output/learning-mode-final-product-prd-2026-05-27.md` §3 把研学产
 
 ## 13. 子阶段交付清单（每个 1B/1C/1D/1E 进入实施前必须齐备）
 
-交付清单内容与 §0.2 [GATE] 一致；本节补充各子阶段的具体 dataset/baseline 文件名占位：
+交付清单内容与 §0.2 [GATE] 一致；本节补充各子阶段的具体 dataset/baseline 文件名。开工前锁定路径，关闭前实跑回填 baseline：
 
 - 1B：
   - `tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json`
@@ -366,7 +366,7 @@ PRD `docs/output/learning-mode-final-product-prd-2026-05-27.md` §3 把研学产
   - `tests/e2e/real_datasets/learning-mode-phase-1e-temperature-cooling-real.json`
   - `tests/e2e/real_baselines/learning-mode-phase-1e-temperature-cooling-real.baseline.json`
 
-baseline **必须实跑生成**，不允许留 `not_yet_executed` 状态。
+baseline 在子阶段关闭前**必须实跑生成**，不允许留 `not_yet_executed` 状态。
 
 ---
 
@@ -397,7 +397,7 @@ baseline **必须实跑生成**，不允许留 `not_yet_executed` 状态。
 | 1D 自己的话 | 全量生效 | 全量生效 | 不推进 forge | 沿用 1A |
 | 1E 定型/降温 | 全量生效 | 全量生效 | 不推进 forge、不改 temperature_state | 沿用 1A |
 
-C 档下唯一允许变化的是 `alignment_state` 自身（编排见 `alignment_policy.py:151-234`），任何 forge / temperature 字段在 C 档期间都不应被触动。
+C 档下唯一允许变化的是 `alignment_state` 自身（编排见 `alignment_policy.py:151-234`），任何 forge / temperature 字段在 C 档期间都不应被触动。若 1E design 需要在 active alignment 下继续做温度读数，必须先显式改写本表并给出不推进 forge、不改 `temperature_state` 的边界。
 
 ---
 
@@ -408,4 +408,3 @@ C 档下唯一允许变化的是 `alignment_state` 自身（编排见 `alignment
 2. 新增事件（`LEARNING_UNIT_ORIENTATION_GENERATED` / `LEARNING_UNIT_ORIENTATION_FALLBACK_USED` / `COLLISION_RECORDED` / `FORGE_INSIGHT_CAPTURED` / `FIXED_PHRASE_PERSISTED` / `TEMPERATURE_CHANGED`）是否参与会话 replay。骨架建议默认参与，但留各子阶段 design 评审时确认 projection 消费方式。
 
 3. `LEARNING_UNIT_ALIGNMENT_RATE_LIMITED` 由 doc1（`docs/output/learning-mode-phase-1a-hardening-2026-05-30.md`）交付，1B-1E 不在主流程 emit；若 1B-1E 需要在 alignment 触发时标注 `triggered_at_forge_stage`，留各子阶段按需扩展事件 data。**若 doc1 未通过评审，本骨架对 `ALIGNMENT_RATE_LIMITED` 的引用须同步回退。若 doc3 实施前发现与 doc2 §4.4 通道方向冲突，以 doc2 为事实源（doc2 已与 doc1+doc4 三方互锁）。**
-
