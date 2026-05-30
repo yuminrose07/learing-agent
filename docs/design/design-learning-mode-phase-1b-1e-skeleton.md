@@ -6,7 +6,7 @@
 >
 > 日期：2026-05-30
 >
-> 状态：v0.3，骨架，未进入实施
+> 状态：v0.4，骨架，doc2 正式评审通过，未进入实施
 >
 > 上游文档：
 > - PRD：`docs/output/learning-mode-final-product-prd-2026-05-27.md`
@@ -32,7 +32,7 @@
 
 本骨架文档**不可直接驱动代码提交**，只作为 1B-1E 各子阶段的 invariants 与边界来源。任何 1B-1E 的实现 PR 必须以「子阶段独立 design + 独立 checklist」为唯一上游；codex 在 §4-§7 看到的描述都属于约束而非动手清单，不要据此开始实施。原子化第一步在哪里——在各子阶段 checklist 里，不在本文档里找。
 
-**特别注意**：若 1B-1E 子阶段 design 与本骨架字面冲突，**design 为事实源**；骨架仅定边界，设计决策归子阶段。
+**特别注意**：若 1B-1E 子阶段 design 与本骨架字面冲突，**design 为事实源**；骨架仅定边界，设计决策归子阶段。但本骨架明确写成 invariant 的跨阶段边界不能被子阶段静默翻案，例如 1B orientation 不进入 `TurnExecutionProfile.system_prompt` / `system_prompt_addendum` / 主对话 history、forge_stage 推进入口唯一等；确需翻案时必须先修订本骨架与对应子阶段 design。
 
 ### 0.2 [GATE] 子阶段交付清单 + 前置门禁（前置门禁）
 
@@ -405,6 +405,6 @@ C 档下唯一允许变化的是 `alignment_state` 自身（编排见 `alignment
 
 1. forge_stage 是否允许回退（`fixed → forge` / `collision → entry` / `cooling → entry`）。骨架建议默认单向，由各子阶段在自己的 design 里拍板。
 
-2. 新增事件（`LEARNING_UNIT_ORIENTATION_GENERATED` / `LEARNING_UNIT_ORIENTATION_FALLBACK_USED` / `COLLISION_RECORDED` / `FORGE_INSIGHT_CAPTURED` / `FIXED_PHRASE_PERSISTED` / `TEMPERATURE_CHANGED`）是否参与会话 replay。骨架建议默认参与，但留各子阶段 design 评审时确认 projection 消费方式。
+2. 新增事件（`LEARNING_UNIT_ORIENTATION_GENERATED` / `LEARNING_UNIT_ORIENTATION_FALLBACK_USED` / `COLLISION_RECORDED` / `FORGE_INSIGHT_CAPTURED` / `FIXED_PHRASE_PERSISTED` / `TEMPERATURE_CHANGED`）是否参与会话 replay。1B 的两个 orientation 事件已由 doc3 拍板为 AGENT 可观测事件，不参与 replay；1C-1E 事件仍留各子阶段 design 评审时确认 projection 消费方式。
 
-3. `LEARNING_UNIT_ALIGNMENT_RATE_LIMITED` 由 doc1（`docs/output/learning-mode-phase-1a-hardening-2026-05-30.md`）交付，1B-1E 不在主流程 emit；若 1B-1E 需要在 alignment 触发时标注 `triggered_at_forge_stage`，留各子阶段按需扩展事件 data。**若 doc1 未通过评审，本骨架对 `ALIGNMENT_RATE_LIMITED` 的引用须同步回退。若 doc3 实施前发现与 doc2 §4.4 通道方向冲突，以 doc2 为事实源（doc2 已与 doc1+doc4 三方互锁）。**
+3. `LEARNING_UNIT_ALIGNMENT_RATE_LIMITED` 由 doc1（`docs/output/learning-mode-phase-1a-hardening-2026-05-30.md`）交付，1B-1E 不在主流程 emit；若 1B-1E 需要在 alignment 触发时标注 `triggered_at_forge_stage`，留各子阶段按需扩展事件 data。**若 doc1 未通过评审，本骨架对 `ALIGNMENT_RATE_LIMITED` 的引用须同步回退。若 doc3 实施前发现与 doc2 §4.4 通道方向冲突，按 §0.1 处理：一般设计细节以 doc3 为事实源；涉及 orientation 独立通道与 Runtime 边界等跨阶段 invariant 时，必须先同步修订 doc2 与 doc3，禁止静默翻案。**

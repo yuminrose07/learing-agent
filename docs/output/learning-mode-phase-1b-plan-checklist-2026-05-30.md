@@ -77,7 +77,7 @@ Phase 1B 的目标是：在 `forge_stage=entry` 阶段，系统能为一个新�
 
 ### 3.3 事件层（Infrastructure-as-fact-source）
 
-- [ ] `session_events.py` 增加两个新常量（**在 `LEARNING_UNIT_FORGE_STAGE_CHANGED`（`learning_agent/learning_agent/session_events.py:50`）之后追加**，与 forge / first_value 同族内聚）：
+- [ ] `session_events.py` 增加两个新常量（**在 doc1 已落地的 `LEARNING_UNIT_ALIGNMENT_RATE_LIMITED` 之后追加**，使用符号锚点，不绑定行号；若 doc1 未合入则本步不得执行）：
   - `LEARNING_UNIT_ORIENTATION_GENERATED = "learning_unit.orientation_generated"`（**仅 LLM 成功路径**）
   - `LEARNING_UNIT_ORIENTATION_FALLBACK_USED = "learning_unit.orientation_fallback_used"`（**仅静态降级路径**）
 - [ ] 事件命名规约：全文事件名使用全限定字符串（如 `learning_unit.orientation_generated`），单测断言禁止裁切前缀写法（不允许写 `ORIENTATION_GENERATED`）。
@@ -232,4 +232,3 @@ Phase 1B 的目标是：在 `forge_stage=entry` 阶段，系统能为一个新�
 STATUS: NEEDS_REVIEW
 
 待 doc1 与 doc3 评审通过、§10 open_questions 全部回填后，本文档转 READY，进入 codex 实施。
-
