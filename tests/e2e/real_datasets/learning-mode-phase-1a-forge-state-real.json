@@ -1,0 +1,183 @@
+{
+  "suite_id": "learning-mode-phase-1a-forge-state-real",
+  "description": "研学模式 Phase 1A 真实环境数据集。只验证铸造状态骨架：学习卷创建、forge_stage/temperature_state metadata、前端目标卡展示、ASK 对齐轮不推进阶段、阶段变化事件可采集。",
+  "owner": "learning-agent",
+  "dataset_version": "2026-05-27-v1",
+  "execution_mode": "manual_real_environment",
+  "target_surface": "frontend_or_api",
+  "runner_requirements": {
+    "requires_real_web_server": true,
+    "requires_learning_unit_creation": true,
+    "requires_learning_unit_payload_fetch": true,
+    "requires_session_event_log_collection": true,
+    "requires_sse_or_response_metadata_capture": true,
+    "requires_frontend_screenshot_when_frontend_mode": true,
+    "note": "当前数据集用于用户手动真实环境执行。若使用 runner，需要支持 POST /learning-units、/sessions/{id}/chat、GET /learning-units/{id}、GET /sessions/{id}/events。"
+  },
+  "acceptance_metrics": {
+    "hard_targets": {
+      "learning_unit_creation_rate": 1.0,
+      "non_empty_response_rate": 1.0,
+      "forge_stage_metadata_rate": 1.0,
+      "temperature_state_metadata_rate": 1.0,
+      "learning_unit_payload_forge_stage_rate": 1.0,
+      "frontend_backend_stage_consistency_rate": 1.0,
+      "chat_session_false_forge_stage_count": 0,
+      "ask_alignment_stage_advance_count": 0
+    },
+    "quality_targets": {
+      "first_value_case_pass_min": 3,
+      "first_value_case_total": 4,
+      "forge_stage_changed_event_min_count": 1
+    }
+  },
+  "evidence_required": [
+    "request.json",
+    "response.json",
+    "session.json",
+    "learning_unit.json",
+    "events.jsonl"
+  ],
+  "frontend_evidence_required_when_applicable": [
+    "frontend.png"
+  ],
+  "metadata_required": [
+    "learning_unit_id",
+    "learning_unit_phase",
+    "forge_stage",
+    "temperature_state",
+    "learning_action"
+  ],
+  "events_relevant": [
+    "learning_unit.created",
+    "learning_unit.first_value_delivered",
+    "learning_unit.forge_stage_changed",
+    "message.user_appended",
+    "message_end"
+  ],
+  "cases": [
+    {
+      "id": "lm-p1a-fuzzy-index-stage",
+      "title": "模糊索引输入创建研学卷并暴露 entry 状态",
+      "tags": ["learning", "phase_1a", "forge_stage", "fuzzy_input"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "索引这东西我总是迷糊。"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "索引这东西我总是迷糊。"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "learning_unit_phase": "absorbing",
+        "learning_unit_payload_should_include": ["forge_stage", "temperature_state"],
+        "assistant_metadata_should_include": ["learning_unit_id", "learning_unit_phase", "forge_stage", "temperature_state", "learning_action"],
+        "allowed_forge_stage_after_turn": ["entry", "collision"],
+        "allowed_temperature_state_after_turn": ["steady"],
+        "frontend_backend_consistent": true,
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "contains": ["请先填写完整学习目标", "无法进入研学模式"],
+        "empty_response": true
+      },
+      "severity": "high"
+    },
+    {
+      "id": "lm-p1a-light-compaction-stage",
+      "title": "轻量试学 compaction 时保持低压力 entry/orient",
+      "tags": ["learning", "phase_1a", "low_pressure", "compaction"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "我只想先轻轻试一下 compaction。"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "我只想先轻轻试一下 compaction。"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "assistant_metadata_should_include": ["forge_stage", "temperature_state", "learning_action"],
+        "allowed_learning_action": ["orient", "prepare_to_guess"],
+        "allowed_forge_stage_after_turn": ["entry", "collision"],
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "contains": ["完整架构如下", "我们需要先系统学习全部"],
+        "empty_response": true
+      },
+      "severity": "medium"
+    },
+    {
+      "id": "lm-p1a-ask-does-not-advance-stage",
+      "title": "模糊到触发 ASK 时不推进 forge_stage",
+      "tags": ["learning", "phase_1a", "ask_alignment", "stage_guard"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "教"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "教"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "may_enter_alignment": true,
+        "if_alignment_true_then_forge_stage_should_remain": "entry",
+        "assistant_metadata_should_include": ["learning_unit_id", "learning_unit_phase", "forge_stage"],
+        "forbid_forge_stage_changed_event_when_alignment": true
+      },
+      "forbid": {
+        "empty_response": true,
+        "stage_advanced_during_ask": true
+      },
+      "severity": "high"
+    },
+    {
+      "id": "lm-p1a-stage-event-after-first-value",
+      "title": "首轮学习价值后可采集 forge_stage_changed 事件",
+      "tags": ["learning", "phase_1a", "events", "first_value"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "缓存为什么不是越多越好？"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "缓存为什么不是越多越好？"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "event_contains_any": ["learning_unit.first_value_delivered", "learning_unit.forge_stage_changed"],
+        "assistant_metadata_should_include": ["forge_stage", "temperature_state"],
+        "allowed_forge_stage_after_turn": ["entry", "collision"],
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "contains": ["缓存的优点有如下十点"],
+        "empty_response": true
+      },
+      "severity": "medium"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "suite_id": "learning-mode-phase-1a-forge-state-real",
+  "baseline_version": "2026-05-27-v1",
+  "dataset": "tests/e2e/real_datasets/learning-mode-phase-1a-forge-state-real.json",
+  "status": "not_yet_executed",
+  "note": "该 baseline 先行定义验收指标。用户首次真实环境执行后，应回填 pass/fail、证据路径、已知 implementation_gap 和质量棘轮。",
+  "must_pass_cases": [
+    "lm-p1a-fuzzy-index-stage",
+    "lm-p1a-ask-does-not-advance-stage"
+  ],
+  "should_pass_cases": [
+    "lm-p1a-light-compaction-stage",
+    "lm-p1a-stage-event-after-first-value"
+  ],
+  "allowed_failures": {
+    "case_ids": [],
+    "max_total": 0,
+    "reason": "Phase 1A 是状态骨架，不允许把 metadata 缺失、学习卷未创建、空响应列入长期白名单。首次执行暴露未实现能力时，应记录为 implementation_gap。"
+  },
+  "hard_targets": {
+    "learning_unit_creation_rate": 1.0,
+    "non_empty_response_rate": 1.0,
+    "forge_stage_metadata_rate": 1.0,
+    "temperature_state_metadata_rate": 1.0,
+    "learning_unit_payload_forge_stage_rate": 1.0,
+    "frontend_backend_stage_consistency_rate": 1.0,
+    "chat_session_false_forge_stage_count": 0,
+    "ask_alignment_stage_advance_count": 0
+  },
+  "quality_targets": {
+    "first_value_case_pass_min": 3,
+    "first_value_case_total": 4,
+    "forge_stage_changed_event_min_count": 1
+  },
+  "failure_budgets": {
+    "empty_response": 0,
+    "learning_unit_not_created": 0,
+    "missing_forge_stage_metadata": 0,
+    "missing_temperature_state_metadata": 0,
+    "frontend_backend_mismatch": 0,
+    "forge_stage_advanced_during_ask": 0,
+    "runtime_owned_product_semantics": 0
+  },
+  "evidence_required": [
+    "manifest.json",
+    "summary.json",
+    "results.jsonl",
+    "cases/<case_id>/request.json",
+    "cases/<case_id>/response.json",
+    "cases/<case_id>/session.json",
+    "cases/<case_id>/learning_unit.json",
+    "cases/<case_id>/events.jsonl"
+  ]
+}
