@@ -250,3 +250,40 @@ def test_replay_filters_business_event_types_marked_observability():
     )
     assert "this SHOULD appear" in contents
     assert len(snapshot.messages) == 1, f"expected 1 message, got {len(snapshot.messages)}: {contents}"
+
+
+def test_apply_event_rate_limited_noop():
+    sid = "sess-rate-limited"
+    created = SessionEvent(
+        seq=1,
+        event_id="evt-created",
+        session_id=sid,
+        type=SessionEventType.SESSION_CREATED,
+        payload={"title": "Rate Limited", "mode": "study"},
+        visibility=EventVisibility.SYSTEM,
+    )
+    limited = SessionEvent(
+        seq=2,
+        event_id="evt-limited",
+        session_id=sid,
+        type=SessionEventType.LEARNING_UNIT_ALIGNMENT_RATE_LIMITED,
+        payload={
+            "learning_unit_id": "lu-123",
+            "phase": "absorbing",
+            "original_mode": "suggested",
+            "downgraded_to": "none",
+            "rate_limit_rule": "max_suggestions_per_unit",
+            "suggestion_count": 2,
+            "max_suggestions": 2,
+            "nag_cooldown_remaining": 0,
+            "trigger": "classifier_suggested",
+        },
+        visibility=EventVisibility.AGENT,
+    )
+
+    snapshot = replay_events([created, limited], session_id=sid)
+
+    assert snapshot.title == "Rate Limited"
+    assert snapshot.mode == AgentMode.STUDY
+    assert snapshot.messages == []
+    assert snapshot.corrupt_events == []

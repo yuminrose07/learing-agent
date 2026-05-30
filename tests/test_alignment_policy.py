@@ -11,6 +11,8 @@ import pytest
 from learning_agent.ai.learning_unit import ConceptItem, LearningUnit, UnitObjective
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
+    AlignmentRateLimitInfo,
+    classify_alignment,
     should_run_alignment,
 )
 
@@ -184,6 +186,17 @@ class TestRateLimitDowngrade:
         assert decision.mode == "none"
         assert decision.reason == "clear_enough"
 
+    def test_suggested_downgrade_exposes_cap_info(self):
+        unit = _unit()
+        unit.suggestion_count = 2
+        decision, info = classify_alignment(unit, "教我整个项目")
+        assert decision.mode == "none"
+        assert isinstance(info, AlignmentRateLimitInfo)
+        assert info.rate_limit_rule == "max_suggestions_per_unit"
+        assert info.suggestion_count == 2
+        assert info.max_suggestions == 2
+        assert info.nag_cooldown_remaining == 0
+
     def test_suggested_passes_below_suggestion_cap(self):
         unit = _unit()
         unit.suggestion_count = 1  # 还有一条额度
@@ -196,6 +209,17 @@ class TestRateLimitDowngrade:
         decision = should_run_alignment(unit, "教我整个项目")
         assert decision.mode == "none"
 
+    def test_suggested_downgrade_exposes_cooldown_info(self):
+        unit = _unit()
+        unit.nag_cooldown_remaining = 2
+        decision, info = classify_alignment(unit, "教我整个项目")
+        assert decision.mode == "none"
+        assert isinstance(info, AlignmentRateLimitInfo)
+        assert info.rate_limit_rule == "nag_cooldown"
+        assert info.suggestion_count == 0
+        assert info.max_suggestions == 2
+        assert info.nag_cooldown_remaining == 2
+
     def test_active_not_affected_by_suggestion_cap(self):
         # active 由 clarification_count 在调度器侧限流，不在 policy 内降级
         unit = _unit()
@@ -203,6 +227,10 @@ class TestRateLimitDowngrade:
         unit.nag_cooldown_remaining = 99
         decision = should_run_alignment(unit, "教")
         assert decision.mode == "active"
+
+        decision_with_info, info = classify_alignment(unit, "教")
+        assert decision_with_info.mode == "active"
+        assert info is None
 
     def test_none_unaffected_by_counters(self):
         unit = _unit()

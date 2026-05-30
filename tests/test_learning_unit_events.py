@@ -38,6 +38,7 @@ from learning_agent.ai import (
 )
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
+    AlignmentRateLimitInfo,
     COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
 )
 from learning_agent.learning_agent.main import LearningAgentSystem
@@ -374,8 +375,44 @@ class TestAlignmentEvents:
             "learning_unit.alignment_suggested",
             "learning_unit.alignment_resolved",
             "learning_unit.alignment_skipped",
+            "learning_unit.alignment_rate_limited",
         ):
             assert _calls_for(system.session_event_store, t) == []
+
+    @pytest.mark.asyncio
+    async def test_apply_decision_rate_limited_emits_rate_limited(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        unit.suggestion_count = 2
+        _wire_store(system, unit)
+
+        await system._apply_alignment_decision(
+            unit,
+            AlignmentDecision(mode="none", reason="clear_enough"),
+            AlignmentRateLimitInfo(
+                rate_limit_rule="max_suggestions_per_unit",
+                suggestion_count=2,
+                max_suggestions=2,
+                nag_cooldown_remaining=0,
+            ),
+        )
+
+        limited = _calls_for(
+            system.session_event_store, "learning_unit.alignment_rate_limited"
+        )
+        suggested = _calls_for(
+            system.session_event_store, "learning_unit.alignment_suggested"
+        )
+        assert len(limited) == 1
+        assert suggested == []
+        _assert_payload_complete(limited[0], unit.id)
+        assert limited[0]["original_mode"] == "suggested"
+        assert limited[0]["downgraded_to"] == "none"
+        assert limited[0]["rate_limit_rule"] == "max_suggestions_per_unit"
+        assert limited[0]["suggestion_count"] == 2
+        assert limited[0]["max_suggestions"] == 2
+        assert limited[0]["nag_cooldown_remaining"] == 0
+        assert limited[0]["trigger"] == "classifier_suggested"
 
 
 class TestFirstValueDeliveredEvent:

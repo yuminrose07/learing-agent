@@ -196,6 +196,11 @@ def _apply_event(
             snapshot.status = SessionStatus(status_value)
         return
 
+    if event.type == SessionEventType.LEARNING_UNIT_ALIGNMENT_RATE_LIMITED:
+        # Timeline-only product event. It documents a suggested→none downgrade
+        # without changing the replayed session snapshot.
+        return
+
     if event.type == SessionEventType.COMPACTION_SUMMARY_ADDED:
         metadata = snapshot.compact_metadata or CompactMetadata(session_id=event.session_id)
         summary_text = payload.get("summary_text")

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from learning_agent.ai.learning_unit import LearningUnit
 
 AlignmentMode = Literal["none", "suggested", "active"]
+RateLimitRule = Literal["max_suggestions_per_unit", "nag_cooldown"]
 AlignmentReason = Literal[
     "clear_enough",
     "too_broad",
@@ -46,6 +47,18 @@ class AlignmentDecision(BaseModel):
     reason: AlignmentReason
     suggested_objective: str = ""
     assumption_note: str = ""
+
+
+class AlignmentRateLimitInfo(BaseModel):
+    """Suggested 被 §9.3 限流降级时的可观测元数据。"""
+
+    original_mode: Literal["suggested"] = "suggested"
+    downgraded_to: Literal["none"] = "none"
+    rate_limit_rule: RateLimitRule
+    suggestion_count: int
+    max_suggestions: int
+    nag_cooldown_remaining: int
+    trigger: Literal["classifier_suggested"] = "classifier_suggested"
 
 
 # ─── 启发式词表 ───
@@ -176,6 +189,16 @@ def should_run_alignment(
     一阶段限制：只用单轮 user_input + unit.concept_list 做判定；
     ``recent_messages`` 在 B4 之后接入"中途纠偏"路径。
     """
+    decision, _ = classify_alignment(unit, user_input, recent_messages)
+    return decision
+
+
+def classify_alignment(
+    unit: LearningUnit,
+    user_input: str,
+    recent_messages: Optional[list] = None,  # noqa: ARG001 — B4 之后接入"中途纠偏"
+) -> tuple[AlignmentDecision, AlignmentRateLimitInfo | None]:
+    """返回最终判定，同时保留 suggested 被限流降级的原因。"""
     decision = _raw_judgment(unit, user_input)
     return _apply_rate_limits(unit, decision)
 
@@ -232,7 +255,7 @@ def _raw_judgment(unit: LearningUnit, user_input: str) -> AlignmentDecision:
 
 def _apply_rate_limits(
     unit: LearningUnit, decision: AlignmentDecision
-) -> AlignmentDecision:
+) -> tuple[AlignmentDecision, AlignmentRateLimitInfo | None]:
     """§9.3 #2 / #3 限流：suggested 命中上限或冷静期内静默降为 none。
 
     - #2 ``suggestion_count >= _MAX_SUGGESTIONS_PER_UNIT``：单卷已弹过 2 条建议，
@@ -242,18 +265,37 @@ def _apply_rate_limits(
     侧单独限流，A 档本就不打扰。
     """
     if decision.mode != "suggested":
-        return decision
+        return decision, None
     if unit.suggestion_count >= MAX_SUGGESTIONS_PER_UNIT:
-        return AlignmentDecision(mode="none", reason="clear_enough")
+        return (
+            AlignmentDecision(mode="none", reason="clear_enough"),
+            AlignmentRateLimitInfo(
+                rate_limit_rule="max_suggestions_per_unit",
+                suggestion_count=unit.suggestion_count,
+                max_suggestions=MAX_SUGGESTIONS_PER_UNIT,
+                nag_cooldown_remaining=unit.nag_cooldown_remaining,
+            ),
+        )
     if unit.nag_cooldown_remaining > 0:
-        return AlignmentDecision(mode="none", reason="clear_enough")
-    return decision
+        return (
+            AlignmentDecision(mode="none", reason="clear_enough"),
+            AlignmentRateLimitInfo(
+                rate_limit_rule="nag_cooldown",
+                suggestion_count=unit.suggestion_count,
+                max_suggestions=MAX_SUGGESTIONS_PER_UNIT,
+                nag_cooldown_remaining=unit.nag_cooldown_remaining,
+            ),
+        )
+    return decision, None
 
 
 __all__ = [
     "AlignmentDecision",
     "AlignmentMode",
+    "AlignmentRateLimitInfo",
     "AlignmentReason",
+    "RateLimitRule",
+    "classify_alignment",
     "should_run_alignment",
     "MAX_SUGGESTIONS_PER_UNIT",
     "COOLDOWN_AFTER_ACCEPT_ASSUMPTION",

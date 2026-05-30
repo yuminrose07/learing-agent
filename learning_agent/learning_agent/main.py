@@ -48,8 +48,9 @@ from learning_agent.ai.learning_unit import (
 from learning_agent.ai.openai_provider import OpenAIProvider
 from learning_agent.learning_agent.alignment_policy import (
     AlignmentDecision,
+    AlignmentRateLimitInfo,
     COOLDOWN_AFTER_ACCEPT_ASSUMPTION,
-    should_run_alignment,
+    classify_alignment,
 )
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
@@ -1054,6 +1055,7 @@ class LearningAgentSystem:
             )
 
         if unit.phase == "absorbing":
+            rate_limit_info = None
             # /align 端点会把 unit 提前置为 (active + user_request)。这种"用户主动
             # 触发"的对齐绕过 §9.3 #1 限流，但只生效本轮（在 _apply 中消费为 resolved）。
             user_initiated_alignment = (
@@ -1079,14 +1081,17 @@ class LearningAgentSystem:
                     or "旧学习卷需要先确认学习目标。",
                 )
             else:
-                decision = should_run_alignment(unit, user_input)
+                decision, rate_limit_info = classify_alignment(unit, user_input)
                 # §9.3 第 1 条护栏：启动期阻塞澄清不超过 1 次
                 if decision.mode == "active" and unit.clarification_count >= 1:
                     decision = AlignmentDecision(
                         mode="none",
                         reason="clear_enough",
                     )
-            await self._apply_alignment_decision(unit, decision)
+                    rate_limit_info = None
+            if user_initiated_alignment or legacy_pending_alignment:
+                rate_limit_info = None
+            await self._apply_alignment_decision(unit, decision, rate_limit_info)
             effective_mode = (
                 AgentMode.ASK if decision.mode == "active" else AgentMode.STUDY
             )
@@ -1173,6 +1178,7 @@ class LearningAgentSystem:
         self,
         unit: LearningUnit,
         decision: AlignmentDecision,
+        rate_limit_info: AlignmentRateLimitInfo | None = None,
     ) -> None:
         """把策略结果写回 unit；同时维护 §9.3 #2/#3 的持久化计数器。
 
@@ -1244,6 +1250,12 @@ class LearningAgentSystem:
                     "trigger": decision.reason or "policy",
                     "clarification_count": latest.clarification_count,
                 },
+            )
+        elif rate_limit_info is not None and decision.mode == "none":
+            self._emit_unit_event(
+                latest,
+                SessionEventType.LEARNING_UNIT_ALIGNMENT_RATE_LIMITED,
+                extra=rate_limit_info.model_dump(),
             )
 
     async def _prepare_session_turn(
