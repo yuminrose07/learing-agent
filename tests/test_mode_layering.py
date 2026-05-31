@@ -374,10 +374,14 @@ class TestTeachProtocol:
         assert meta["mode"] == "study"
         assert meta["learning_unit_phase"] == "absorbing"
         assert meta["learning_unit_id"] == unit.id
-        # Phase 1A 铸造状态骨架：STUDY absorbing 轮带 forge_stage + learning_action
+        # Phase 1B：准备 STUDY 轮时先落 orientation，metadata 只暴露 presence/hook。
         assert meta["forge_stage"] == "entry"
         assert meta["temperature_state"] == "steady"
-        assert meta["learning_action"] == "orient"
+        assert meta["learning_action"] == "await_orientation_response"
+        assert meta["orientation_context_present"] is True
+        assert meta["hook_kind"] == unit.orientation_context.hook_kind
+        assert unit.orientation_context is not None
+        assert unit.orientation_context.prompt_text not in turn.profile.system_prompt
         # absorbing 阶段不带 alignment / teach_session_id
         assert "alignment" not in meta
         assert "teach_session_id" not in meta

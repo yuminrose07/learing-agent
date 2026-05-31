@@ -674,6 +674,94 @@ test('absorbing 阶段渲染碰撞阶段与学习动作徽章（准备试答）'
     assert.equal(sandbox.window.__learningUnitUI.state.learningAction, 'prepare_to_guess');
 });
 
+test('碰撞阶段渲染 orientation context，缺失时保持隐藏容器', async () => {
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        if (url.endsWith('/learning-units/lu-orientation') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-orientation',
+                    session_id: 'sess-orientation',
+                    phase: 'absorbing',
+                    alignment_state: 'idle',
+                    objective_status: 'working',
+                    objective: { text: '理解缓存穿透' },
+                    forge_stage: 'collision',
+                    temperature_state: 'steady',
+                    learning_action: 'await_orientation_response',
+                    orientation_context: {
+                        prompt_text: '如果换成你遇到缓存穿透，你会先检查哪条线索？',
+                        hook_kind: 'scenario',
+                        source: 'llm',
+                        source_seed_ref: 'objective:理解缓存穿透',
+                        orientation_digest: 'digest123',
+                    },
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-orientation';
+    sandbox.window.__learningUnitUI.state.unitId = 'lu-orientation';
+    await sandbox.window.__learningUnitUI.refreshUnit();
+
+    const card = sandbox.document.getElementById('learning-unit-card');
+    assert.match(card.innerHTML, /data-testid="orientation-context"/);
+    assert.match(card.innerHTML, /如果换成你遇到缓存穿透/);
+    assert.match(card.innerHTML, /等你第一反应/);
+    assert.equal(sandbox.window.__learningUnitUI.state.hookKind, 'scenario');
+});
+
+test('收到 orientation_context_present 后主动刷新一次 unit snapshot', async () => {
+    const calls = [];
+    const sandbox = loadLearningUnitUIForTest(async (url, opts) => {
+        calls.push({ url, method: opts.method });
+        if (url.endsWith('/learning-units/lu-refresh') && opts.method === 'GET') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    id: 'lu-refresh',
+                    session_id: 'sess-refresh',
+                    phase: 'absorbing',
+                    alignment_state: 'idle',
+                    objective_status: 'working',
+                    objective: { text: '理解索引' },
+                    forge_stage: 'entry',
+                    temperature_state: 'steady',
+                    learning_action: 'await_orientation_response',
+                    orientation_context: {
+                        prompt_text: '你觉得索引为什么会让查询更快？',
+                        hook_kind: 'question',
+                        source: 'fallback',
+                        source_seed_ref: 'objective:理解索引',
+                        orientation_digest: 'digest456',
+                    },
+                }),
+            };
+        }
+        throw new Error(`Unexpected request: ${opts.method} ${url}`);
+    });
+
+    sandbox.window.__learningUnitUI.state.sessionId = 'sess-refresh';
+    sandbox.document.dispatchEvent(new sandbox.CustomEvent('learning-unit:metadata', {
+        detail: {
+            learning_unit_id: 'lu-refresh',
+            learning_unit_phase: 'absorbing',
+            forge_stage: 'entry',
+            hook_kind: 'question',
+            orientation_context_present: true,
+        },
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(calls.length, 1);
+    assert.equal(sandbox.window.__learningUnitUI.state.orientationContext.source, 'fallback');
+});
+
 test('renderChatMarkdown 使用 markdown-it 渲染表格与 br 换行', () => {
     const { renderChatMarkdown } = loadAppForTest();
     const html = renderChatMarkdown([

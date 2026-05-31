@@ -91,6 +91,7 @@ class CreateLearningUnitRequest(BaseModel):
         "user_written",
         "material_imported",
     ] = "ai_distilled"
+    source_ref: Optional[str] = None
 
 
 class AdvanceLearningUnitRequest(BaseModel):
@@ -216,6 +217,8 @@ async def _stream_chat_chunks(
                     "forge_stage",
                     "temperature_state",
                     "learning_action",
+                    "hook_kind",
+                    "orientation_context_present",
                 ):
                     value = chunk_metadata.get(key)
                     if value is not None:
@@ -535,6 +538,7 @@ async def create_learning_unit(req: CreateLearningUnitRequest) -> dict[str, Any]
         session, unit = system.create_learning_unit(
             seed_text=req.seed_text,
             source=req.source,
+            source_ref=req.source_ref,
         )
     except ActiveUnitExistsError as exc:
         return JSONResponse(

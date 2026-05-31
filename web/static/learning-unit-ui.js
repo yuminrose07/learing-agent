@@ -58,6 +58,7 @@
     const LEARNING_ACTION_LABEL = {
         orient: '定向',
         prepare_to_guess: '准备试答',
+        await_orientation_response: '等你第一反应',
     };
 
     /** Frontend representation of the active learning unit, kept in sync with SSE deltas. */
@@ -73,6 +74,8 @@
         forgeStage: null,
         temperatureState: null,
         learningAction: null,
+        orientationContext: null,
+        hookKind: null,
         teachSessionId: null,
         teachState: null,
         questionIndex: null,
@@ -155,6 +158,8 @@
         state.forgeStage = null;
         state.temperatureState = null;
         state.learningAction = null;
+        state.orientationContext = null;
+        state.hookKind = null;
         state.teachSessionId = null;
         state.teachState = null;
         state.questionIndex = null;
@@ -182,7 +187,9 @@
         state.alignmentReason = unit.alignment_reason || '';
         state.forgeStage = unit.forge_stage || 'entry';
         state.temperatureState = unit.temperature_state || 'steady';
-        if (unit.learning_action) state.learningAction = unit.learning_action;
+        state.orientationContext = unit.orientation_context || null;
+        state.hookKind = state.orientationContext ? state.orientationContext.hook_kind : null;
+        state.learningAction = unit.learning_action || null;
         const teachSession = unit.teach_session || null;
         const questions = teachSession && Array.isArray(teachSession.questions)
             ? teachSession.questions
@@ -214,6 +221,8 @@
             state.objectiveText = '';
             state.assumptionNote = '';
             state.alignmentReason = '';
+            state.orientationContext = null;
+            state.hookKind = null;
             changed = true;
         }
         const fields = {
@@ -225,6 +234,7 @@
             forgeStage: delta.forge_stage,
             temperatureState: delta.temperature_state,
             learningAction: delta.learning_action,
+            hookKind: delta.hook_kind,
             teachSessionId: delta.teach_session_id,
             teachState: delta.teach_state,
             questionIndex: delta.question_index,
@@ -243,10 +253,15 @@
             state.feedbackCard = delta.feedback_card;
             changed = true;
         }
+        const shouldRefreshOrientation = (
+            delta.orientation_context_present === true && !state.orientationContext
+        );
         if (changed) {
             render();
             dispatchState();
             // Hydrate the rest from the canonical unit doc when phase or id changed.
+            refreshUnit().catch(() => {});
+        } else if (shouldRefreshOrientation) {
             refreshUnit().catch(() => {});
         }
     }
@@ -259,6 +274,8 @@
                 phase: state.phase,
                 objectiveText: state.objectiveText,
                 objectiveStatus: state.objectiveStatus,
+                hookKind: state.hookKind,
+                orientationContextPresent: !!state.orientationContext,
             },
         }));
     }
@@ -315,6 +332,7 @@
                 <span class="lu-objective-kicker">研习卷</span>
                 <p class="lu-objective-text">${state.objectiveText ? escapeHtml(state.objectiveText) : '<span class="lu-empty">尚未生成工作目标</span>'}</p>
                 ${showForge ? renderForgeRow() : ''}
+                ${showForge ? renderOrientationContext() : ''}
             </div>
             ${state.assumptionNote ? `<div class="lu-assumption">${escapeHtml(state.assumptionNote)}</div>` : ''}
             ${showSuggestion ? renderSuggestionBar() : ''}
@@ -350,6 +368,27 @@
                 ${actionLabel ? `<span class="lu-learning-action">${escapeHtml(actionLabel)}</span>` : ''}
             </div>
         `;
+    }
+
+    function renderOrientationContext() {
+        const ctx = state.orientationContext;
+        const visible = state.forgeStage === 'collision' && ctx && ctx.prompt_text;
+        if (!visible) {
+            return '<div class="lu-orientation-context" data-testid="orientation-context" hidden></div>';
+        }
+        const hook = state.hookKind || ctx.hook_kind || '';
+        return `
+            <div class="lu-orientation-context" data-testid="orientation-context" data-hook-kind="${escapeHtml(hook)}">
+                <span class="lu-orientation-kicker">${escapeHtml(hookLabel(hook))}</span>
+                <p class="lu-orientation-prompt">${escapeHtml(ctx.prompt_text)}</p>
+            </div>
+        `;
+    }
+
+    function hookLabel(hook) {
+        if (hook === 'scenario') return '场景';
+        if (hook === 'counterintuitive') return '反直觉';
+        return '提问';
     }
 
     function renderPhasePill(target, current) {

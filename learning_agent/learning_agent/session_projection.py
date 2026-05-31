@@ -201,6 +201,14 @@ def _apply_event(
         # without changing the replayed session snapshot.
         return
 
+    if event.type in {
+        SessionEventType.LEARNING_UNIT_ORIENTATION_GENERATED,
+        SessionEventType.LEARNING_UNIT_ORIENTATION_FALLBACK_USED,
+    }:
+        # Timeline-only product events. OrientationContext lives on LearningUnit
+        # storage; session replay must not synthesize or mutate that state.
+        return
+
     if event.type == SessionEventType.COMPACTION_SUMMARY_ADDED:
         metadata = snapshot.compact_metadata or CompactMetadata(session_id=event.session_id)
         summary_text = payload.get("summary_text")

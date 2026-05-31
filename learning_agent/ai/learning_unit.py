@@ -56,6 +56,10 @@ VerificationStatus = Literal["passed", "skipped"]
 
 ForgeStage = Literal["entry", "collision", "forge", "fixed", "cooling"]
 
+OrientationHookKind = Literal["question", "scenario", "counterintuitive"]
+
+OrientationSource = Literal["llm", "fallback"]
+
 TemperatureState = Literal[
     "steady",
     "needs_example",
@@ -153,6 +157,21 @@ class TeachFeedbackCard(BaseModel):
     next_topic_suggestion: str = ""
 
 
+class OrientationContext(BaseModel):
+    """Phase 1B：一次性派生的入局情境。
+
+    存在即代表本 unit 已经完成 orientation 生成尝试；source 标记成功路径
+    或静态降级路径，供事件与 UI 恢复使用。
+    """
+
+    prompt_text: str = Field(min_length=1, max_length=120)
+    hook_kind: OrientationHookKind
+    source: OrientationSource
+    source_seed_ref: Optional[str] = None
+    orientation_digest: str = Field(min_length=1)
+    generated_at: datetime = Field(default_factory=_now)
+
+
 _PHASE_ORDER: tuple[LearningUnitPhase, ...] = (
     "absorbing",
     "outputting",
@@ -213,6 +232,8 @@ class LearningUnit(BaseModel):
     # ── Phase 1A 铸造状态骨架 ─────────────────────────────────────
     forge_stage: ForgeStage = "entry"
     temperature_state: TemperatureState = "steady"
+    # ── Phase 1B 入局情境 ─────────────────────────────────────────
+    orientation_context: Optional[OrientationContext] = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -257,6 +278,9 @@ __all__ = [
     "TeachSession",
     "TeachSessionState",
     "TeachFeedbackCard",
+    "OrientationContext",
+    "OrientationHookKind",
+    "OrientationSource",
     "QuestionKind",
     "QuestionVerdict",
     "VerificationStatus",

@@ -32,6 +32,7 @@ from learning_agent.ai import (
     ConceptItem,
     LearningSession,
     LearningUnit,
+    OrientationContext,
     TeachQuestion,
     TeachSession,
     UnitObjective,
@@ -502,6 +503,13 @@ class TestForgeStageEvents:
     def test_first_study_response_advances_and_emits_once(self):
         system = _build_event_capturing_system()
         unit = _make_unit(phase="absorbing")
+        unit.orientation_context = OrientationContext(
+            prompt_text="如果换成你解释 attention，你会先抓哪条线索？",
+            hook_kind="scenario",
+            source="llm",
+            source_seed_ref="objective:理解 attention",
+            orientation_digest="digest123",
+        )
         _wire_store(system, unit)
         session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
 
@@ -520,6 +528,21 @@ class TestForgeStageEvents:
         assert changed[0]["to"] == "collision"
         assert changed[0]["temperature_state"] == "steady"
         assert changed[0]["reason"] == "first_value_delivered"
+
+    def test_first_study_response_without_orientation_does_not_advance(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        _wire_store(system, unit)
+        session = LearningSession(id=unit.session_id, learning_unit_id=unit.id)
+
+        system._maybe_advance_forge_stage(
+            session, self._make_prepared_turn(AgentMode.STUDY), "首条实质回答"
+        )
+
+        assert unit.forge_stage == "entry"
+        assert _calls_for(
+            system.session_event_store, "learning_unit.forge_stage_changed"
+        ) == []
 
     def test_empty_response_does_not_advance(self):
         system = _build_event_capturing_system()
@@ -560,6 +583,84 @@ class TestForgeStageEvents:
         )
 
         assert system.session_event_store.append_event.call_count == 0
+
+
+class TestOrientationEvents:
+    def test_orientation_generated_payload_is_complete(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        ctx = OrientationContext(
+            prompt_text="如果换成你解释 attention，你会先抓哪条线索？",
+            hook_kind="scenario",
+            source="llm",
+            source_seed_ref="objective:理解 attention",
+            orientation_digest="digest123",
+        )
+        unit.orientation_context = ctx
+
+        system._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_ORIENTATION_GENERATED,
+            extra={
+                "learning_unit_id": unit.id,
+                "forge_stage": unit.forge_stage,
+                "temperature_state": unit.temperature_state,
+                "source": ctx.source,
+                "orientation_digest": ctx.orientation_digest,
+                "hook_kind": ctx.hook_kind,
+                "prompt_text": ctx.prompt_text,
+                "source_seed_ref": ctx.source_seed_ref,
+                "regenerated": False,
+            },
+        )
+
+        generated = _calls_for(
+            system.session_event_store, "learning_unit.orientation_generated"
+        )
+        assert len(generated) == 1
+        _assert_payload_complete(generated[0], unit.id)
+        assert generated[0]["source"] == "llm"
+        assert generated[0]["hook_kind"] == "scenario"
+        assert generated[0]["prompt_text"] == ctx.prompt_text
+        assert generated[0]["orientation_digest"] == ctx.orientation_digest
+
+    def test_orientation_fallback_payload_is_complete(self):
+        system = _build_event_capturing_system()
+        unit = _make_unit(phase="absorbing")
+        ctx = OrientationContext(
+            prompt_text="先用你的第一反应说一句：这里最关键的矛盾是什么？",
+            hook_kind="question",
+            source="fallback",
+            source_seed_ref="objective:理解 attention",
+            orientation_digest="digest456",
+        )
+        unit.orientation_context = ctx
+
+        system._emit_unit_event(
+            unit,
+            SessionEventType.LEARNING_UNIT_ORIENTATION_FALLBACK_USED,
+            extra={
+                "learning_unit_id": unit.id,
+                "forge_stage": unit.forge_stage,
+                "temperature_state": unit.temperature_state,
+                "source": ctx.source,
+                "orientation_digest": ctx.orientation_digest,
+                "hook_kind": ctx.hook_kind,
+                "prompt_text": ctx.prompt_text,
+                "source_seed_ref": ctx.source_seed_ref,
+                "regenerated": False,
+            },
+        )
+
+        fallback = _calls_for(
+            system.session_event_store, "learning_unit.orientation_fallback_used"
+        )
+        assert len(fallback) == 1
+        _assert_payload_complete(fallback[0], unit.id)
+        assert fallback[0]["source"] == "fallback"
+        assert fallback[0]["hook_kind"] == "question"
+        assert fallback[0]["prompt_text"] == ctx.prompt_text
+        assert fallback[0]["orientation_digest"] == ctx.orientation_digest
 
 
 class TestEventEmissionFaultTolerance:

@@ -61,6 +61,9 @@ class LearningUnitStore:
                 if raw is None:
                     continue
                 raw = _project_legacy_unit(raw)
+                # Phase 1B 兼容性：旧 1A unit 可能已在 collision/forge/fixed/cooling
+                # 且没有 orientation_context。加载时直接放行，不补生成、不阻塞主流程；
+                # 只有新建 entry unit 会在 Product 编排阶段进入完整 1B 路径。
                 unit = LearningUnit.model_validate(raw)
                 self._units[unit.id] = unit
             except Exception:

@@ -375,10 +375,12 @@ class TestForgeStateRoundTrip:
         unit = store.create(session_id="sess-forge", objective_text="t")
         assert unit.forge_stage == "entry"
         assert unit.temperature_state == "steady"
+        assert unit.orientation_context is None
         # 默认值也应写进磁盘
         raw = file_store.load_learning_unit(unit.id)
         assert raw["forge_stage"] == "entry"
         assert raw["temperature_state"] == "steady"
+        assert raw["orientation_context"] is None
 
     def test_forge_stage_round_trips_after_write(self, file_store: FileStore):
         store = LearningUnitStore(file_store)
@@ -391,6 +393,29 @@ class TestForgeStateRoundTrip:
         assert reloaded is not None
         assert reloaded.forge_stage == "collision"
         assert reloaded.temperature_state == "steady"
+        assert reloaded.orientation_context is None
+
+    def test_orientation_context_round_trips_after_write(self, file_store: FileStore):
+        store = LearningUnitStore(file_store)
+        unit = store.create(session_id="sess-orientation", objective_text="t")
+        from learning_agent.ai.learning_unit import OrientationContext
+
+        unit.orientation_context = OrientationContext(
+            prompt_text="如果换成你解释这个目标，你会先抓哪条线索？",
+            hook_kind="scenario",
+            source="llm",
+            source_seed_ref="objective:t",
+            orientation_digest="digest123",
+        )
+        store.save(unit)
+
+        fresh = LearningUnitStore(file_store)
+        reloaded = fresh.get(unit.id)
+        assert reloaded is not None
+        assert reloaded.orientation_context is not None
+        assert reloaded.orientation_context.source == "llm"
+        assert reloaded.orientation_context.hook_kind == "scenario"
+        assert reloaded.orientation_context.orientation_digest == "digest123"
 
     def test_legacy_json_without_forge_fields_defaults(self, file_store: FileStore):
         # 旧卷完全没有 forge_stage / temperature_state 键 → Pydantic 兜底默认值
@@ -418,6 +443,35 @@ class TestForgeStateRoundTrip:
         assert reloaded is not None
         assert reloaded.forge_stage == "entry"
         assert reloaded.temperature_state == "steady"
+        assert reloaded.orientation_context is None
+
+    def test_legacy_1a_collision_without_orientation_loads(self, file_store: FileStore):
+        legacy = {
+            "id": "lu-legacy-collision",
+            "session_id": "sess-legacy-collision",
+            "objective": {
+                "text": "旧卷已在 collision",
+                "source": "ai_distilled",
+                "source_ref": None,
+                "confirmed": False,
+            },
+            "phase": "absorbing",
+            "concept_list": [],
+            "tangent_notes": [],
+            "forge_stage": "collision",
+            "temperature_state": "steady",
+            "teach_session": None,
+            "verification_status": None,
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-01T00:00:00+00:00",
+        }
+        file_store.save_learning_unit(legacy["id"], legacy)
+
+        store = LearningUnitStore(file_store)
+        reloaded = store.get("lu-legacy-collision")
+        assert reloaded is not None
+        assert reloaded.forge_stage == "collision"
+        assert reloaded.orientation_context is None
 
 
 class TestPerUnitLock:

@@ -138,6 +138,32 @@
     border: 1px solid rgba(107, 96, 86, 0.22);
 }
 
+.lu-orientation-context {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-left: 2px solid var(--indigo, #2d4474);
+    background: var(--indigo-soft, rgba(45, 68, 116, 0.08));
+    border-radius: 0 var(--r-xs, 3px) var(--r-xs, 3px) 0;
+}
+.lu-orientation-context[hidden] {
+    display: none;
+}
+.lu-orientation-kicker {
+    display: block;
+    margin-bottom: 4px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--indigo, #2d4474);
+}
+.lu-orientation-prompt {
+    margin: 0;
+    color: var(--ink);
+    font-size: 13.5px;
+    line-height: 1.6;
+}
+
 .lu-assumption {
     padding: 8px 12px;
     border-left: 2px solid var(--ochre, #b88a3a);

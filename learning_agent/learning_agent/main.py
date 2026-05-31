@@ -54,7 +54,10 @@ from learning_agent.learning_agent.alignment_policy import (
 )
 from learning_agent.learning_agent.compaction import CompactionCoordinator, CompactionPlan
 from learning_agent.learning_agent.concept_extractor import ConceptExtractor
-from learning_agent.learning_agent.forge_policy import prepare_forge_stage_metadata
+from learning_agent.learning_agent.forge_policy import (
+    maybe_advance_forge_stage,
+    prepare_forge_stage_metadata,
+)
 from learning_agent.learning_agent.learning_unit_store import (
     ActiveUnitExistsError,
     LearningUnitStore,
@@ -63,6 +66,7 @@ from learning_agent.learning_agent.learning_unit_metrics import (
     LearningUnitMetricsSummary,
     calculate_metrics_summary,
 )
+from learning_agent.learning_agent.orientation_policy import maybe_generate_orientation_async
 from learning_agent.learning_agent.teach_generator import TeachQuestionGenerator
 from learning_agent.learning_agent.teach_judge import TeachJudge
 from learning_agent.learning_agent.mode_service import (
@@ -1095,6 +1099,14 @@ class LearningAgentSystem:
             effective_mode = (
                 AgentMode.ASK if decision.mode == "active" else AgentMode.STUDY
             )
+            if effective_mode == AgentMode.STUDY:
+                await maybe_generate_orientation_async(
+                    store=self.learning_unit_store,
+                    emit_unit_event=self._emit_unit_event,
+                    session=session,
+                    unit=unit,
+                    provider=self._generate_orientation_with_provider,
+                )
         else:
             decision = None
             effective_mode = AgentMode.TEACH
@@ -1119,6 +1131,11 @@ class LearningAgentSystem:
         if effective_mode == AgentMode.STUDY and unit.phase == "absorbing":
             forge_plan = prepare_forge_stage_metadata(unit, user_input)
             unit_metadata["learning_action"] = forge_plan.learning_action
+            unit_metadata["orientation_context_present"] = (
+                unit.orientation_context is not None
+            )
+            if forge_plan.hook_kind is not None:
+                unit_metadata["hook_kind"] = forge_plan.hook_kind
         if effective_mode == AgentMode.TEACH and unit.teach_session is not None:
             unit_metadata["teach_session_id"] = unit.teach_session.id
             unit_metadata["teach_state"] = unit.teach_session.state
@@ -1147,6 +1164,36 @@ class LearningAgentSystem:
             stream_metadata=dict(profile.assistant_message_metadata),
             compaction_plan=compaction_plan,
         )
+
+    async def _generate_orientation_with_provider(
+        self,
+        unit: LearningUnit,
+        session: LearningSession,
+    ) -> str | None:
+        """独立 LLM provider 通道生成入局情境；不进入主 turn profile。"""
+        provider = getattr(self, "provider", None)
+        if provider is None:
+            return None
+        prompt = (
+            "你是学习产品里的入局情境生成器。只输出一段中文，不要 markdown、"
+            "不要标题、不要列表、不要代码。长度不超过 120 个中文字符。"
+            "围绕学习目标给出一个能让用户马上用 1-2 句话回应的情境，"
+            "必须以提问、具体场景、或反直觉判断收尾。\n\n"
+            f"学习目标：{unit.objective.text}\n"
+            f"会话标题：{session.title or ''}"
+        )
+        chunk = await provider.chat(
+            ChatParams(
+                model=provider.default_model,
+                messages=[
+                    ChatMessage(role=MessageRole.USER, content=prompt),
+                ],
+                temperature=0.3,
+                stream=False,
+                max_tokens=160,
+            )
+        )
+        return chunk.content
 
     def _build_absorbing_opening_addendum(
         self,
@@ -1422,49 +1469,40 @@ class LearningAgentSystem:
         session: LearningSession,
         prepared_turn: PreparedSessionTurn,
         response_text: str,
-    ) -> None:
-        """Phase 1A：首轮 STUDY absorbing 成功后将 forge_stage 从 entry 推进为 collision。
-
-        守卫与 _maybe_emit_first_value 同构：
-        - 响应非空
-        - 会话挂着 learning_unit
-        - 本轮 effective_mode 是 STUDY
-        - 卷处于 absorbing
-        - forge_stage 仍为 entry（once-only）
-        """
-        if not response_text.strip():
-            return
+    ) -> Optional[LearningUnit]:
+        """委托 forge_policy 推进 forge_stage，保持全项目唯一推进入口。"""
         unit_id = session.learning_unit_id
         if not unit_id:
-            return
-        if prepared_turn.effective_mode != AgentMode.STUDY:
-            return
+            return None
         unit = self.learning_unit_store.get(unit_id)
-        if unit is None:
-            return
-        if unit.phase != "absorbing":
-            return
-        if unit.forge_stage != "entry":
-            return
-        unit.forge_stage = "collision"
-        unit.updated_at = datetime.now(timezone.utc)
-        try:
-            self.learning_unit_store.save(unit)
-        except Exception:
-            logger.exception(
-                f"[System] Failed to persist forge_stage advance for unit {unit_id}"
-            )
-            return
-        self._emit_unit_event(
-            unit,
-            SessionEventType.LEARNING_UNIT_FORGE_STAGE_CHANGED,
-            extra={
-                "from": "entry",
-                "to": "collision",
-                "temperature_state": unit.temperature_state,
-                "reason": "first_value_delivered",
-            },
+        return maybe_advance_forge_stage(
+            unit=unit,
+            store=self.learning_unit_store,
+            emit_unit_event=self._emit_unit_event,
+            response_text=response_text,
+            effective_mode=prepared_turn.effective_mode,
+            user_input=prepared_turn.runtime_input,
         )
+
+    def _learning_unit_stream_metadata(self, unit: LearningUnit) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "mode": AgentMode.STUDY.value if unit.phase == "absorbing" else unit.effective_mode(),
+            "learning_unit_id": unit.id,
+            "learning_unit_phase": unit.phase,
+            "alignment_state": unit.alignment_state,
+            "objective_status": unit.objective_status,
+            "forge_stage": unit.forge_stage,
+            "temperature_state": unit.temperature_state,
+        }
+        if unit.phase == "absorbing":
+            forge_plan = prepare_forge_stage_metadata(unit, "")
+            metadata["learning_action"] = forge_plan.learning_action
+            metadata["orientation_context_present"] = (
+                unit.orientation_context is not None
+            )
+            if forge_plan.hook_kind is not None:
+                metadata["hook_kind"] = forge_plan.hook_kind
+        return metadata
 
     async def _stream_teach_answer_flow(
         self,
@@ -1753,12 +1791,19 @@ class LearningAgentSystem:
                             self._maybe_emit_first_value(
                                 prepared_session, prepared_turn, "".join(response_parts)
                             )
-                            self._maybe_advance_forge_stage(
+                            advanced_unit = self._maybe_advance_forge_stage(
                                 prepared_session, prepared_turn, "".join(response_parts)
                             )
                             self._maybe_fire_concept_extraction(
                                 prepared_session, prepared_turn, "".join(response_parts)
                             )
+                            if advanced_unit is not None:
+                                yield ChatChunk(
+                                    content="",
+                                    metadata=self._learning_unit_stream_metadata(
+                                        advanced_unit
+                                    ),
+                                )
                     except Exception:
                         logger.exception(
                             f"[System] Failed to finalize turn for session {session_id}"

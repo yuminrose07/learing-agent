@@ -49,6 +49,8 @@ class SessionEventType:
     LEARNING_UNIT_REUSE_FEEDBACK = "learning_unit.reuse_feedback"
     LEARNING_UNIT_FORGE_STAGE_CHANGED = "learning_unit.forge_stage_changed"
     LEARNING_UNIT_ALIGNMENT_RATE_LIMITED = "learning_unit.alignment_rate_limited"
+    LEARNING_UNIT_ORIENTATION_GENERATED = "learning_unit.orientation_generated"
+    LEARNING_UNIT_ORIENTATION_FALLBACK_USED = "learning_unit.orientation_fallback_used"
 
 
 class EventVisibility:

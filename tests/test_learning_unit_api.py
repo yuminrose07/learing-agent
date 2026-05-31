@@ -88,6 +88,7 @@ class TestCreateLearningUnit:
         mock_system.create_learning_unit.assert_called_once_with(
             seed_text="理解 attention",
             source="ai_distilled",
+            source_ref=None,
         )
 
     def test_http_accepts_user_written_source(self, mock_system, monkeypatch):
@@ -108,6 +109,7 @@ class TestCreateLearningUnit:
         mock_system.create_learning_unit.assert_called_once_with(
             seed_text="理解 attention",
             source="user_written",
+            source_ref=None,
         )
 
     @pytest.mark.asyncio
