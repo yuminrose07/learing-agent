@@ -110,6 +110,7 @@ docs/
 | 2026-05-30 | `2026-05-30-phase-1a-hardening-baseline-rerun.md` | Phase 1A hardening：baseline 实跑回填 |
 | 2026-05-31 | `2026-05-31-learning-mode-phase-1b-doc2-pregate-review.md` | Phase 1B doc2 预闸评审收口 |
 | 2026-05-31 | `2026-05-31-learning-mode-phase-1b-doc2-review-pass.md` | Phase 1B doc2 正式评审通过 |
+| 2026-05-31 | `2026-05-31-learning-mode-phase-1b-close.md` | Phase 1B OrientationContext 实现与验收关闭 |
 
 ---
 
@@ -145,8 +146,8 @@ docs/
 | `design-impl-chat-ask-modes.md` | Chat / Ask 双模式落地 + Study 预留接口 | 已落地：Chat/Ask 基础实现参考；`Study` 顶层口径已被学习卷取代 |
 | `design-modes-refactor-chat-vs-learning-unit.md` | Chat 与学习卷重构，Learning Unit / TEACH / 持久化契约 | 部分沿用：学习卷结构仍有效，强制 `aligning -> ASK` 已被取代 |
 | `design-learning-unit-adaptive-alignment.md` | 学习卷自适应对齐 | 当前主线 / 已落地 |
-| `design-learning-mode-phase-1b-1e-skeleton.md` | 研学 Phase 1B-1E 骨架边界 | 正式评审通过 / 未实施 |
-| `design-learning-mode-phase-1b-orientation-context.md` | Phase 1B OrientationContext 详设 | 待评审 / 后续实施依据 |
+| `design-learning-mode-phase-1b-1e-skeleton.md` | 研学 Phase 1B-1E 骨架边界 | 正式评审通过 / 1B 已落地 |
+| `design-learning-mode-phase-1b-orientation-context.md` | Phase 1B OrientationContext 详设 | 已落地 / 已验收 |
 | `design-learning-unit-stop-and-status.md` | 学习卷停止能力与前端常驻研习状态 | 已落地 |
 | `design-web-search-learning-agent-implementation.md` | Learning-Agent Web Search 外部知识检索能力 | 当前主线 / 已落地迭代中 |
 
@@ -158,7 +159,8 @@ docs/
 |------|------|------|
 | `learning-mode-final-product-prd-2026-05-27.md` | 正式 PRD | 产品主线 |
 | `learning-mode-phase-1a-hardening-2026-05-30.md` | Phase 1A 硬化清单 | 当前实施 / 已回填 baseline |
-| `learning-mode-phase-1b-plan-checklist-2026-05-30.md` | Phase 1B 开工 checklist | 待 Phase 1A / 1B design gate 关闭后执行 |
+| `learning-mode-phase-1b-plan-checklist-2026-05-30.md` | Phase 1B 开工 checklist | 已关闭 / 2026-05-31 |
+| `acceptance-report-learning-mode-phase-1b-2026-05-31.md` | Phase 1B 验收报告 | 已完成 |
 | `report-learning-mode-product-diagnosis-2026-05-25.md` | 产品诊断 | 背景参考 |
 | `learning-mode-mvp-definition-2026-05-25.md` | MVP 范围稿 | 历史 MVP 参考；最终口径以 2026-05-27 PRD 为准 |
 | `learning-mode-mvp-task-breakdown-2026-05-25.md` | 任务拆解 | 历史任务拆解；实现细节需按当前代码与 adaptive alignment 校验 |

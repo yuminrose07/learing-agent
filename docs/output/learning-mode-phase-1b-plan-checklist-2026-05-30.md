@@ -6,15 +6,19 @@
 >
 > 日期：2026-05-30
 >
-> 状态：v0.5，待评审（已合入双轨审稿 P0+择优 P1/P2 + 跨文档一致性建议 + 5 条 cross_recs + 第二轮跨文档小修）
+> 状态：v1.0，已关闭（2026-05-31 完成实现、测试、真实 E2E 与验收留痕）
 >
-> 配套技术设计：`docs/design/design-learning-mode-phase-1b-orientation-context.md`（doc3，待 codex 产出）
+> 配套技术设计：`docs/design/design-learning-mode-phase-1b-orientation-context.md`（doc3，已落地 / 已验收）
 >
 > 配套前置硬化：`docs/output/learning-mode-phase-1a-hardening-2026-05-30.md`（doc1，1A 裂缝收口）
 >
-> 真实数据集（占位）：`tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json`
+> 真实数据集：`tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json`
 >
-> Baseline（占位）：`tests/e2e/real_baselines/learning-mode-phase-1b-orientation-context-real.baseline.json`
+> Baseline：`tests/e2e/real_baselines/learning-mode-phase-1b-orientation-context-real.baseline.json`（status=pass，run_id=`2026-05-31T083023Z_learning-mode-phase-1b-orientation-context-real`）
+
+> 关闭记录：`docs/changes/2026-05-31-learning-mode-phase-1b-close.md`
+>
+> 验收报告：`docs/output/acceptance-report-learning-mode-phase-1b-2026-05-31.md`
 
 ---
 
@@ -140,9 +144,9 @@ Phase 1B 的目标是：在 `forge_stage=entry` 阶段，系统能为一个新�
 
 ---
 
-## 5. 真实数据集 Cases（占位，doc3 实施时确认命名）
+## 5. 真实数据集 Cases
 
-| Case 占位 ID | 目标 | 关键验收 |
+| Case ID | 目标 | 关键验收 |
 |------|------|----------|
 | `lm-p1b-orientation-generated-on-first-turn` | 新研学卷首轮 absorbing 后生成 orientation | learning_unit payload 含 `orientation_context`，事件流含一条 `learning_unit.orientation_generated` |
 | `lm-p1b-no-attempt-blocks-stage-advance` | **首轮 orientation 生成尝试未发生**时 forge_stage 不推进 | 在 orientation 尝试事件出现之前，`learning_unit.forge_stage_changed(entry→collision)` 不出现；尝试事件出现后才允许推进 |
@@ -174,7 +178,7 @@ Phase 1B 的目标是：在 `forge_stage=entry` 阶段，系统能为一个新�
 - [ ] §3 代码 checklist 全部勾选，每项绑定到合入 main 的 commit hash（每个 checkbox = 一个 commit，禁止合并）。
 - [ ] §4 测试 checklist 全部通过，包含 baseline 实跑 + 1A 回归（依据 §2 锁定的 `baseline_version`，以 §2 实跑回填 commit hash 为引用锚点）。
 - [ ] §6 文档 checklist 全部勾选。
-- [ ] 一份 acceptance 留痕：`docs/output/acceptance-report-learning-mode-phase-1b-<close-date>.md`，含 baseline 摘要 / 真实 JSONL 摘要 / 前端截图三件套。
+- [ ] 一份 acceptance 留痕：`docs/output/acceptance-report-learning-mode-phase-1b-<close-date>.md`，含 baseline 摘要 / 真实 JSONL 摘要；前端截图项已按 2026-05-31 用户指示免除，并在验收报告中登记替代证据。
 - [ ] 学习卷主链 `absorbing⇄outputting→consolidated` 不变（人工 grep 确认 `_ALLOWED_TRANSITIONS` 在 `learning_agent/ai/learning_unit.py:179-184` 未被 1B 改写）。
 - [ ] N=1 invariant 守住：本阶段未引入「为 1C/1D/1E 预留的数据底座」。
 
@@ -220,15 +224,23 @@ Phase 1B 的目标是：在 `forge_stage=entry` 阶段，系统能为一个新�
 
 > 本文已就关闭闸门尽可能拍板。仍有以下问题需 codex 与用户/方案作者对齐后回填到本表，并在 doc3 中明确拍板。
 
-1. **doc3 自身的 open_questions 锚点（拍板顺序硬约束）**（cross_recs #4，confirmed）：OrientationContext 字段集是否包含 `known_pitfalls`？计划维度上限是否 ≤5？失败降级的静态模板形态如何？三者答案直接决定 §3.1 / §3.2 / §4.1 的勾选条目。**拍板顺序**：`doc3 拍板 → 回填本节 → 动 1B 代码`（与 doc2 §0.1「design 为事实源」表述对齐）；**禁止跳序**——doc3 未拍板前不得回填本节，本节未回填前不得提交 §3 任一 commit。**附带**：real dataset case 最终命名口径（前缀是否统一 `lm-p1b-`、分隔符 `-` 或 `_`）一并在此拍板，§5 表已声明「以 doc3 §10.2 落地为准、回写本表」。doc3 §10.2 case_id 必须用 `lm-p1b-` 前缀；若 doc3 保留 `1b-case-*` 风格则视为未拍板，本节不得回填。
-2. **1A baseline 版本号锁定（引用 commit hash）**（cross_recs #2，confirmed）：1B 开工时锁定 doc1 实跑后的 1A `baseline_version`（如 `2026-05-30-v1`，具体取值由 doc1 实跑当日确定，由用户拍板写入本表）；**引用形式必须是 §2 实跑回填动作所对应的 commit hash**（commit message 含 `baseline_version` 取值，且 `docs/changes/` 留 1A 硬化 close 记录），不得仅引用版本号字符串。1B 期间不得改写该 baseline。**回归判定语义**仍需用户拍板：若 1A 实跑结果含 `implementation_gap`，1B 是否允许在已知 gap 项目上继续推进（接受 gap 作为已知账目），还是必须先消除 gap？
-3. **`source=user_override` 是否本期纳入**：§9 默认本期不引入用户改写 orientation 能力；若用户拍板纳入，需补 §3.5 前端入口 checklist + §3.3 鉴权约束 + 事件链（是否新增 `LEARNING_UNIT_ORIENTATION_USER_OVERRIDDEN`）。本期默认「不纳入」。
-4. **orientation LLM 调用硬超时秒数**：§3.2 已强制要求硬超时存在，具体秒数（建议区间 ≤8s）由 doc3 拍板写入本表。
+1. **已对齐：doc3 自身 open_questions**。本期字段集为 `prompt_text` / `hook_kind` / `source` / `source_seed_ref` / `orientation_digest` / `generated_at`；不引入 `known_pitfalls` 与计划维度；失败降级为静态提问模板；real dataset case 统一使用 `lm-p1b-` 前缀。
+2. **已对齐：1A baseline 版本号锁定**。锁定 `baseline_version=2026-05-30-v1`，引用 commit `d8b2c6f`（`chore(1a/baseline): 实跑回填 forge-state baseline, baseline_version=2026-05-30-v1`）。1B 实施期间未改写该 1A baseline；最新 1A 回归见 `tests/e2e/artifacts/2026-05-31/learning-mode-phase-1a-forge-state-real-v4/summary.json`，4/4 pass。
+3. **已删除：`source=user_override` 本期不纳入**。本期 `OrientationContext.source` 只允许 `llm` / `fallback`，不新增用户改写入口与事件链。
+4. **已对齐：orientation LLM 调用硬超时秒数**。实现常量为 `ORIENTATION_TIMEOUT_SECONDS = 6`，低于 doc4 建议上限 8 秒。
 
 ---
 
 ## 11. 状态
 
-STATUS: NEEDS_REVIEW
+STATUS: CLOSED
 
-待 doc1 与 doc3 评审通过、§10 open_questions 全部回填后，本文档转 READY，进入 codex 实施。
+关闭日期：2026-05-31。
+
+关闭证据：
+
+- 单元测试：`pytest -q tests/test_orientation_policy.py tests/test_forge_policy.py tests/test_learning_unit_events.py tests/test_mode_layering.py tests/test_learning_unit_api.py tests/test_learning_unit_store.py`，153 passed。
+- 前端静态测试：`node --test tests/test_web_static_app.js`，14 passed。
+- Phase 1B 真实 E2E：`tests/e2e/artifacts/2026-05-31/learning-mode-phase-1b-orientation-context-real-v3/summary.json`，5/5 pass。
+- Phase 1A 回归：`tests/e2e/artifacts/2026-05-31/learning-mode-phase-1a-forge-state-real-v4/summary.json`，4/4 pass。
+- Acceptance：`docs/output/acceptance-report-learning-mode-phase-1b-2026-05-31.md`。

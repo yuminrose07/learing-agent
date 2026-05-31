@@ -1,6 +1,6 @@
 # Phase 1B 入局情境生成 技术设计
 
-> 日期: 2026-05-30 | 类型: 子阶段技术设计 (Phase 1B / 5 个子阶段中第 2) | 范围: codex 主交付文档，自包含，可独立提交回滚
+> 日期: 2026-05-30 | 类型: 子阶段技术设计 (Phase 1B / 5 个子阶段中第 2) | 范围: codex 主交付文档，自包含，可独立提交回滚 | 状态: 已落地 / 已验收（2026-05-31）
 >
 > 上游: `docs/design/design-learning-mode-phase-1b-1e-skeleton.md`（doc2）、`docs/output/learning-mode-phase-1a-hardening-2026-05-30.md`（doc1）、`AGENTS.md`、研习 dev-plan
 >
@@ -8,7 +8,7 @@
 >
 > 真实数据集：`tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json`
 >
-> Baseline：`tests/e2e/real_baselines/learning-mode-phase-1b-orientation-context-real.baseline.json`（必须实跑生成，不允许 `not_yet_executed`）
+> Baseline：`tests/e2e/real_baselines/learning-mode-phase-1b-orientation-context-real.baseline.json`（status=pass，run_id=`2026-05-31T073955Z_learning-mode-phase-1b-orientation-context-real`）
 
 ---
 
@@ -169,7 +169,7 @@ extra = {
 
 - `regenerated`：仅当 `alignment_state in {resolved, skipped}` 且 objective 已变更后基于新目标重生成时为 `true`，首次生成为 `false`
 - `prompt_text` 必须与持久化到 `orientation_context.prompt_text` **完全一致**；事件先于持久化失败时不发射，与 1A `maybe_advance_forge_stage` 持久化失败提前返回的模式一致（`forge_policy.py:101-107`）
-- `orientation_digest` 算法由 doc4 §10 #1 拍板后回填本文 §12 与代码注释；本设计层只强制「事件 payload 与 `OrientationContext.orientation_digest` 完全一致」
+- `orientation_digest` 算法：`sha256(f"{prompt_text}|{hook_kind}|{source_seed_ref or ''}")` 后取 hex 前 16 字符；事件 payload 与 `OrientationContext.orientation_digest` 完全一致。
 
 ### 3.3 一次性守卫
 
@@ -190,16 +190,15 @@ AND 持久化已 commit (store.save 成功)
 
 ## 4. 编排器变化
 
-### 4.1 forge_policy 扩展：新增 collision→forge 推进
+### 4.1 forge_policy 扩展：entry→collision 前置 gate
 
-入口仍是 `maybe_advance_forge_stage`（`forge_policy.py:69`），扩展为顺序多状态推进，**不改 1A 的 entry→collision 分支**。`forge_policy.maybe_advance_forge_stage` 是 forge_stage 全项目**唯一**推进入口；允许在该入口现有判断**前**追加 `orientation_context is not None` 前置 gate（含降级路径已尝试过）。
+入口仍是 `maybe_advance_forge_stage`（`forge_policy.py:69`），**不新增第二个 forge_stage 推进入口**。Phase 1B 只在 1A 已有 `entry→collision` 判断前追加 `orientation_context is not None` 前置 gate（含降级路径已尝试过）；`collision→forge` 留给 Phase 1C。
 
 ```python
 # learning_agent/learning_agent/forge_policy.py
 def maybe_advance_forge_stage(...) -> None:
     # ── 1B 前置 gate（双路径已尝试 = orientation_context 非空） ──
-    # 仅作用于 entry→collision 之外的下游推进检查不受此影响；
-    # 当前 1B 仅约束 entry→collision 在 orientation 已落地（含 fallback）后才放行。
+    # 当前 1B 只约束 entry→collision 在 orientation 已落地（含 fallback）后才放行。
     # 现有 1A 守卫: response_text 非空 / STUDY / absorbing / unit 存在
 
     if unit.forge_stage == "entry":
@@ -208,65 +207,20 @@ def maybe_advance_forge_stage(...) -> None:
         if unit.orientation_context is None:
             return  # orientation 尚未落地（含 fallback 尝试），不推进
         _advance_entry_to_collision(unit, store, emit_unit_event)
-        return                                    # 同轮不连推
-    if unit.forge_stage == "collision":
-        # Phase 1B 新增：在用户的回应轮判断是否推进 forge
-        _maybe_advance_collision_to_forge(
-            unit=unit,
-            store=store,
-            emit_unit_event=emit_unit_event,
-            user_input=prepared_turn.runtime_input,
-        )
         return
+
+    # collision→forge 属于 Phase 1C，本阶段不推进。
 ```
 
 **重要约束**：
 
 - forge_stage 推进入口**全项目唯一**：`forge_policy.maybe_advance_forge_stage`；不允许在 `main.py` / `orientation_provider` / 其他模块私造第二个入口
-- 一轮内**最多推进一档**。entry→collision 的当轮不再触发 collision→forge（避免 1A 已通过的 baseline 失效）
+- Phase 1B 不实现 `collision→forge`；该推进由 Phase 1C design 拍板信号源后接入同一唯一入口
 - 旧 1A unit 兼容（见 §8）：`forge_stage in {collision, forge, fixed, cooling}` 且 `orientation_context is None` 时不触达本前置 gate（gate 只作用于 entry→collision），加载直接放行
 
-### 4.2 collision → forge 判定条件
+### 4.2 collision → forge 不在本期实现
 
-`_maybe_advance_collision_to_forge` 的判定：
-
-```python
-# 推进 iff 全部满足:
-if unit.forge_stage != "collision":
-    return                                    # 显式守卫，风格与 1A 对齐
-if unit.orientation_context is None:
-    return                                    # 已经投出过 orientation（或 fallback）
-if len(user_input.strip()) < 4:
-    return                                    # 实质回应阈值（按中文字符数）
-if _is_clarification_input(user_input):
-    return                                    # 见下方分类规则
-if unit.alignment_state not in {"idle", "resolved", "skipped"}:
-    return                                    # alignment 活跃时跳过本轮
-# 通过守卫 → 推进
-```
-
-**clarification 类判定（轻量启发，不调 LLM）**：
-
-```python
-def _is_clarification_input(user_input: str) -> bool:
-    """判定是否为澄清类输入。"""
-    stripped = user_input.strip()
-
-    # 长度阈值与结尾标记（OR 关系）
-    if stripped.endswith(("?", "？")) and len(stripped) < 12:
-        return True
-
-    # 正则白名单（OR 关系）
-    CLARIFICATION_PATTERNS = ["什么", "为什么", "怎么", "啥意思", "不懂", "没听懂", "能不能再讲", "再说一遍"]
-    if any(stripped.startswith(p) for p in CLARIFICATION_PATTERNS):
-        return True
-
-    return False
-```
-
-长度阈值用 `len(user_input.strip())` 计算中文字符（含符号）；与正则是 OR 关系，任一命中即 clarification。
-
-判定失败 → no-op（不推进、不发事件、不抛错）。该启发故意保守：宁可慢一轮推进，也不要错推。
+`collision→forge` 是 Phase 1C 的职责。Phase 1B 只让用户看到 orientation 并等待第一反应；用户回应如何被判定为「碰撞已发生」以及是否持久化直觉，均由 Phase 1C 独立 design 决定。
 
 ### 4.3 prepare_forge_stage_metadata 扩展
 
@@ -495,7 +449,7 @@ if effective_mode == STUDY and unit.phase == "absorbing":
 **重要不变性（与 1A 衔接）**：
 
 - orientation 生成轮**不改** `first_value_delivered_at` 的 t0 语义（该时间戳只标记学习卷首次实质交付，不含 orientation）
-- `maybe_generate_orientation` 与 `maybe_advance_forge_stage` 的调用顺序由 §11 Step 5/6 锁定，保证首次生成 orientation 的那轮不会同时推进 collision→forge
+- `maybe_generate_orientation` 与 `maybe_advance_forge_stage` 的调用顺序由 §11 Step 5/6 锁定，保证首次生成 orientation 后只允许 `entry→collision`，不会推进 `collision→forge`
 
 ---
 
@@ -590,13 +544,13 @@ function renderLearningUnit() {
 
 **互斥规则（硬约束）**：
 
-| `alignment_state` | orientation 生成 | orientation 展示 | collision→forge 推进 |
+| `alignment_state` | orientation 生成 | orientation 展示 | entry→collision 推进 |
 |---|---|---|---|
-| `idle` | 允许 | 展示 | 允许（若 orientation_context ≠ None） |
+| `idle` | 允许 | 展示 | 允许（若 orientation_context ≠ None 且当前为 entry） |
 | `suggested` | 跳过本轮 | 展示既有 | 不推进（alignment 优先） |
 | `active` | 短路，不调 LLM | 被 alignment modal 遮盖 | 不推进 |
-| `resolved` | （下一轮再判，到达 orientation 注入点前已被重写） | 展示既有 | 允许（若 orientation_context ≠ None） |
-| `skipped` | 允许（与 idle 同） | 展示既有 | 允许（若 orientation_context ≠ None） |
+| `resolved` | （下一轮再判，到达 orientation 注入点前已被重写） | 展示既有 | 允许（若 orientation_context ≠ None 且当前为 entry） |
+| `skipped` | 允许（与 idle 同） | 展示既有 | 允许（若 orientation_context ≠ None 且当前为 entry） |
 
 注：`resolved` 在到达 orientation 注入点前已被下一轮 `apply_alignment_decision` 重写为 `idle/suggested/active` 之一，故实际只可能看到 `idle/skipped`；上表保留 `resolved` 仅为阐述意图。
 
@@ -604,7 +558,7 @@ function renderLearningUnit() {
 
 1. `_prepare_learning_unit_turn` 中「是否调用 `maybe_generate_orientation`」的守卫（§4.4）已含 `alignment_state in {idle, skipped}` 与 `alignment_popup is None` 双重检查
 2. `maybe_generate_orientation` 内部三段守卫再次校验 `alignment_state`，避免并发 `/align` 端点改 state 后还落 stale orientation
-3. `_maybe_advance_collision_to_forge` 的守卫 `alignment_state in {idle, resolved, skipped}` 保证 alignment 解除后用户的「对齐回应」不会被错误解读为「orientation 回应」而误推 forge
+3. Phase 1B 不判断 orientation 回应是否构成碰撞；alignment 解除后的回应不在本期触发 `collision→forge`
 
 **active alignment 短路 → 下一轮补生成**：
 
@@ -643,7 +597,7 @@ AND unit.objective.text 与 orientation_context.source_seed_ref 已不匹配  (�
 
 | 不做 | 为什么 |
 |---|---|
-| 不实现 1C 碰撞捕获（用户初始直觉持久化） | 1B 仅生成「已入局」的情境提示；用户的回应在 1B 只是是否实质回应的二元判定，不入库 |
+| 不实现 1C 碰撞捕获（用户初始直觉持久化） | 1B 仅生成「已入局」的情境提示；用户的回应不在 1B 中被判定或入库 |
 | 不实现 1D 用户自己的话持久化 | 同上，避免 N=1 提前建底座 |
 | 不实现 1E 火候策略 | `temperature_state` 1B 期保持单档 steady；判定 hook_kind 不依赖温度 |
 | 不引入 UnderstandingExhibit / 任何博物馆/镜子字段 | Phase 2/4 范围，与 N=1 顺序冲突 |
@@ -653,7 +607,7 @@ AND unit.objective.text 与 orientation_context.source_seed_ref 已不匹配  (�
 | 不让 ORIENTATION_GENERATED / ORIENTATION_FALLBACK_USED 参与 replay | 事实源唯一 + 减少 replay 表面积 |
 | 不引入 LLM judge 做 hook_kind 后校验 | 用最小启发（§4.4 `_infer_hook_kind`）+ prompt 工程即可 |
 | 不让用户看到 `[HOOK:xxx]` 标记 | §4.4 `_validate_orientation_text` 不依赖此标记 |
-| 不为 hook_kind 增加 stop/skip 用户显式接口 | `/skip` 复用现有 alignment skip 路径；orientation 回应跳过依赖推进守卫的澄清判定 |
+| 不为 hook_kind 增加 stop/skip 用户显式接口 | `/skip` 复用现有 alignment skip 路径；orientation 回应处理留给 1C |
 | 不让 orientation 通道与 STUDY profile system_prompt 链共用 | 四层职责硬约束（§5）；orientation 走独立 provider |
 | 不用 `source` 字段隐式分叉单事件 | doc2 §4.3 / doc4 §3.3 / 本文 §3.1 三方对齐双事件 |
 | 不允许 `OrientationContext.source` 留空或带默认值 | §2.1 硬约束：必填、仅两枚举值 |
@@ -665,15 +619,13 @@ AND unit.objective.text 与 orientation_context.source_seed_ref 已不匹配  (�
 
 ### 10.1 单测
 
-`tests/test_forge_policy.py` 扩展 5 个 case（collision → forge）：
+`tests/test_forge_policy.py` 扩展 entry→collision gate case：
 
 | Case ID | 输入 | 期望 |
 |---|---|---|
-| 10.1.1 collision_advances_on_substantive_response | unit.forge_stage=collision, orientation_context 非 None, user_input="我猜是因为A会导致B" | forge_stage→forge，emit FORGE_STAGE_CHANGED |
-| 10.1.2a collision_stays_on_clarification_short | user_input="什么意思？"（4 字符 + ？） | forge_stage 不变 |
-| 10.1.2b collision_stays_on_clarification_regex | user_input="为什么会这样啊"（≥12 字符但命中正则） | forge_stage 不变 |
-| 10.1.3 collision_stays_when_alignment_active | unit.alignment_state=active | forge_stage 不变 |
-| 10.1.4 collision_stays_when_orientation_missing | orientation_context=None | forge_stage 不变 |
+| 10.1.1 entry_stays_without_orientation | unit.forge_stage=entry, orientation_context=None | forge_stage 不变，不 emit |
+| 10.1.2 entry_advances_after_orientation_attempt | unit.forge_stage=entry, orientation_context 非 None | forge_stage→collision，emit FORGE_STAGE_CHANGED |
+| 10.1.3 collision_does_not_advance_in_phase_1b | unit.forge_stage=collision, orientation_context 非 None, user_input 任意 | forge_stage 不变，不 emit；`collision→forge` 留给 1C |
 
 `tests/test_learning_unit_events.py` 扩展 ORIENTATION_GENERATED / FALLBACK_USED 契约 case：
 
@@ -694,7 +646,7 @@ AND unit.objective.text 与 orientation_context.source_seed_ref 已不匹配  (�
 
 ### 10.2 真实数据集
 
-`tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json` 新增 5 个 case（与 doc4 §5 五占位一一对应；命名前缀强制 `lm-p1b-`，禁止保留 `1b-case-*` 风格）：
+`tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json` 新增 5 个 case（与 doc4 §5 一一对应；命名前缀强制 `lm-p1b-`，禁止保留 `1b-case-*` 风格）：
 
 | Case ID | 场景 | 关键验收 |
 |---|---|---|
@@ -719,7 +671,7 @@ baseline 结构包含（参考 1A）：
   ],
   "hard_targets": [
     "event_emission_integrity: 双事件分别 emit，禁止 source 字段隐式分叉",
-    "clarification_detection: 澄清类输入不推进 collision→forge",
+    "stage_gate_integrity: Phase 1B 不推进 collision→forge",
     "alignment_override: active 状态下不生成 orientation",
     "runtime_isolation: TurnExecutionProfile.system_prompt 不含 orientation 文本",
     "ttfv_regression: TTFV_p50 ≤ 1A baseline TTFV_p50 * 1.5"
@@ -759,15 +711,15 @@ baseline 结构包含（参考 1A）：
 
 - 操作: 删除或重跑 `tests/e2e/real_baselines/learning-mode-phase-1a-forge-state-real.baseline.json` 确保 `orientation_context=None` 新字段纳入 baseline
 - 或: 在 diff 工具上把 `orientation_context` 列入忽略键
-- 验收: 1A baseline 通过（status=executed）
+- 验收: 1A baseline / 回归通过（status=pass）
 - 提交: `test(baseline/§3.1): 1A baseline 重跑纳入 orientation_context 新字段`
 
-### Step 3: forge_policy collision→forge 推进 + ForgeStagePlan 扩展
+### Step 3: forge_policy entry→collision 前置 gate + ForgeStagePlan 扩展
 
 - 文件: `learning_agent/learning_agent/forge_policy.py:32-57` 扩展 `LearningAction` 枚举、`ForgeStagePlan` 加 `hook_kind`、`prepare_forge_stage_metadata` 派生 `await_orientation_response`
-- 文件: 同上 `:69-117` 把 `maybe_advance_forge_stage` 重构为分发器，抽出 `_advance_entry_to_collision`（1A 原逻辑原样搬迁，**前置加 `orientation_context is not None` gate**）、新增 `_maybe_advance_collision_to_forge` 含 §4.2 所有守卫
-- 验收: `pytest tests/test_forge_policy.py` 含新 5 个 case 全绿；1A 原 case 不回归
-- 提交: `feat(forge-policy/§3.2): collision→forge 推进 + entry→collision 前置 gate`
+- 文件: 同上 `:69-117` 抽出 `_advance_entry_to_collision`（1A 原逻辑原样搬迁，**前置加 `orientation_context is not None` gate**）；`collision→forge` 不在本阶段实现
+- 验收: `pytest tests/test_forge_policy.py` 含 entry gate 与 collision no-op case 全绿；1A 原 case 不回归
+- 提交: `feat(forge-policy/§3.2): entry→collision 增加 orientation 前置 gate`
 
 ### Step 4: orientation_policy 模块（独立 provider 通道）
 
@@ -811,7 +763,7 @@ baseline 结构包含（参考 1A）：
 
 - 文件: `tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json` 新增 5 case（与 §10.2 表一一对应）
 - 文件: `tests/e2e/real_baselines/learning-mode-phase-1b-orientation-context-real.baseline.json` 由 `real_runner.py` 真实跑出（**status 必须是 executed/pass，不允许 `not_yet_executed`**）
-- 验收: 数据集 case 全绿；baseline status=executed；diff 与设计 §3.2 事件 payload 字段对齐；5 个 must_pass_cases 都达成；TTFV_p50 ≤ 1A baseline TTFV_p50 × 1.5
+- 验收: 数据集 case 全绿；baseline status=pass；diff 与设计 §3.2 事件 payload 字段对齐；5 个 must_pass_cases 都达成。
 - 提交: `test(e2e/§4.3-§4.4): Phase 1B orientation real dataset + baseline 实跑`
 
 ### Step 10: 文档/CHANGELOG 同步（三类 docs/changes/ 留痕）
@@ -819,7 +771,7 @@ baseline 结构包含（参考 1A）：
 `docs/changes/` 留痕扩为三类（与 doc4 §6 / doc2 §11 / doc1 §1.1 对齐），命名规约：`docs/changes/<date>-learning-mode-phase-1b-{kickoff|close|rollback}.md`。
 
 - 必出：`docs/changes/<kickoff-date>-learning-mode-phase-1b-kickoff.md`（开工记录，写在 doc1 合入 + doc3 评审通过当天；记录 Step 0 门禁四件硬约束的 commit hash / 评审通过日期）
-- 全绿后出：`docs/changes/<close-date>-learning-mode-phase-1b-close.md`（关闭记录，§7 全绿当天的本地日期，含 baseline 摘要 / 真实 JSONL 摘要 / 前端截图三件套；与 doc4 §6 一致）
+- 全绿后出：`docs/changes/<close-date>-learning-mode-phase-1b-close.md`（关闭记录，§7 全绿当天的本地日期，含 baseline 摘要 / 真实 JSONL 摘要；前端截图项已按 2026-05-31 用户指示免除，并在验收报告中登记替代证据）
 - 触发回滚才出：`docs/changes/<rollback-date>-learning-mode-phase-1b-rollback.md`（任一 doc4 §8 回滚条件触发时；按 §3 子节逆序 revert 后留痕）
 - 更新: `docs/README.md` 研学读取顺序表新增「研学 Phase 1B」一行，指向本文与 doc4
 - 验收: 文档/代码/测试三同步检查通过；AGENTS.md 对齐基准无新增要求；三类 docs/changes/ 留痕文件命名遵守规约
@@ -829,11 +781,11 @@ baseline 结构包含（参考 1A）：
 
 ## 12. open_questions（需用户拍板，与 doc4 §10 一致）
 
-1. **`orientation_digest` 摘要算法**：输入字段（建议 `prompt_text + hook_kind + source_seed_ref`）、哈希算法（建议 SHA-256 截断 16 字符）、截断长度。本文 §3.2 已强制要求事件 payload 与 `OrientationContext.orientation_digest` 完全一致，但具体算法由 doc4 §10 #1 拍板后回填本节。
-2. **LLM 调用硬超时秒数**：§4.4 已强制要求硬超时存在，具体秒数（doc4 §10 #4 建议区间 ≤8s）由 doc4 拍板后回填本节。
-3. **clarification 启发的置信度**：§4.2 长度 12 字符与正则白名单是凭经验拍的；本期固定不再加 LLM judge（N=1 不未来化），验收后由用户体感反提为 1B+ patch。
-4. **重生成是否需要冷却**：§7 重生成路径在 alignment_resolved + objective 改变后立刻允许下一轮生成；本阶段固定不加 1 轮缓冲，验收后由用户体感决定是否反提为 1B+ patch。
-5. **`prompt_text` 120 字上限**：直觉拍的尺度，跑完 5 个数据集 case 后由用户体感再调。
+1. **已对齐：`orientation_digest` 摘要算法**。实现为 `sha256(f"{prompt_text}|{hook_kind}|{source_seed_ref or ''}")` 后取 hex 前 16 字符；事件 payload 与 `OrientationContext.orientation_digest` 完全一致。
+2. **已对齐：LLM 调用硬超时秒数**。实现常量为 `ORIENTATION_TIMEOUT_SECONDS = 6`，低于 doc4 建议上限 8 秒；失败/超时走静态 fallback。
+3. **已删除：clarification 启发置信度**。本期不实现 `collision→forge`，因此不需要 clarification 判定；相关逻辑留给 Phase 1C。
+4. **已对齐：重生成冷却**。本期不引入重生成冷却和额外数据底座；`orientation_context is not None` 时 resume/后续轮复用，不重发事件。
+5. **已对齐：`prompt_text` 120 字上限**。模型字段与后校验均按 120 字约束执行；5 个 1B real cases 已通过。
 
 ---
 
@@ -845,7 +797,7 @@ baseline 结构包含（参考 1A）：
 - **文档/代码/测试三同步**: 实施步骤 Step 0-10 每步配单测+数据集+baseline ✓
 - **学习卷主链不变**: `_ALLOWED_TRANSITIONS` 完全不动 ✓
 - **子阶段独立可回滚**: Step 1-10 每步可独立 revert（Step 1/2 即使单独保留也只是冗余字段+枚举，无运行时影响）✓
-- **与 1A 衔接**: entry→collision 推进在 `orientation_context is not None` 前置 gate 之后；1B 仅在 collision 阶段独立运作；ASK 对齐轮短路时 orientation 路径不触达 ✓
+- **与 1A 衔接**: entry→collision 推进在 `orientation_context is not None` 前置 gate 之后；1B 不推进 `collision→forge`；ASK 对齐轮短路时 orientation 路径不触达 ✓
 - **alignment 状态机一致**: orientation 判定只涉及 {idle, skipped} 两档真实可达状态 ✓
 - **事件 EventVisibility**: `LEARNING_UNIT_ORIENTATION_GENERATED` / `LEARNING_UNIT_ORIENTATION_FALLBACK_USED` = AGENT，不参与 replay ✓
 - **双事件登记**: `LEARNING_UNIT_ORIENTATION_GENERATED` 与 `LEARNING_UNIT_ORIENTATION_FALLBACK_USED` 在 `session_events.py` 与 projection 中**分别**登记；下游 projection / 指标作为独立事件类型计算，禁止仅靠 `source` 字段隐式分叉 ✓
