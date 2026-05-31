@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1a-fuzzy-index-stage",
+  "chat": {
+    "body": {
+      "message": "索引这东西我总是迷糊。",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "索引这东西我总是迷糊。",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "模糊索引输入创建研学卷并暴露 entry 状态"
+}

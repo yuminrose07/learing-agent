@@ -109,7 +109,7 @@
         "non_empty_response": true,
         "learning_unit_created": true,
         "assistant_metadata_should_include": ["forge_stage", "temperature_state", "learning_action"],
-        "allowed_learning_action": ["orient", "prepare_to_guess"],
+        "allowed_learning_action": ["orient", "prepare_to_guess", "await_orientation_response"],
         "allowed_forge_stage_after_turn": ["entry", "collision"],
         "first_value_signal_required": true
       },

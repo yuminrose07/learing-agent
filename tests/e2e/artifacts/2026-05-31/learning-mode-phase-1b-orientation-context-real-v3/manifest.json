@@ -1,0 +1,13 @@
+{
+  "base_url": "http://127.0.0.1:8012",
+  "data_dir_arg": ".learning_agent_data_phase1b_baseline2",
+  "dataset": "/Users/roseannk/my-agent/.claude/worktrees/learning-phase-1b-orientation-context/tests/e2e/real_datasets/learning-mode-phase-1b-orientation-context-real.json",
+  "dataset_version": "2026-05-31-v1",
+  "ended_at": "2026-05-31T08:31:54.364418+00:00",
+  "la_data_dir_env": null,
+  "run_id": "2026-05-31T083023Z_learning-mode-phase-1b-orientation-context-real",
+  "runner_version": "phase1b-orientation-real-1",
+  "started_at": "2026-05-31T08:30:23.170868+00:00",
+  "status": "pass",
+  "suite_id": "learning-mode-phase-1b-orientation-context-real"
+}

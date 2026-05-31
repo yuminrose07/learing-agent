@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1b-ask-alignment-does-not-trigger-orientation",
+  "chat": {
+    "body": {
+      "message": "教",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "教",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "ASK 对齐轮不生成 orientation，不推进 forge_stage"
+}

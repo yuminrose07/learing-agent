@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal real-environment runner for JSON E2E datasets.
-
-The current implementation intentionally covers the Phase 1A learning-mode
-forge-state dataset. It drives a real Web server over HTTP, writes the evidence
-package expected by the dataset, and summarizes hard/quality metrics for
-baseline backfill.
-"""
+"""Minimal real-environment runner for JSON E2E datasets."""
 
 from __future__ import annotations
 
@@ -23,8 +17,11 @@ from pathlib import Path
 from typing import Any
 
 
-RUNNER_VERSION = "phase1a-forge-real-1"
-SUPPORTED_SUITE = "learning-mode-phase-1a-forge-state-real"
+RUNNER_VERSION = "phase1b-orientation-real-1"
+SUPPORTED_SUITES = {
+    "learning-mode-phase-1a-forge-state-real",
+    "learning-mode-phase-1b-orientation-context-real",
+}
 DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
@@ -202,8 +199,10 @@ def stream_chat(
 def validate_dataset(dataset: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     suite_id = dataset.get("suite_id")
-    if suite_id != SUPPORTED_SUITE:
-        errors.append(f"unsupported suite_id={suite_id!r}; expected {SUPPORTED_SUITE!r}")
+    if suite_id not in SUPPORTED_SUITES:
+        errors.append(
+            f"unsupported suite_id={suite_id!r}; expected one of {sorted(SUPPORTED_SUITES)!r}"
+        )
     cases = dataset.get("cases")
     if not isinstance(cases, list) or not cases:
         errors.append("dataset.cases must be a non-empty list")
@@ -237,12 +236,36 @@ def latest_metadata(payloads: list[dict[str, Any]], key: str) -> Any:
     return None
 
 
+def metadata_values(payloads: list[dict[str, Any]], key: str) -> list[Any]:
+    return [payload.get(key) for payload in payloads if key in payload]
+
+
 def any_metadata_has(payloads: list[dict[str, Any]], key: str) -> bool:
     return any(key in payload for payload in payloads)
 
 
 def event_types(events: list[dict[str, Any]]) -> list[str]:
     return [str(event.get("type") or "") for event in events]
+
+
+def event_payloads(events: list[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for event in events:
+        if str(event.get("type") or "") != event_type:
+            continue
+        payload = event.get("payload")
+        out.append(payload if isinstance(payload, dict) else {})
+    return out
+
+
+def orientation_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for event_type in (
+        "learning_unit.orientation_generated",
+        "learning_unit.orientation_fallback_used",
+    ):
+        out.extend(event_payloads(events, event_type))
+    return out
 
 
 def load_events(events_result: HttpResult) -> list[dict[str, Any]]:
@@ -292,6 +315,28 @@ def judge_case(
     has_learning_action = any_metadata_has(payloads, "learning_action")
     unit_has_forge = isinstance(final_unit, dict) and "forge_stage" in final_unit
     unit_has_temperature = isinstance(final_unit, dict) and "temperature_state" in final_unit
+    orientation_context = (
+        final_unit.get("orientation_context") if isinstance(final_unit, dict) else None
+    )
+    has_orientation_context = isinstance(orientation_context, dict)
+    orientation_source = (
+        orientation_context.get("source") if isinstance(orientation_context, dict) else None
+    )
+    orientation_digest = (
+        orientation_context.get("orientation_digest")
+        if isinstance(orientation_context, dict)
+        else None
+    )
+    orientation_hook_kind = (
+        orientation_context.get("hook_kind") if isinstance(orientation_context, dict) else None
+    )
+    has_orientation_presence_metadata = any_metadata_has(
+        payloads, "orientation_context_present"
+    )
+    latest_orientation_presence = latest_metadata(
+        payloads, "orientation_context_present"
+    )
+    hook_kind_metadata = latest_metadata(payloads, "hook_kind")
     frontend_backend_consistent = (
         has_forge_metadata
         and has_temperature_metadata
@@ -310,6 +355,22 @@ def judge_case(
     final_temperature_state = (
         final_unit.get("temperature_state") if isinstance(final_unit, dict) else None
     )
+    generated_events = event_payloads(events, "learning_unit.orientation_generated")
+    fallback_events = event_payloads(events, "learning_unit.orientation_fallback_used")
+    orientation_event_payloads = generated_events + fallback_events
+    orientation_event_count = len(orientation_event_payloads)
+    orientation_event_sources = {
+        str(payload.get("source")) for payload in orientation_event_payloads
+    }
+    orientation_digest_consistent = True
+    if has_orientation_context and orientation_event_payloads:
+        orientation_digest_consistent = any(
+            payload.get("orientation_digest") == orientation_digest
+            for payload in orientation_event_payloads
+        )
+    orientation_hook_consistent = True
+    if has_orientation_context and hook_kind_metadata is not None:
+        orientation_hook_consistent = hook_kind_metadata == orientation_hook_kind
 
     if chat_result.error:
         fail_reasons.append(f"chat_stream_error: {chat_result.error}")
@@ -377,6 +438,102 @@ def judge_case(
             f"learning_action_not_allowed:{action!r}",
         )
 
+    if expect.get("orientation_context_present"):
+        append_fail(
+            fail_reasons,
+            has_orientation_context,
+            "orientation_context_missing",
+        )
+    if expect.get("orientation_context_absent"):
+        append_fail(
+            fail_reasons,
+            not has_orientation_context,
+            "orientation_context_unexpected",
+        )
+    if expect.get("orientation_context_present_metadata"):
+        append_fail(
+            fail_reasons,
+            has_orientation_presence_metadata
+            and latest_orientation_presence is True,
+            "orientation_context_present_metadata_missing",
+        )
+    expected_orientation_source = expect.get("orientation_source")
+    if expected_orientation_source:
+        append_fail(
+            fail_reasons,
+            orientation_source == expected_orientation_source,
+            f"orientation_source_mismatch:{orientation_source!r}",
+        )
+    expected_orientation_event = expect.get("orientation_event")
+    if expected_orientation_event:
+        append_fail(
+            fail_reasons,
+            expected_orientation_event in types,
+            f"orientation_event_missing:{expected_orientation_event}",
+        )
+    if expect.get("orientation_event_count") is not None:
+        append_fail(
+            fail_reasons,
+            orientation_event_count == int(expect["orientation_event_count"]),
+            f"orientation_event_count_mismatch:{orientation_event_count}",
+        )
+    if expect.get("orientation_digest_matches_event"):
+        append_fail(
+            fail_reasons,
+            bool(orientation_digest) and orientation_digest_consistent,
+            "orientation_digest_mismatch",
+        )
+    if expect.get("hook_kind_metadata_matches_unit"):
+        append_fail(
+            fail_reasons,
+            orientation_hook_consistent,
+            "hook_kind_metadata_mismatch",
+        )
+    if expect.get("forbid_orientation_events_when_alignment") and alignment_mode:
+        append_fail(
+            fail_reasons,
+            orientation_event_count == 0,
+            "orientation_event_during_alignment",
+        )
+    if expect.get("no_forge_stage_changed_before_orientation_event"):
+        try:
+            first_orientation_index = next(
+                i
+                for i, event_type in enumerate(types)
+                if event_type
+                in {
+                    "learning_unit.orientation_generated",
+                    "learning_unit.orientation_fallback_used",
+                }
+            )
+        except StopIteration:
+            first_orientation_index = None
+        try:
+            first_stage_index = next(
+                i
+                for i, event_type in enumerate(types)
+                if event_type == "learning_unit.forge_stage_changed"
+            )
+        except StopIteration:
+            first_stage_index = None
+        append_fail(
+            fail_reasons,
+            first_orientation_index is not None
+            and (
+                first_stage_index is None
+                or first_orientation_index < first_stage_index
+            ),
+            "forge_stage_changed_before_orientation_event",
+        )
+
+    forbidden_events = expect.get("forbid_events") or []
+    for forbidden_event in forbidden_events:
+        append_fail(
+            fail_reasons,
+            forbidden_event not in types,
+            f"forbidden_event_present:{forbidden_event}",
+        )
+
     if expect.get("frontend_backend_consistent"):
         append_fail(
             fail_reasons,
@@ -431,6 +588,18 @@ def judge_case(
         "temperature_state_metadata": has_temperature_metadata,
         "learning_action_metadata": has_learning_action,
         "learning_unit_payload_forge_stage": unit_has_forge,
+        "orientation_context_present": has_orientation_context,
+        "orientation_context_present_metadata": (
+            has_orientation_presence_metadata
+            and latest_orientation_presence is True
+        ),
+        "orientation_generated_event_count": len(generated_events),
+        "orientation_fallback_event_count": len(fallback_events),
+        "orientation_event_count": orientation_event_count,
+        "orientation_digest_consistent": orientation_digest_consistent,
+        "orientation_hook_consistent": orientation_hook_consistent,
+        "orientation_source": orientation_source,
+        "orientation_event_sources": sorted(orientation_event_sources),
         "frontend_backend_stage_consistent": frontend_backend_consistent,
         "chat_session_false_forge_stage": false_chat_forge,
         "alignment_mode": alignment_mode,
@@ -465,6 +634,8 @@ def run_case(
         "seed_text": seed_text,
         "source": case.get("setup", {}).get("source", "user_written"),
     }
+    if case.get("setup", {}).get("source_ref"):
+        create_body["source_ref"] = case["setup"]["source_ref"]
     chat_body = {"message": message, "stream": True}
     request_payload = {
         "case_id": case_id,
@@ -644,6 +815,13 @@ def build_summary(dataset: dict[str, Any], results: list[CaseRun]) -> dict[str, 
         "ask_alignment_stage_advance_count": count(
             results, "ask_alignment_stage_advanced"
         ),
+        "orientation_context_rate": rate(results, "orientation_context_present"),
+        "orientation_context_present_metadata_rate": rate(
+            results, "orientation_context_present_metadata"
+        ),
+        "orientation_digest_consistency_rate": rate(
+            results, "orientation_digest_consistent"
+        ),
     }
     quality_targets = {
         "first_value_case_pass_count": count(results, "first_value_signal"),
@@ -651,6 +829,13 @@ def build_summary(dataset: dict[str, Any], results: list[CaseRun]) -> dict[str, 
         "forge_stage_changed_event_count": sum_metric(
             results, "forge_stage_changed_event_count"
         ),
+        "orientation_generated_event_count": sum_metric(
+            results, "orientation_generated_event_count"
+        ),
+        "orientation_fallback_event_count": sum_metric(
+            results, "orientation_fallback_event_count"
+        ),
+        "orientation_event_count": sum_metric(results, "orientation_event_count"),
         "alignment_suggested_or_rate_limited_count": count(
             results, "alignment_suggested_or_rate_limited"
         ),

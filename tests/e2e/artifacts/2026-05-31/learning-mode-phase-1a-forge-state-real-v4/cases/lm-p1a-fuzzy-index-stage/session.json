@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-05-31T08:32:09.591576Z",
+  "current_leaf_id": "entry-f753eb64",
+  "extracted_knowledge_ids": [],
+  "id": "sess-ac60fca0",
+  "last_accessed_at": "2026-05-31T08:32:26.913538Z",
+  "learning_unit_id": "lu-0f86e922",
+  "messages": [
+    {
+      "content": "索引这东西我总是迷糊。",
+      "id": "entry-9a41e24b",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "我先按这个目标带你学：帮助你理解索引的概念，以及它在不同场景下的应用。\n\n### 学习地图\n- 索引的基本概念和作用\n- 数据库中的索引及其工作原理\n- 文件系统中的索引\n- 搜索引擎中的索引\n- 实践案例与比较\n\n### 第一段实质讲解 - 索引的基本概念和作用\n\n**索引（Index）** 是一种数据结构，用于提高数据库表中数据的检索速度。它可以被类比为书籍后面的索引页，通过关键词快速找到相关内容所在的具体位置。在计算机科学领域，索引通常用来加快查询操作的速度，并且减少读取磁盘I/O操作次数。当用户需要频繁地根据某些字段进行查找时，建立适当的索引是非常有帮助的。\n\n索引主要的作用包括：\n1. **加速数据检索**：通过创建索引，可以显著加快对特定列或组合列的数据访问速度。\n2. **保证数据唯一性**：一些类型的索引如主键索引、唯一性索引等还能确保相应字段值的唯一性。\n3. **支持排序与分组操作**：对于ORDER BY, GROUP BY这样的SQL语句，合适的索引可以帮助优化这些操作。\n\n然而，索引也并非没有缺点：\n- **占用额外存储空间**：每增加一个索引都会消耗一定的磁盘空间。\n- **降低写入性能**：每次执行INSERT, UPDATE, DELETE等修改数据的操作时，都需要同时更新相关的索引信息，这会带来额外的开销。\n\n接下来我们将深入探讨数据库中的索引是如何工作的，以及它们如何影响实际的应用程序性能。",
+      "id": "entry-f753eb64",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 355,
+          "actual_prompt_tokens": 1953,
+          "actual_total_tokens": 2308,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 24000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 299,
+          "is_estimated": false,
+          "utilization_ratio": 0.0023
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "索引这东西我总是迷糊。"
+}

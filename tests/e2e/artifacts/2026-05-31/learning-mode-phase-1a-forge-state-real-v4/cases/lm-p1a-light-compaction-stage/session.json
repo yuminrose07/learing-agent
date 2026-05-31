@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-05-31T08:32:26.935527Z",
+  "current_leaf_id": "entry-cf3943d6",
+  "extracted_knowledge_ids": [],
+  "id": "sess-170f7bd2",
+  "last_accessed_at": "2026-05-31T08:32:52.384038Z",
+  "learning_unit_id": "lu-54e97dc7",
+  "messages": [
+    {
+      "content": "我只想先轻轻试一下 compaction。",
+      "id": "entry-88abce95",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "我先按这个目标带你学：初步了解 compaction 的概念及其在数据库中的作用。\n\n### 学习地图\n- Compaction的基本定义与目的\n- Compaction的类型及应用场景\n- 在特定数据库系统（如LevelDB、RocksDB）中Compaction的工作原理\n- Compaction对性能的影响\n- 如何配置和优化Compaction\n\n### 第一段实质讲解 - Compaction的基本定义与目的\n\nCompaction是存储引擎中一个重要的后台维护过程，主要用于改善数据的存储效率和查询性能。它通过合并或重组存储文件来减少碎片化，从而提升读取速度并释放不必要的空间。这个过程对于基于LSM树（Log-Structured Merge Tree）的数据结构尤其重要，因为这类结构在写入时倾向于生成许多小文件，而这些小文件最终需要被整理以维持良好的读写性能。\n\n例如，在NoSQL数据库如LevelDB或者RocksDB中，当应用程序执行大量更新操作后，可能会留下大量的旧版本数据未被清理。这不仅占用了宝贵的磁盘空间，而且还会导致查询时必须检查更多的数据块，进而影响了整体性能。此时，Compaction就起到了关键的作用，它将多个较小的SSTable文件合并成更少但更大的文件，并且在这个过程中去除那些不再需要的数据（比如已被删除或被新值覆盖的老数据）。这样做不仅减少了物理存储上的占用，也提高了后续查询的速度，因为它减少了需要扫描的数据量。\n\n接下来，我们将深入了解不同类型的Compaction以及它们如何适应不同的工作负载需求。\n  \n为了更好地理解compaction的具体实现方式及其对实际应用的影响，请思考以下问题：\n- 你是否熟悉任何使用LSM树作为其底层存储模型的数据库？如果有的话，你知道它们是如何处理compaction的吗？\n- 考虑到compaction可能带来的资源消耗，你觉得在设计数据库时应该如何平衡compaction的频率与性能之间的关系？\n\n请根据上述内容继续学习之旅，如果你有任何疑问或希望进一步探讨某个特定方面，请随时告诉我！",
+      "id": "entry-cf3943d6",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 425,
+          "actual_prompt_tokens": 1953,
+          "actual_total_tokens": 2378,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 24000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 304,
+          "is_estimated": false,
+          "utilization_ratio": 0.0024
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "我只想先轻轻试一下 compaction。"
+}

@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-05-31T08:31:09.162635Z",
+  "current_leaf_id": "entry-5d32f29d",
+  "extracted_knowledge_ids": [],
+  "id": "sess-e88f2d53",
+  "last_accessed_at": "2026-05-31T08:31:54.334429Z",
+  "learning_unit_id": "lu-23246698",
+  "messages": [
+    {
+      "content": "LRU 缓存为什么会淘汰最近没用的数据？",
+      "id": "entry-37fc8889",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "我先按这个目标带你学：理解 LRU 缓存淘汰机制。\n\n### 学习地图\n- LRU 的基本概念和原理\n- 为什么 LRU 会淘汰最近最少使用的数据\n- LRU 在实际应用中的表现\n- LRU 的优缺点\n\n### 第一段实质讲解 - LRU 的基本概念和原理\nLRU 是 \"Least Recently Used\" 的缩写，中文意思是“最近最少使用”，是一种常用的缓存置换算法。当缓存满了之后，如果需要添加新的数据项，则会移除最近最久未被访问的数据项以腾出空间。LRU 算法的核心思想是基于这样一个假设：如果一个数据项在最近一段时间内没有被访问，那么它在未来的一段时间内也不会被访问到。\n\n为了实现 LRU 算法，我们需要一种数据结构来追踪每个条目的访问顺序。通常这种数据结构是一个双向链表结合哈希表的形式。双向链表用于保持数据项的访问顺序（新近访问过的放在前面），而哈希表则提供了快速查找的能力。每当一个数据项被访问时，我们将其移动到链表头部；当需要插入新数据项且缓存已满时，就从链表尾部删除那个最久未被访问的数据项。\n\n通过这种方式，LRU 算法能够有效地管理有限的内存资源，确保经常被访问的数据可以快速获取，同时淘汰那些不太可能再次被请求的数据。这有助于提高系统性能，尤其是在处理大量数据查询的应用场景中。接下来，我们将深入探讨为什么 LRU 会选择淘汰最近最少使用的数据以及其背后的逻辑。",
+      "id": "entry-5d32f29d",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 345,
+          "actual_prompt_tokens": 1956,
+          "actual_total_tokens": 2301,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 24000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 302,
+          "is_estimated": false,
+          "utilization_ratio": 0.0024
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "我想理解 LRU 缓存淘汰。"
+}

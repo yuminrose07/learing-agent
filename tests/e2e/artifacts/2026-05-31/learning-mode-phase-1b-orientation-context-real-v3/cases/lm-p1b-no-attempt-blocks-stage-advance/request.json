@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1b-no-attempt-blocks-stage-advance",
+  "chat": {
+    "body": {
+      "message": "数据库索引为什么不是简单目录？",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "我老是把数据库索引想成目录，但又觉得不对。",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "orientation 事件先于 forge_stage_changed，确保没有未尝试就推进"
+}

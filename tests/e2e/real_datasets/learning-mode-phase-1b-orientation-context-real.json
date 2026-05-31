@@ -1,0 +1,225 @@
+{
+  "suite_id": "learning-mode-phase-1b-orientation-context-real",
+  "description": "研学模式 Phase 1B 真实环境数据集。验证 OrientationContext 落档、双事件、SSE presence/hook、ASK 对齐轮不触发 orientation，以及 orientation 先于 forge_stage 推进。",
+  "owner": "learning-agent",
+  "dataset_version": "2026-05-31-v1",
+  "execution_mode": "manual_real_environment",
+  "target_surface": "frontend_or_api",
+  "runner_requirements": {
+    "requires_real_web_server": true,
+    "requires_learning_unit_creation": true,
+    "requires_learning_unit_payload_fetch": true,
+    "requires_session_event_log_collection": true,
+    "requires_sse_or_response_metadata_capture": true,
+    "note": "fallback case 需以 LA_ORIENTATION_FORCE_FALLBACK=1 启动服务端单独执行。"
+  },
+  "acceptance_metrics": {
+    "hard_targets": {
+      "learning_unit_creation_rate": 1.0,
+      "non_empty_response_rate": 1.0,
+      "orientation_context_rate": 0.8,
+      "orientation_context_present_metadata_rate": 0.8,
+      "orientation_digest_consistency_rate": 1.0,
+      "ask_alignment_stage_advance_count": 0
+    },
+    "quality_targets": {
+      "orientation_generated_event_min_count": 3,
+      "orientation_fallback_event_min_count": 1,
+      "forge_stage_changed_event_min_count": 3
+    }
+  },
+  "evidence_required": [
+    "request.json",
+    "response.json",
+    "session.json",
+    "learning_unit.json",
+    "events.jsonl"
+  ],
+  "metadata_required": [
+    "learning_unit_id",
+    "learning_unit_phase",
+    "forge_stage",
+    "temperature_state",
+    "learning_action",
+    "orientation_context_present",
+    "hook_kind"
+  ],
+  "events_relevant": [
+    "learning_unit.created",
+    "learning_unit.orientation_generated",
+    "learning_unit.orientation_fallback_used",
+    "learning_unit.first_value_delivered",
+    "learning_unit.forge_stage_changed",
+    "message.user_appended",
+    "message_end"
+  ],
+  "cases": [
+    {
+      "id": "lm-p1b-orientation-generated-on-first-turn",
+      "title": "新研学卷首轮生成 OrientationContext 并通过 SSE 暴露 presence",
+      "tags": ["learning", "phase_1b", "orientation", "generated"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "我想理解缓存穿透到底为什么危险。"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "我想理解缓存穿透到底为什么危险。"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "learning_unit_phase": "absorbing",
+        "learning_unit_payload_should_include": ["forge_stage", "temperature_state", "orientation_context"],
+        "assistant_metadata_should_include": ["learning_unit_id", "learning_unit_phase", "forge_stage", "temperature_state", "learning_action", "orientation_context_present", "hook_kind"],
+        "allowed_learning_action": ["await_orientation_response"],
+        "allowed_forge_stage_after_turn": ["collision"],
+        "orientation_context_present": true,
+        "orientation_context_present_metadata": true,
+        "orientation_source": "llm",
+        "orientation_event": "learning_unit.orientation_generated",
+        "orientation_event_count": 1,
+        "orientation_digest_matches_event": true,
+        "hook_kind_metadata_matches_unit": true,
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "empty_response": true
+      },
+      "severity": "high"
+    },
+    {
+      "id": "lm-p1b-no-attempt-blocks-stage-advance",
+      "title": "orientation 事件先于 forge_stage_changed，确保没有未尝试就推进",
+      "tags": ["learning", "phase_1b", "stage_gate", "events"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "我老是把数据库索引想成目录，但又觉得不对。"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "数据库索引为什么不是简单目录？"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "orientation_context_present": true,
+        "orientation_event": "learning_unit.orientation_generated",
+        "orientation_digest_matches_event": true,
+        "allowed_forge_stage_after_turn": ["collision"],
+        "no_forge_stage_changed_before_orientation_event": true,
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "empty_response": true
+      },
+      "severity": "high"
+    },
+    {
+      "id": "lm-p1b-orientation-fallback-on-llm-failure",
+      "title": "orientation provider 失败时使用 fallback 双事件且不阻塞主回复",
+      "tags": ["learning", "phase_1b", "orientation", "fallback"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "我想搞懂为什么缓存不是越多越好。",
+        "source_ref": "e2e:force_orientation_fallback"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "缓存为什么不是越多越好？"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "orientation_context_present": true,
+        "orientation_context_present_metadata": true,
+        "orientation_source": "fallback",
+        "orientation_event": "learning_unit.orientation_fallback_used",
+        "orientation_event_count": 1,
+        "orientation_digest_matches_event": true,
+        "forbid_events": ["learning_unit.orientation_generated"],
+        "allowed_forge_stage_after_turn": ["collision"],
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "empty_response": true
+      },
+      "severity": "high"
+    },
+    {
+      "id": "lm-p1b-ask-alignment-does-not-trigger-orientation",
+      "title": "ASK 对齐轮不生成 orientation，不推进 forge_stage",
+      "tags": ["learning", "phase_1b", "ask_alignment", "orientation_guard"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "教"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "教"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "if_alignment_true_then_forge_stage_should_remain": "entry",
+        "orientation_context_absent": true,
+        "orientation_event_count": 0,
+        "forbid_orientation_events_when_alignment": true,
+        "assistant_metadata_should_include": ["learning_unit_id", "learning_unit_phase", "forge_stage"],
+        "forbid_forge_stage_changed_event_when_alignment": true
+      },
+      "forbid": {
+        "empty_response": true,
+        "stage_advanced_during_ask": true
+      },
+      "severity": "high"
+    },
+    {
+      "id": "lm-p1b-orientation-defer-after-active-alignment",
+      "title": "非 active 的后续 STUDY 轮自然补生成 orientation",
+      "tags": ["learning", "phase_1b", "alignment_defer", "orientation"],
+      "setup": {
+        "create_learning_unit": true,
+        "frontend_mode": "learning",
+        "session_per_case": true,
+        "seed_text": "我想理解 LRU 缓存淘汰。"
+      },
+      "turns": [
+        {
+          "role": "user",
+          "message": "LRU 缓存为什么会淘汰最近没用的数据？"
+        }
+      ],
+      "expect": {
+        "non_empty_response": true,
+        "learning_unit_created": true,
+        "orientation_context_present": true,
+        "orientation_event": "learning_unit.orientation_generated",
+        "orientation_digest_matches_event": true,
+        "orientation_context_present_metadata": true,
+        "allowed_forge_stage_after_turn": ["collision"],
+        "first_value_signal_required": true
+      },
+      "forbid": {
+        "empty_response": true
+      },
+      "severity": "medium"
+    }
+  ]
+}

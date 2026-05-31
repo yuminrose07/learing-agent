@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-05-31T08:32:54.198770Z",
+  "current_leaf_id": "entry-0af44bca",
+  "extracted_knowledge_ids": [],
+  "id": "sess-6d6df773",
+  "last_accessed_at": "2026-05-31T08:33:10.688547Z",
+  "learning_unit_id": "lu-e7860de6",
+  "messages": [
+    {
+      "content": "缓存为什么不是越多越好？",
+      "id": "entry-230cdb9b",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": ""
+      },
+      "role": "user",
+      "status": "complete"
+    },
+    {
+      "content": "我先按这个目标带你学：理解缓存并非越多越好背后的原因。\n\n### 学习地图\n- 缓存的基本概念与作用\n- 缓存的类型及其应用场景\n- 缓存过多带来的问题\n- 如何合理配置缓存\n\n### 第一段实质讲解 - 缓存的基本概念与作用\n\n缓存是一种存储机制，它将最近或频繁访问的数据副本保存在更快、更接近请求源的位置，以提高数据访问速度。通过减少对原始数据源（如数据库）的直接访问次数，缓存可以显著加快应用程序响应时间并减轻后端服务的压力。\n\n缓存通常用于以下场景：\n- **Web应用**：浏览器缓存静态资源（如图片、CSS文件），服务器端缓存动态生成的内容。\n- **数据库系统**：查询结果缓存以加速后续相同查询。\n- **分布式系统**：跨网络节点共享常用数据副本。\n\n尽管缓存能够带来性能上的巨大提升，但其大小和使用方式需要仔细考虑。接下来我们将探讨为什么缓存并不是越大就越好，并分析如何根据实际需求合理设置缓存策略。\n\n现在我们已经了解了缓存是什么以及它的好处，请思考一下，在什么情况下增加更多的缓存可能反而会造成问题？这个问题的答案将帮助我们更好地理解下一节内容——“缓存过多带来的问题”。",
+      "id": "entry-0af44bca",
+      "metadata": {
+        "mode": "study",
+        "persona_key": "neutral",
+        "persona_name": "默认",
+        "persona_role": "",
+        "turn_usage": {
+          "actual_completion_tokens": 280,
+          "actual_prompt_tokens": 1949,
+          "actual_total_tokens": 2229,
+          "compaction": {
+            "full_compact_applied": false,
+            "full_compact_scope": null,
+            "micro_compact_applied": false,
+            "recent_token_budget": 24000,
+            "summary_block_present": false
+          },
+          "context_limit": 128000,
+          "estimated_prompt_tokens": 300,
+          "is_estimated": false,
+          "utilization_ratio": 0.0023
+        }
+      },
+      "role": "assistant",
+      "status": "complete"
+    }
+  ],
+  "mode": "chat",
+  "mode_metadata": {},
+  "objective_id": null,
+  "root_entry_id": null,
+  "status": "active",
+  "title": "缓存为什么不是越多越好？"
+}

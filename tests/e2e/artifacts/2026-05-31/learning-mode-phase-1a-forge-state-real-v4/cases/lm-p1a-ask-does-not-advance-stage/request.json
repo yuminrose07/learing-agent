@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1a-ask-does-not-advance-stage",
+  "chat": {
+    "body": {
+      "message": "教",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "教",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "模糊到触发 ASK 时不推进 forge_stage"
+}

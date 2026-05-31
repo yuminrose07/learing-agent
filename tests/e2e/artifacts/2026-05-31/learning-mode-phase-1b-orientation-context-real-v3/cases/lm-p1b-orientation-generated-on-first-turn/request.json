@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1b-orientation-generated-on-first-turn",
+  "chat": {
+    "body": {
+      "message": "我想理解缓存穿透到底为什么危险。",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "我想理解缓存穿透到底为什么危险。",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "新研学卷首轮生成 OrientationContext 并通过 SSE 暴露 presence"
+}

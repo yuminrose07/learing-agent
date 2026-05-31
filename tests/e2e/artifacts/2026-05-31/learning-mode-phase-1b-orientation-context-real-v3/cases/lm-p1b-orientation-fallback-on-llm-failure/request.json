@@ -1,0 +1,21 @@
+{
+  "case_id": "lm-p1b-orientation-fallback-on-llm-failure",
+  "chat": {
+    "body": {
+      "message": "缓存为什么不是越多越好？",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "我想搞懂为什么缓存不是越多越好。",
+      "source": "user_written",
+      "source_ref": "e2e:force_orientation_fallback"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "orientation provider 失败时使用 fallback 双事件且不阻塞主回复"
+}

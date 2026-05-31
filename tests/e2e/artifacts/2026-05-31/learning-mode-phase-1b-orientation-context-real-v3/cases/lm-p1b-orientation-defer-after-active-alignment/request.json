@@ -1,0 +1,20 @@
+{
+  "case_id": "lm-p1b-orientation-defer-after-active-alignment",
+  "chat": {
+    "body": {
+      "message": "LRU 缓存为什么会淘汰最近没用的数据？",
+      "stream": true
+    },
+    "method": "POST",
+    "path_template": "/sessions/{session_id}/chat"
+  },
+  "create_learning_unit": {
+    "body": {
+      "seed_text": "我想理解 LRU 缓存淘汰。",
+      "source": "user_written"
+    },
+    "method": "POST",
+    "path": "/learning-units"
+  },
+  "title": "非 active 的后续 STUDY 轮自然补生成 orientation"
+}
